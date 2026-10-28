@@ -1,0 +1,8 @@
+node_modules/
+build/
+.docusaurus/
+.vercel/
+.env
+.env.*
+!.env.example
+*.log

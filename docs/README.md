@@ -4,12 +4,23 @@
 Исходные страницы — `docs/documents/`, конфигурация сайта — `docs/docusaurus.config.js`.
 Этот README служит инструкцией настройки и не публикуется как страница сайта.
 
-Навигация автоматически строится по папкам внутри `documents` через `sidebars.js`.
-Markdown/MDX-файлы становятся страницами, подпапки — разделами. Необязательный
-`_category_.yml` внутри раздела задаёт название, порядок и раскрытие раздела.
-Пример уже находится в `documents/preview/`. YAML front matter между `---` в начале
-страницы задаёт её заголовок, URL (`slug`) и порядок (`sidebar_position`).
+Каждая папка первого уровня внутри `documents` автоматически становится разделом
+в шапке со своим боковым меню. Обязательный `_category_.yml` задаёт `label` и `position`.
+Вложенные папки становятся категориями бокового меню. Примеры: `documents/drafts/`
+и `documents/contracts/` с документом-заглушкой. Правила и примеры YAML — в `AGENTS.md`.
+Папки без документов скрываются из шапки; вкладка ведёт к первому документу раздела.
+YAML front matter между `---` в начале страницы задаёт её заголовок, URL (`slug`)
+и порядок (`sidebar_position`). После добавления раздела или изменения YAML
+перезапустите локальный сервер.
 Конфигурация Docusaurus и Vercel остаётся в корне `docs`, вне публикуемого контента.
+
+По умолчанию используется тёмная тема. Если браузер уже сохранил светлую тему,
+переключите её кнопкой в шапке: ручной выбор сохраняется.
+Локальный поиск по русским и английским текстам находится в шапке (Ctrl+K / Cmd+K).
+Индекс создаётся при `npm run build`, поэтому проверяйте результаты через
+`npm run serve`: в dev-режиме `npm start` полноценный индекс не создаётся.
+Поиск не требует ключей или внешних сервисов; на Vercel его индекс защищён тем же
+middleware, что и остальные файлы сайта.
 
 В `package.json` зафиксирован Webpack 5.105.4: новые версии несовместимы с
 `webpackbar` 6 в Docusaurus 3.9.2 и приводят к `ProgressPlugin ValidationError`.
@@ -114,10 +125,14 @@ HTTPS. Браузер может помнить учётные данные; д�
 
 ```text
 docs/
-  documents/preview/index.md # Единственная тестовая страница
-  documents/preview/_category_.yml # Название и порядок раздела
+  AGENTS.md                # Правила структуры для агентов
+  documents/drafts/index.md # Тестовая страница с Mermaid
+  documents/drafts/_category_.yml # Название и порядок раздела
+  documents/contracts/_category_.yml # Пока пустой раздел
+  documents/contracts/index.md # Документ-заглушка
   docusaurus.config.js      # Docusaurus и Mermaid
   sidebars.js              # Автоматическая навигация
+  scripts/sections.cjs      # Разделы шапки и боковые меню из папок/YAML
   middleware.js            # Защита всех URL в Vercel
   scripts/auth.cjs         # Серверная проверка Basic Auth (CommonJS для Vercel)
   scripts/ignore-build.mjs # Пропуск сборок без изменений docs

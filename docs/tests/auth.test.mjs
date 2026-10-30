@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {authorize} from '../scripts/auth.mjs';
+import {authorize} from '../scripts/auth.cjs';
 
 const env = {DOCS_AUTH_USER: 'reader', DOCS_AUTH_PASSWORD: 'long:test-password'};
 function request(path, credentials) {

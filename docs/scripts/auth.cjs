@@ -9,7 +9,7 @@ async function equal(a, b) {
   return difference === 0;
 }
 
-export async function authorize(request, env) {
+async function authorize(request, env) {
   const headers = {'Cache-Control': 'private, no-store',
     'X-Robots-Tag': 'noindex, nofollow, noarchive'};
   if (!env.DOCS_AUTH_USER || !env.DOCS_AUTH_PASSWORD) {
@@ -32,3 +32,6 @@ export async function authorize(request, env) {
     ...headers, 'WWW-Authenticate': 'Basic realm="Documentation", charset="UTF-8"',
   }});
 }
+
+// Vercel compiles middleware.js to CommonJS. Keep this dependency require-compatible.
+exports.authorize = authorize;

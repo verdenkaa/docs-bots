@@ -1,5 +1,5 @@
 import {next} from '@vercel/functions';
-import {authorize} from './scripts/auth.mjs';
+import {authorize} from './scripts/auth.cjs';
 
 // No exclusions: HTML, JS chunks, images and unknown paths all require auth.
 export const config = {matcher: '/:path*'};

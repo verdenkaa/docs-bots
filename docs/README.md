@@ -119,12 +119,21 @@ docs/
   docusaurus.config.js      # Docusaurus и Mermaid
   sidebars.js              # Автоматическая навигация
   middleware.js            # Защита всех URL в Vercel
-  scripts/auth.mjs         # Серверная проверка Basic Auth
+  scripts/auth.cjs         # Серверная проверка Basic Auth (CommonJS для Vercel)
   scripts/ignore-build.mjs # Пропуск сборок без изменений docs
   tests/auth.test.mjs      # Проверки авторизации
   start.bat / start.sh     # Локальный запуск
   vercel.json              # Конфигурация деплоя
 ```
+
+## Ошибка загрузки middleware
+
+Если runtime-логи показывают `ERR_REQUIRE_ESM` при загрузке middleware, убедитесь,
+что задеплоен актуальный `middleware.js` с импортом `scripts/auth.cjs`, а не старого
+`auth.mjs`. Vercel преобразует entrypoint в CommonJS, поэтому модуль авторизации
+сохранён в совместимом формате `.cjs`. Не добавляйте `"type": "module"` в общий
+`package.json`: это ранее ломало клиентскую сборку Docusaurus. После исправления
+нужен commit/push и новый deployment; изменения переменных окружения не требуются.
 
 ## Официальные источники
 

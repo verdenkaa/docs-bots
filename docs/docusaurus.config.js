@@ -9,7 +9,7 @@ export default {
   markdown: {mermaid: true},
   themes: ['@docusaurus/theme-mermaid'],
   presets: [['classic', {
-    docs: {path: 'content', routeBasePath: '/', sidebarPath: './sidebars.js'},
+    docs: {path: 'documents', routeBasePath: '/', sidebarPath: './sidebars.js'},
     blog: false,
     pages: false,
     sitemap: false,

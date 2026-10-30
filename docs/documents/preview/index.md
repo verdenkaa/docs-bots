@@ -1,5 +1,6 @@
 ---
 title: Проверка документации
+sidebar_position: 1
 slug: /
 ---
 

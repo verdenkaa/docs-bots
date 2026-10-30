@@ -2,7 +2,6 @@
   "name": "project-documentation",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
   "scripts": {
     "start": "docusaurus start --host localhost",
     "build": "docusaurus build",
@@ -18,5 +17,6 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
-  "engines": { "node": ">=22" }
+  "engines": { "node": ">=22" },
+  "overrides": { "webpack": "5.105.4" }
 }

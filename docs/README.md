@@ -1,8 +1,19 @@
 # Документация: локальный запуск и Vercel
 
 Весь сайт находится в `docs/`. Остальной репозиторий свободен для основного проекта.
-Исходные страницы — `docs/content/`, конфигурация сайта — `docs/docusaurus.config.js`.
+Исходные страницы — `docs/documents/`, конфигурация сайта — `docs/docusaurus.config.js`.
 Этот README служит инструкцией настройки и не публикуется как страница сайта.
+
+Навигация автоматически строится по папкам внутри `documents` через `sidebars.js`.
+Markdown/MDX-файлы становятся страницами, подпапки — разделами. Необязательный
+`_category_.yml` внутри раздела задаёт название, порядок и раскрытие раздела.
+Пример уже находится в `documents/preview/`. YAML front matter между `---` в начале
+страницы задаёт её заголовок, URL (`slug`) и порядок (`sidebar_position`).
+Конфигурация Docusaurus и Vercel остаётся в корне `docs`, вне публикуемого контента.
+
+В `package.json` зафиксирован Webpack 5.105.4: новые версии несовместимы с
+`webpackbar` 6 в Docusaurus 3.9.2 и приводят к `ProgressPlugin ValidationError`.
+Не удаляйте override без совместного обновления Docusaurus и проверки запуска.
 
 ## Локальный запуск
 
@@ -103,7 +114,8 @@ HTTPS. Браузер может помнить учётные данные; д�
 
 ```text
 docs/
-  content/index.md          # Единственная тестовая страница
+  documents/preview/index.md # Единственная тестовая страница
+  documents/preview/_category_.yml # Название и порядок раздела
   docusaurus.config.js      # Docusaurus и Mermaid
   sidebars.js              # Автоматическая навигация
   middleware.js            # Защита всех URL в Vercel

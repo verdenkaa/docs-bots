@@ -1,0 +1,63 @@
+.operation-badge {
+  display: inline-block;
+  min-inline-size: 3rem;
+  margin-inline-end: 0.35rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.3rem;
+  background-color: var(--operation-color, #cbd5e1);
+  color: #080c18;
+  font: 750 0.72rem/1.3 var(--ifm-font-family-monospace);
+  letter-spacing: 0.035em;
+  text-align: center;
+  vertical-align: 0.15em;
+  white-space: nowrap;
+}
+
+.operation-badge--async {
+  --operation-color: #ec4899;
+}
+
+.operation-badge--call {
+  --operation-color: #eab308;
+}
+
+.operation-badge--get {
+  --operation-color: #10b981;
+}
+
+.operation-badge--post,
+.operation-badge--put {
+  --operation-color: #ef4444;
+}
+
+.operation-badge--task,
+.operation-badge--sub {
+  --operation-color: #8b5cf6;
+}
+
+.operation-badge--cache {
+  --operation-color: #f43f5e;
+}
+
+.operation-badge--vec,
+.operation-badge--db {
+  --operation-color: #06b6d4;
+}
+
+.markdown :is(h1, h2):has(> .operation-badge) {
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: var(--ifm-global-radius);
+  background-color: var(--ifm-color-emphasis-100);
+  overflow-wrap: anywhere;
+}
+
+.markdown h1:has(> .operation-badge) {
+  font-size: clamp(1.5rem, 4vw, 2rem);
+}
+
+.table-of-contents .operation-badge {
+  min-inline-size: 2.5rem;
+  padding: 0.12rem 0.3rem;
+  font-size: 0.65rem;
+}

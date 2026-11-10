@@ -23,8 +23,9 @@ export default {
   ],
   presets: [['classic', {
     docs: {path: 'documents', routeBasePath: '/', sidebarPath: './sidebars.js'},
+    theme: {customCss: './src/css/custom.css'},
     blog: false,
-    pages: false,
+    pages: {},
     sitemap: false,
   }]],
   themeConfig: {

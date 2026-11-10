@@ -1,0 +1,176 @@
+name: rag-hackathon
+
+x-service: &service
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-app: &app
+  <<: *service
+  profiles: [app]
+  env_file:
+    - path: ./app.env
+      required: false
+  environment: &app-environment
+    PGHOST: postgres
+    PGPORT: "5432"
+    PGDATABASE: rag
+    PGUSER: rag
+    PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    RABBITMQ_HOST: rabbitmq
+    RABBITMQ_PORT: "5672"
+    RABBITMQ_USER: rag
+    RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+    REDIS_URL: redis://redis:6379/0
+    QDRANT_URL: http://qdrant:6333
+  depends_on:
+    postgres: {condition: service_healthy}
+    rabbitmq: {condition: service_healthy}
+    qdrant: {condition: service_healthy}
+    redis: {condition: service_started}
+  stop_grace_period: 45s
+
+x-health: &health
+  interval: 5s
+  timeout: 4s
+  retries: 12
+  start_period: 10s
+
+services:
+  postgres:
+    <<: *service
+    image: docker.io/library/postgres:17-alpine
+    environment:
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      <<: *health
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, rag, -d, rag]
+
+  redis:
+    <<: *service
+    image: docker.io/library/redis:7.4-alpine
+    command: [redis-server, --save, "", --appendonly, "no"]
+    healthcheck:
+      <<: *health
+      test: [CMD, redis-cli, ping]
+
+  rabbitmq:
+    <<: *service
+    image: docker.io/library/rabbitmq:4.1-alpine
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: rag
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+    volumes: [rabbitmq_data:/var/lib/rabbitmq]
+    healthcheck:
+      <<: *health
+      test: [CMD, bash, -ec, "exec 3<>/dev/tcp/127.0.0.1/5672"]
+
+  qdrant:
+    <<: *service
+    image: docker.io/qdrant/qdrant:v1.20.0
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - qdrant_snapshots:/qdrant/snapshots
+    healthcheck:
+      <<: *health
+      test:
+        - CMD
+        - bash
+        - -ec
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/6333
+          printf 'GET /readyz HTTP/1.0\r\n\r\n' >&3
+          read -r protocol code rest <&3
+          test "$$code" = 200
+
+  core:
+    <<: *app
+    image: ${CORE_IMAGE:-localhost/rag-core:scaffold}
+    environment:
+      <<: *app-environment
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    ports: ["127.0.0.1:${CORE_PORT:-8000}:8000"]
+    healthcheck:
+      <<: *health
+      start_period: 60s
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health/ready', timeout=3).close()"]
+
+  worker:
+    <<: *app
+    image: ${WORKER_IMAGE:-localhost/rag-worker:scaffold}
+    environment:
+      <<: *app-environment
+      WORKER_SPOOL_DIR: /var/lib/rag/spool
+    volumes: [worker_spool:/var/lib/rag/spool]
+
+  loki:
+    <<: *service
+    profiles: [monitoring]
+    image: docker.io/grafana/loki:3.5.8
+    command: [-config.file=/etc/loki/rag.yaml]
+    volumes:
+      - ./monitoring/loki.yaml:/etc/loki/rag.yaml:ro,Z
+      - loki_data:/loki
+
+  alloy:
+    <<: *service
+    profiles: [monitoring]
+    image: docker.io/grafana/alloy:v1.8.3
+    command: [run, --server.http.listen-addr=0.0.0.0:12345, --storage.path=/var/lib/alloy/data, /etc/alloy/config.alloy]
+    ports: ["127.0.0.1:${ALLOY_PORT:-12345}:12345"]
+    security_opt: [label=disable]
+    environment:
+      RAG_COMPOSE_PROJECT: rag-hackathon
+    volumes:
+      - ./monitoring/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
+      - type: bind
+        source: ${ALLOY_SOCKET:-/var/run/docker.sock}
+        target: /run/container-engine.sock
+        read_only: true
+        bind:
+          create_host_path: false
+
+  grafana:
+    <<: *service
+    profiles: [monitoring]
+    image: docker.io/grafana/grafana:12.1.1
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3300}:3000"]
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/datasources.yaml:/etc/grafana/provisioning/datasources/loki.yaml:ro,Z
+    healthcheck:
+      <<: *health
+      start_period: 120s
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:3000/api/health"]
+
+  locust:
+    <<: *service
+    profiles: [load]
+    image: docker.io/locustio/locust:2.39.1
+    command: [-f, /mnt/locust/locustfile.py, --host, "http://core:8000"]
+    ports: ["127.0.0.1:${LOCUST_PORT:-8089}:8089"]
+    volumes: ["./load/locustfile.py:/mnt/locust/locustfile.py:ro,Z"]
+    healthcheck:
+      <<: *health
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8089/', timeout=3).close()"]
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  qdrant_data:
+  qdrant_snapshots:
+  worker_spool:
+  loki_data:
+  alloy_data:
+  grafana_data:

@@ -1,0 +1,131 @@
+.section {
+  border-top: 1px solid var(--ifm-color-emphasis-300);
+  margin-block: 2rem;
+  padding-top: 1.5rem;
+}
+
+.thread {
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: var(--ifm-global-radius);
+  margin-block: 0.75rem;
+  padding: 0.75rem 1rem;
+}
+
+.comment {
+  scroll-margin-top: calc(var(--ifm-navbar-height) + 1rem);
+}
+
+.comment:target {
+  background: var(--ifm-color-emphasis-100);
+  outline: 2px solid var(--ifm-color-primary);
+  outline-offset: 0.25rem;
+}
+
+.meta, .actions {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+}
+
+.meta time {
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.85rem;
+}
+
+.resolved {
+  border: 1px solid var(--ifm-color-success);
+  border-radius: 1rem;
+  font-size: 0.85rem;
+  padding: 0.05rem 0.5rem;
+}
+
+.comment .actions {
+  margin-bottom: 0.65rem;
+}
+
+.text {
+  margin-block: 0.25rem 0.75rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.replies {
+  border-inline-start: 2px solid var(--ifm-color-emphasis-300);
+  margin-block: 0.75rem;
+  padding-inline-start: 0.75rem;
+}
+
+.form {
+  margin-top: 1rem;
+}
+
+.fields {
+  border: 0;
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.fields input, .fields textarea {
+  background: var(--ifm-background-color);
+  border: 1px solid var(--ifm-color-emphasis-400);
+  border-radius: var(--ifm-global-radius);
+  color: var(--ifm-font-color-base);
+  display: block;
+  font: inherit;
+  margin-top: 0.25rem;
+  padding: 0.35rem 0.6rem;
+  width: 100%;
+}
+
+.fields textarea {
+  resize: vertical;
+}
+
+.error {
+  color: var(--ifm-color-danger-contrast-foreground);
+  margin: 0;
+}
+
+.marker {
+  display: inline-block;
+  margin-inline-start: 0.5rem;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.badge {
+  background: var(--ifm-color-emphasis-100);
+  border: 1px solid var(--ifm-color-emphasis-400);
+  border-radius: 1rem;
+  color: var(--ifm-link-color);
+  cursor: pointer;
+  font: 600 0.8rem/1.4 var(--ifm-font-family-base);
+  padding: 0.2rem 0.6rem;
+}
+
+.popup {
+  background: var(--ifm-background-surface-color);
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: var(--ifm-global-radius);
+  box-shadow: var(--ifm-global-shadow-md);
+  display: grid;
+  font: 400 0.9rem/1.5 var(--ifm-font-family-base);
+  margin-block: 0.35rem;
+  max-height: 16rem;
+  max-width: min(20rem, 100%);
+  overflow: auto;
+  padding: 0.4rem;
+}
+
+.popup a {
+  overflow-wrap: anywhere;
+  padding: 0.35rem;
+}
+
+.popup small {
+  display: block;
+}

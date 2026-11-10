@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!rag/
+!rag/**
+**/__pycache__/
+**/*.pyc

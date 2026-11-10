@@ -1,0 +1,9 @@
+services:
+  core:
+    build:
+      context: ../app
+      target: core
+  worker:
+    build:
+      context: ../app
+      target: worker

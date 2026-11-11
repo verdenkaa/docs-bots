@@ -8,6 +8,8 @@ toc_max_heading_level: 2
 Способ подключения адаптера, форматы документов и лимиты уточним по кейсу.
 :::
 
+[Правила DTO и Pydantic](../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
+
 [Приём файла](./gateway.md) · [Обработка задания](./worker.md) · [DTO](./contracts.md#dto)
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `accept_upload` {#accept-upload}
@@ -30,7 +32,7 @@ async def accept_upload(upload: UploadInput) -> UploadResult: ...
 
 ### Что отдаёт
 
-**Формат.** Один словарь Python `UploadResult`. Поля зависят от `kind`.
+**Формат.** Один объект Pydantic `UploadResult`. Поля зависят от `kind`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -90,7 +92,7 @@ async def prepare_chunks(upload: StagedUpload) -> list[PreparedChunk]: ...
 
 ### Что отдаёт
 
-**Формат.** Упорядоченный список словарей `PreparedChunk`. `[]` означает отсутствие пригодного текста.
+**Формат.** Упорядоченный список объектов DTO `PreparedChunk`. `[]` означает отсутствие пригодного текста.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |

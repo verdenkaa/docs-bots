@@ -1,27 +1,70 @@
 """Contracts: docs/documents/infrastructure/redis/contracts.md."""
 
+from pydantic import Field
 
-from typing import TypedDict
+from rag.dto import DTO, NonNegativeInt
+
+
 
 from rag.contracts import RagResult
 
 
 class CachedAnswer(RagResult):
-    corpus_generation: int
+    """Ответ Exact Cache с поколением корпуса для проверки актуальности."""
+
+    corpus_generation: NonNegativeInt = Field(
+        description="Поколение набора доступных редакций; 0 допустим для пустого корпуса.",
+    )
 
 
-class CacheRead(TypedDict):
-    value: CachedAnswer
-    compare_token: bytes
+class CacheRead(DTO):
+    """Прочитанный ответ и токен, защищающий условное удаление от гонки с записью."""
+
+    value: CachedAnswer = Field(description="Ответ и поколение, прочитанные из Redis.")
+    compare_token: bytes = Field(
+        description="Непрозрачный токен прочитанного значения для атомарного условного удаления.",
+    )
 
 
 async def read_cached_answer(query: str) -> CacheRead | None:
+    """Прочитать точный кеш и токен его наблюдаемого значения.
+
+    Заглушка: реализация пока отсутствует (NotImplementedError).
+
+    Args:
+        query: Нормализованный вопрос из Guardrails.
+
+    Returns:
+        CacheRead либо None, если ключ отсутствует или данные некорректны.
+    """
     raise NotImplementedError
 
 
 async def delete_cached_answer_if_unchanged(query: str, compare_token: bytes) -> bool:
+    """Атомарно удалить только ранее прочитанное значение кеша.
+
+    Заглушка: реализация пока отсутствует (NotImplementedError).
+
+    Args:
+        query: Нормализованный вопрос из Guardrails.
+        compare_token: Токен из CacheRead, идентифицирующий прочитанное значение.
+
+    Returns:
+        True — удалено; False — отсутствует или изменилось после чтения.
+    """
     raise NotImplementedError
 
 
 async def write_cached_answer_if_not_older(query: str, value: CachedAnswer) -> bool:
+    """Атомарно записать ответ с TTL без перезаписи более нового поколения.
+
+    Заглушка: реализация пока отсутствует (NotImplementedError).
+
+    Args:
+        query: Нормализованный вопрос из Guardrails.
+        value: Сохранённый результат и поколение, по которому он получен.
+
+    Returns:
+        True — записано; False — в ключе уже более новое поколение.
+    """
     raise NotImplementedError

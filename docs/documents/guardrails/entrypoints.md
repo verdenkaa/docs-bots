@@ -8,6 +8,8 @@ toc_max_heading_level: 2
 Модель, обучающие данные и ограничения длины уточняются.
 :::
 
+[Правила DTO и Pydantic](../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
+
 Для реализации используется `check_question`. [Место вызова в RAG Core](../rag-core/flow.md#порядок-вызовов-и-происхождение-данных).
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `check_question` {#check-question}
@@ -26,7 +28,7 @@ async def check_question(raw_question: str) -> GuardrailsResult: ...
 
 ### Что отдаёт
 
-**Формат.** Один словарь Python. `GuardrailsResult` объединяет четыре варианта по полю `kind`. Дополнительные поля присутствуют только в указанном варианте.
+**Формат.** Один объект Pydantic. `GuardrailsResult` объединяет четыре варианта по полю `kind`. Дополнительные поля присутствуют только в указанном варианте.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -39,4 +41,4 @@ async def check_question(raw_question: str) -> GuardrailsResult: ...
 
 ### Правила и ошибки
 
-Успех выглядит как `{"kind": "allowed", "normalized_question": "Где инструкция по установке?"}`. Отказ выглядит как `{"kind": "blocked"}`. Сбои детектора преобразуются в `detector_unavailable`. [Определение DTO](../rag-core/contracts.md#исходы-шагов) · [Правила нормализации](./index.md#нормализация).
+Успех выглядит как `{"kind": "allowed", "normalized_question": "Где инструкция по установке?"}`. Отказ выглядит как `{"kind": "blocked"}`. Внутри вызывается `Model Gateway.classify_injection(raw_question, timeout_s=detector_timeout_s)`; бюджет задан конфигурацией. Его `InjectionResult` трактуется Guardrails по правилу закреплённого профиля; наружу остаётся `GuardrailsResult`. Сбои детектора (`StepError`) преобразуются в `detector_unavailable`, сохраняя `retryable`. [Определение DTO](../rag-core/contracts.md#исходы-шагов) · [Правила нормализации](./index.md#нормализация).

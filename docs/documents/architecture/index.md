@@ -18,11 +18,14 @@ flowchart TB
   subgraph CORE["Контейнер core"]
     G["RAG API"]
     C["RAG Core"]
-    C --> M["Guardrails · Exact Cache<br/>Searcher · Answer Generator"]
+    C --> M["Guardrails <br/> Searcher<br/>Answer Generator"]
+    C --> EC["Exact Cache"]
+    M --> MG["Model Gateway <br/> Роли Core"]
   end
   subgraph WORKER["Контейнер worker"]
     IG["Ingestion Gateway"]
     IW["Ingestion Worker"]
+    IW --> MW["Model Gateway <br/> embedding"]
   end
   subgraph MQ["RabbitMQ"]
     Q1[("rag.questions")]
@@ -39,7 +42,7 @@ flowchart TB
   Q3 -->|"подготовить редакцию"| IW
 ~~~
 
-Из одной Python-кодовой базы запускаем два контейнера. В `core` RAG API принимает вопросы и доставляет ответы, а RAG Core читает очередь вопросов и ведёт обработку. RAG API фиксирует порядок приёма, RAG Core соблюдает его при обработке, RAG API — при доставке. В `worker` Ingestion Gateway принимает загрузки, а Ingestion Worker выполняет задания последовательно. Runtime в обоих контейнерах подключает нужные хранилища и очереди. Стрелки «через outbox» включают запись в PostgreSQL и отправку через Queue Relay. [Очереди и доставка](./message-flow.md)
+Из одной Python-кодовой базы запускаем два контейнера. В `core` RAG API принимает вопросы и доставляет ответы, а RAG Core читает очередь вопросов и ведёт обработку. RAG API фиксирует порядок приёма, RAG Core соблюдает его при обработке, RAG API — при доставке. В `worker` Ingestion Gateway принимает загрузки, а Ingestion Worker выполняет задания последовательно. Runtime в обоих контейнерах подключает нужные хранилища и очереди, конфигурирует Model Gateway для локальных моделей либо API. Guardrails, Searcher и Answer Generator в Core, а также Ingestion Worker обращаются к моделям через него. Model Gateway — общий код, а не обязательный третий контейнер; отдельный сервер инференса возможен после выбора моделей. Стрелки «через outbox» включают запись в PostgreSQL и отправку через Queue Relay. [Очереди и доставка](./message-flow.md)
 
 ## Имена модулей
 
@@ -50,6 +53,7 @@ flowchart TB
 | [Searcher](../retrieval/index.md) | Возвращает фрагменты и их источники по зафиксированным редакциям. |
 | [Ingestion](../ingestion/index.md) | **Ingestion Gateway** принимает загрузку и регистрирует задание. **Ingestion Worker** готовит, публикует и очищает редакции. |
 | [Guardrails](../guardrails/index.md) | Проверяет исходный вопрос на prompt injection. При допуске возвращает нормализованный вопрос. |
+| [Model Gateway](../model-gateway/index.md) | Технические вызовы embedding, reranker, детектора инъекций и генерации; адаптеры локальных моделей/API, ресурсы и таймауты. Решения о допуске и содержании ответа остаются у вызывающих модулей. |
 | [Runtime](../infrastructure/index.md) | Собирает модули при запуске и подключает хранилища. **Queue Relay** публикует записи outbox в RabbitMQ. |
 
 Для схем, заголовков и описаний стыков используем эти имена. Порядок действий и обмен данными описаны на уровне сценариев. [Сборка и замена модулей](./module-composition.md)
@@ -69,6 +73,6 @@ flowchart TB
 - Модели, квоты провайдера и настройки запуска процессов внутри контейнеров.
 - Цели по скорости, качеству и восстановлению. Измеряем повторные и новые вопросы отдельно. Стартуем на Python и решаем вопрос о Rust по профилю обработки документов и нагрузочным тестам.
 
-Контракты, DTO и сигнатуры дополняем в разделах модулей. [FAQ и проверки MVP](../faq/index.md)
+Контракты, DTO и сигнатуры дополняем в разделах модулей. Между Python-модулями передаём объекты Pydantic, на транспортных границах — валидируемый JSON. [Общие правила DTO](../faq/dto.md). [FAQ и проверки MVP](../faq/index.md)
 
 Основа каркаса — столбец «Итог» в [командном синке](../faq/drafts/architecture-team-sync.md). Размещение процессов, очистку старых редакций и охват детектора уточнили при подготовке каркаса.

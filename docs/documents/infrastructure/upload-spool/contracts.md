@@ -8,6 +8,8 @@ toc_max_heading_level: 2
 Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
 :::
 
+[Правила DTO и Pydantic](../../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
+
 Адаптер поднимает `StorageError` при сбое доступа к тому. [DTO Ingestion](../../ingestion/contracts.md#dto) · [Формат манифеста](./index.md#запись-временного-файла).
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `stage_upload` {#stage-upload}
@@ -28,7 +30,7 @@ async def stage_upload(revision_id: UUID, content: AsyncIterable[bytes], source:
 
 ### Что отдаёт
 
-**Формат.** Строка с ключом загрузки или словарь Python `UploadRejected`.
+**Формат.** Строка с ключом загрузки или объект Pydantic `UploadRejected`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |

@@ -8,6 +8,8 @@ toc_max_heading_level: 2
 Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
 :::
 
+[Правила DTO и Pydantic](../../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
+
 Функции строят ключ из нормализованного вопроса. При недоступности Redis адаптер поднимает `CacheUnavailable`. Exact Cache преобразует сбой в промах при чтении и завершает запись без исключения. [Формат хранения](./index.md).
 
 ## <span className="operation-badge operation-badge--cache">CACHE</span> `read_cached_answer` {#read-cached-answer}
@@ -95,11 +97,15 @@ async def write_cached_answer_if_not_older(query: str, value: CachedAnswer) -> b
 ## DTO
 
 ~~~python
+from pydantic import AwareDatetime, Field
+from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
+from dataclasses import dataclass
+
 class CachedAnswer(RagResult):
-    corpus_generation: int
+    corpus_generation: NonNegativeInt
 
 
-class CacheRead(TypedDict):
+class CacheRead(DTO):
     value: CachedAnswer
     compare_token: bytes
 ~~~

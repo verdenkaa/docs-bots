@@ -11,7 +11,7 @@ sidebar_position: 1
 
 | Задача | Контракты функций |
 | --- | --- |
-| Получить векторы для вопроса или чанков | [`embed_texts`](./contracts.md#embed-texts) |
+| Получить векторы для вопроса или чанков | [`embed_texts`](../../model-gateway/entrypoints.md#embed-texts) в Model Gateway; это не операция Qdrant. |
 | Найти фрагменты в разрешённых редакциях | [`find_chunks`](./contracts.md#find-chunks) |
 | Записать или удалить точки одной редакции | [`write_revision_points`](./contracts.md#write-revision-points), [`delete_revision_points`](./contracts.md#delete-revision-points) |
 | Сверить полный набор точек одной редакции | [`verify_revision_points`](./contracts.md#verify-revision-points) |

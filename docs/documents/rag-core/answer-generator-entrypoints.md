@@ -8,6 +8,8 @@ toc_max_heading_level: 2
 Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
 :::
 
+[Правила DTO и Pydantic](../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
+
 
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `generate_answer` {#generate-answer}
@@ -27,7 +29,7 @@ async def generate_answer(query: str, fragments: Sequence[SearchFragment]) -> Ge
 
 ### Что отдаёт
 
-**Формат.** Один словарь Python. `GenerationResult` объединяет два варианта по полю `kind`.
+**Формат.** Один объект Pydantic. `GenerationResult` объединяет два варианта по полю `kind`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -38,4 +40,4 @@ async def generate_answer(query: str, fragments: Sequence[SearchFragment]) -> Ge
 
 ### Правила и ошибки
 
-При сбое модели или нарушении формата поднимает `StepError(code, retryable)`. Core собирает источники по ID из выдачи. [DTO](./contracts.md#исходы-шагов) · [Сборка контекста](./answer-generator.md).
+Внутри вызывает `Model Gateway.generate`; `ModelGenerationResult` не выходит в Core напрямую. Только `completed` с валидным бизнес-JSON преобразуется в `GenerationResult`; `length`/`filtered` дают `StepError("generation_incomplete", False)`. При сбое модели или нарушении формата поднимает `StepError(code, retryable)`. Core собирает источники по ID из выдачи. [DTO](./contracts.md#исходы-шагов) · [Сборка контекста](./answer-generator.md).

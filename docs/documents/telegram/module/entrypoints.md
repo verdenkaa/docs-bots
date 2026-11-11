@@ -8,6 +8,8 @@ toc_max_heading_level: 2
 Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
 :::
 
+[Правила DTO и Pydantic](../../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
+
 [Общие DTO уведомления, попытки и результата](../../rag-core/contracts.md).
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `handle_telegram_update` {#handle-telegram-update}
@@ -29,7 +31,7 @@ async def handle_telegram_update(update: Mapping[str, object]) -> IntakeResult: 
 
 ### Что отдаёт
 
-**Формат.** Один словарь Python `IntakeResult`. Только варианты `accepted` и `duplicate` содержат `request_id`.
+**Формат.** Один объект Pydantic `IntakeResult`. Только варианты `accepted` и `duplicate` содержат `request_id`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -86,7 +88,7 @@ async def send_answer(chat_id: int, result: RagResult) -> SendResult: ...
 
 ### Что отдаёт
 
-**Формат.** Один словарь Python `SendResult`. Дополнительные поля есть только для `failed`.
+**Формат.** Один объект Pydantic `SendResult`. Дополнительные поля есть только для `failed`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -105,43 +107,47 @@ async def send_answer(chat_id: int, result: RagResult) -> SendResult: ...
 ## DTO
 
 ~~~python
+from pydantic import AwareDatetime, Field
+from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
+from dataclasses import dataclass
+
 from collections.abc import Mapping
-from typing import Literal, TypedDict
+from typing import Annotated, Literal
 
 
-class RegisteredQuestion(TypedDict):
-    request_id: int
+class RegisteredQuestion(DTO):
+    request_id: PositiveId
     created: bool
 
 
-class RecordedUpdate(TypedDict):
+class RecordedUpdate(DTO):
     kind: Literal["accepted", "duplicate"]
-    request_id: int
+    request_id: PositiveId
 
 
-class UnrecordedUpdate(TypedDict):
+class UnrecordedUpdate(DTO):
     kind: Literal["ignored", "invalid_update", "retry_later"]
 
 
-IntakeResult = RecordedUpdate | UnrecordedUpdate
+IntakeResult = Annotated[RecordedUpdate | UnrecordedUpdate, Field(discriminator="kind")]
 
 
-class ClaimedDelivery(TypedDict):
+class ClaimedDelivery(DTO):
     attempt: ProcessingAttempt
     chat_id: int
     result: RagResult
 
 
-class Sent(TypedDict):
+class Sent(DTO):
     kind: Literal["sent"]
 
 
-class SendFailed(TypedDict):
+class SendFailed(DTO):
     kind: Literal["failed"]
     retryable: bool
     uncertain: bool
-    retry_after_seconds: int | None
+    retry_after_seconds: NonNegativeInt | None
 
 
-SendResult = Sent | SendFailed
+SendResult = Annotated[Sent | SendFailed, Field(discriminator="kind")]
 ~~~

@@ -9,7 +9,7 @@ sidebar_position: 1
 
 ## Граница
 
-Runtime собирает модули в контейнерах `core` и `worker`, даёт им доступ к хранилищам и запускает восстановление прерванных этапов. Состояние меняют владельцы этапов. **[Queue Relay](./queue-relay.md)** публикует записи outbox в RabbitMQ. [Сборка модулей](../architecture/module-composition.md) · [Состояния и сбои](../architecture/lifecycle.md)
+Runtime конфигурирует [Model Gateway](../model-gateway/index.md) и управляет его запуском; технические обращения к моделям принадлежат Model Gateway. Runtime собирает модули в контейнерах `core` и `worker`, даёт им доступ к хранилищам и запускает восстановление прерванных этапов. Состояние меняют владельцы этапов. **[Queue Relay](./queue-relay.md)** публикует записи outbox в RabbitMQ. [Сборка модулей](../architecture/module-composition.md) · [Состояния и сбои](../architecture/lifecycle.md)
 
 Вызовы к адаптерам ниже — асинхронные функции Python. В разделах указано, кто вызывает их и какие DTO возвращаются. Параметры подключения передаёт Runtime при сборке. [Значения тегов](../faq/index.md#теги-контрактов)
 
@@ -20,7 +20,7 @@ Runtime собирает модули в контейнерах `core` и `worke
 | [Запуск Runtime](./startup.md) | Сервисы, тома, роли процессов и порядок запуска. |
 | [PostgreSQL](./postgresql/index.md) | Четыре таблицы. [Функции](./postgresql/index.md#что-вызывать) для RAG API, RAG Core, Ingestion и Queue Relay. |
 | [RabbitMQ](./rabbitmq/index.md) | Три очереди, формат уведомлений и [функции публикации и обработки](./rabbitmq/contracts.md). |
-| [Qdrant](./qdrant/index.md) | Одна коллекция. [Функции модели, поиска, записи и удаления точек](./qdrant/contracts.md). |
+| [Qdrant](./qdrant/index.md) | Одна коллекция. [Функции поиска, записи и удаления точек](./qdrant/contracts.md). |
 | [Redis](./redis/index.md) | Кеш готовых ответов и [функции адаптера Exact Cache](./redis/contracts.md). |
 | [Временные файлы загрузки](./upload-spool/index.md) | Рабочий том и [функции записи, чтения и очистки](./upload-spool/contracts.md). |
 

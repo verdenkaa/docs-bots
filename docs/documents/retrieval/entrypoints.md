@@ -8,6 +8,8 @@ toc_max_heading_level: 2
 Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
 :::
 
+[Правила DTO и Pydantic](../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
+
 
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `search` {#search}
@@ -41,7 +43,7 @@ async def search(query: str, revision_ids: frozenset[UUID]) -> list[SearchFragme
 
 ### Правила и ошибки
 
-При пустом наборе редакций возвращает `[]` без обращения к моделям и Qdrant. При сбое поднимает `StepError(code, retryable)`. [DTO фрагмента](../rag-core/contracts.md#общие-dto) · [Конвейер](./pipeline.md).
+При пустом наборе редакций возвращает `[]` без обращения к моделям и Qdrant. Модельные операции выполняет через Model Gateway: `embed_texts` даёт `EmbeddingResult`, опциональный `rerank` — `RerankResult`; Searcher проверяет профили и возвращает Core только фрагменты. При сбое поднимает `StepError(code, retryable)`. [DTO фрагмента](../rag-core/contracts.md#общие-dto) · [Конвейер](./pipeline.md).
 
 ## Пример полного результата
 

@@ -11,7 +11,7 @@ sidebar_position: 1
 
 ## Граница
 
-Searcher находит фрагменты, которые помогут ответить на вопрос. RAG Core вызывает его внутри процесса `core` после Guardrails и промаха Exact Cache. Searcher читает Qdrant через адаптер, а запись фрагментов и публикация редакций принадлежат Ingestion Worker. Core передаёт найденные фрагменты в Answer Generator, который собирает контекст и формирует ответ. [Сборка модулей](../architecture/module-composition.md)
+Searcher находит фрагменты, которые помогут ответить на вопрос. RAG Core вызывает его внутри процесса `core` после Guardrails и промаха Exact Cache. Searcher получает эмбеддинги и оценки reranker через [Model Gateway](../model-gateway/index.md), читает Qdrant через адаптер Runtime, а запись фрагментов и публикация редакций принадлежат Ingestion Worker. Core передаёт найденные фрагменты в Answer Generator, который собирает контекст и формирует ответ. [Сборка модулей](../architecture/module-composition.md)
 
 ## Дальше
 

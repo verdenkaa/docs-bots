@@ -15,6 +15,17 @@ venv/
 .coverage
 .coverage.*
 htmlcov/
+*.egg-info/
+/app/build/
+/app/dist/
+
+# PyCharm / JetBrains local project files
+.idea/
+*.iml
+*.iws
+*.ipr
+*___jb_tmp___
+*___jb_old___
 
 # Node dependencies and generated documentation
 node_modules/

@@ -198,7 +198,7 @@ async def list_pending_revision_writes(limit: int) -> list[PendingRevisionWrite]
 
 ### Что отдаёт
 
-**Формат.** Список словарей Python `PendingRevisionWrite`. Пустой список допустим.
+**Формат.** Список объектов Pydantic `PendingRevisionWrite`. Пустой список допустим.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -251,7 +251,7 @@ async def list_required_revision_manifests() -> list[RevisionManifest]: ...
 
 ### Что отдаёт
 
-**Формат.** Список словарей Python `RevisionManifest`. Пустой список означает, что ни одна редакция не нужна поиску.
+**Формат.** Список объектов Pydantic `RevisionManifest`. Пустой список означает, что ни одна редакция не нужна поиску.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -269,12 +269,16 @@ async def list_required_revision_manifests() -> list[RevisionManifest]: ...
 ## DTO
 
 ~~~python
-class PendingRevisionWrite(TypedDict):
+from pydantic import AwareDatetime, Field
+from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
+from dataclasses import dataclass
+
+class PendingRevisionWrite(DTO):
     revision_id: UUID
-    attempt_no: int
+    attempt_no: PositiveId
 
 
-class RevisionManifest(TypedDict):
+class RevisionManifest(DTO):
     revision_id: UUID
-    expected_chunk_count: int | None
+    expected_chunk_count: PositiveId | None
 ~~~

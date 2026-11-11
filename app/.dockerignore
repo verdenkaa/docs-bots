@@ -1,5 +1,9 @@
 *
 !Dockerfile
+!requirements.txt
+!requirements.lock
+!pyproject.toml
+!README.md
 !rag/
 !rag/**
 **/__pycache__/

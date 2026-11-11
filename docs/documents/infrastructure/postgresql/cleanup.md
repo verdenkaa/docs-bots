@@ -26,7 +26,7 @@ async def list_finished_staging(limit: int) -> list[StagingCleanup]: ...
 
 ### Что отдаёт
 
-**Формат.** Список словарей Python `StagingCleanup`. `[]` означает, что кандидатов нет.
+**Формат.** Список объектов Pydantic `StagingCleanup`. `[]` означает, что кандидатов нет.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -146,7 +146,11 @@ async def finish_revision_cleanup(revision_id: UUID) -> bool: ...
 ## DTO
 
 ~~~python
-class StagingCleanup(TypedDict):
+from pydantic import AwareDatetime, Field
+from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
+from dataclasses import dataclass
+
+class StagingCleanup(DTO):
     revision_id: UUID
-    staging_ref: str
+    staging_ref: NonEmptyText
 ~~~

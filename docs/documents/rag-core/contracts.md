@@ -7,6 +7,8 @@ sidebar_position: 3
 Типы фиксируют первый сквозной сценарий. Формат локатора расширим, когда станут известны типы источников.
 :::
 
+[Правила DTO и Pydantic](../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
+
 ## Очередь и готовый результат
 
 Оба маршрута, `rag.questions` и `rag.results`, передают один DTO `RequestRef` в JSON. Маршрут определяет действие. RAG API пишет исходный текст и чат в `rag_requests`. RAG Core пишет итог в `rag_requests.result`. Для доставки RAG API читает `chat_id` и `RagResult` по тому же `request_id`. [Формат RabbitMQ](../infrastructure/rabbitmq/index.md) · [Строка запроса в PostgreSQL](../infrastructure/postgresql/index.md#rag_requests)
@@ -20,51 +22,55 @@ sidebar_position: 3
 ## Общие DTO
 
 ~~~python
+from pydantic import AwareDatetime, Field
+from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
+from dataclasses import dataclass
+
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Literal, TypedDict
+from typing import Annotated, Literal
 from uuid import UUID
 
 
-class RequestRef(TypedDict):
-    request_id: int
+class RequestRef(DTO):
+    request_id: PositiveId
 
 
 ConsumeDecision = Literal["ack", "retry_broker"]
 
 
-class ProcessingAttempt(TypedDict):
-    request_id: int
-    attempt_no: int
-    deadline_at: datetime
+class ProcessingAttempt(DTO):
+    request_id: PositiveId
+    attempt_no: PositiveId
+    deadline_at: AwareDatetime
 
 
-class ClaimedQuestion(TypedDict):
+class ClaimedQuestion(DTO):
     attempt: ProcessingAttempt
     raw_question: str
-    corpus_generation: int
+    corpus_generation: NonNegativeInt
 
 
-class SourceLocator(TypedDict, total=False):
-    page: int
-    section: str
+class SourceLocator(DTO):
+    page: PositiveId | None = None
+    section: NonEmptyText | None = None
 
 
-class SourceRef(TypedDict):
+class SourceRef(DTO):
     chunk_id: UUID
     document_id: UUID
     revision_id: UUID
-    source_name: str
+    source_name: NonEmptyText
     locator: SourceLocator | None
     source_url: str | None
 
 
 class SearchFragment(SourceRef):
-    text: str
+    text: NonEmptyText
 
 
-class RagResult(TypedDict):
-    answer_text: str
+class RagResult(DTO):
+    answer_text: NonEmptyText
     sources: list[SourceRef]
 ~~~
 
@@ -75,34 +81,38 @@ class RagResult(TypedDict):
 ## Исходы шагов
 
 ~~~python
-class AllowedQuestion(TypedDict):
+from pydantic import AwareDatetime, Field
+from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
+from dataclasses import dataclass
+
+class AllowedQuestion(DTO):
     kind: Literal["allowed"]
-    normalized_question: str
+    normalized_question: NonEmptyText
 
 
-class RejectedQuestion(TypedDict):
+class RejectedQuestion(DTO):
     kind: Literal["blocked", "invalid_input"]
 
 
-class DetectorUnavailable(TypedDict):
+class DetectorUnavailable(DTO):
     kind: Literal["detector_unavailable"]
     retryable: bool
 
 
-GuardrailsResult = AllowedQuestion | RejectedQuestion | DetectorUnavailable
+GuardrailsResult = Annotated[AllowedQuestion | RejectedQuestion | DetectorUnavailable, Field(discriminator="kind")]
 
 
-class GeneratedAnswer(TypedDict):
+class GeneratedAnswer(DTO):
     kind: Literal["answered"]
-    answer_text: str
-    cited_chunk_ids: list[UUID]
+    answer_text: NonEmptyText
+    cited_chunk_ids: Annotated[list[UUID], Field(min_length=1)]
 
 
-class InsufficientEvidence(TypedDict):
+class InsufficientEvidence(DTO):
     kind: Literal["insufficient_evidence"]
 
 
-GenerationResult = GeneratedAnswer | InsufficientEvidence
+GenerationResult = Annotated[GeneratedAnswer | InsufficientEvidence, Field(discriminator="kind")]
 
 
 class StepError(Exception):

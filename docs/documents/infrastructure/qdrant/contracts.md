@@ -1,5 +1,5 @@
 ---
-title: "Контракты Qdrant и эмбеддингов"
+title: "Контракты Qdrant"
 sidebar_position: 2
 toc_max_heading_level: 2
 ---
@@ -8,33 +8,9 @@ toc_max_heading_level: 2
 Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
 :::
 
-При сбое модели, Qdrant или несовместимой схеме адаптер поднимает `StepError(code, retryable)`. [Схема точки и запуск](./index.md).
+[Правила DTO и Pydantic](../../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
 
-## <span className="operation-badge operation-badge--async">ASYNC</span> `embed_texts` {#embed-texts}
-
-~~~python
-async def embed_texts(texts: Sequence[str]) -> list[list[float]]: ...
-~~~
-
-**Кто вызывает.** Searcher для вопроса и Ingestion Worker для текстов чанков.
-
-### Что принимает
-
-| Параметр | Тип | Зачем нужен | Пример |
-| --- | --- | --- | --- |
-| `texts` | `Sequence[str]` | Тексты для кодирования одной версией модели. | `["Где инструкция по установке?"]` |
-
-### Что отдаёт
-
-**Формат.** Список плотных векторов. Один вектор на каждый текст, в том же порядке.
-
-| Поле или значение | Тип | Зачем нужно | Пример |
-| --- | --- | --- | --- |
-| `return` | `list[list[float]]` | Координаты эмбеддингов. Длина вектора соответствует выбранной модели. | `[[0.15, -0.23, 0.41, ...]]` |
-
-### Правила и ошибки
-
-Searcher передаёт первый вектор в `find_chunks`. Worker сопоставляет векторы и чанки по позиции.
+При сбое Qdrant или несовместимой схеме адаптер поднимает `StepError(code, retryable)`. [Схема точки и запуск](./index.md). Эмбеддинги вычисляет [Model Gateway](../../model-gateway/entrypoints.md#embed-texts); этот адаптер получает готовые векторы.
 
 ## <span className="operation-badge operation-badge--vec">VEC</span> `find_chunks` {#find-chunks}
 
@@ -55,7 +31,7 @@ async def find_chunks(query: str, query_vector: Sequence[float], revision_ids: f
 
 ### Что отдаёт
 
-**Формат.** Список словарей Python `QdrantHit` в порядке поискового профиля. `[]` при пустом наборе редакций или отсутствии совпадений.
+**Формат.** Список объектов Pydantic `QdrantHit` в порядке поискового профиля. `[]` при пустом наборе редакций или отсутствии совпадений.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -150,12 +126,16 @@ async def delete_revision_points(revision_id: UUID) -> None: ...
 ## DTO
 
 ~~~python
+from pydantic import AwareDatetime, Field
+from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
+from dataclasses import dataclass
+
 class ChunkPoint(SearchFragment):
-    chunk_no: int
+    chunk_no: NonNegativeInt
     dense: list[float]
 
 
-class QdrantHit(TypedDict):
+class QdrantHit(DTO):
     fragment: SearchFragment
     score: float
 ~~~

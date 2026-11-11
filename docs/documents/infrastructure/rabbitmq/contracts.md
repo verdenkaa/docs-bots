@@ -8,6 +8,8 @@ toc_max_heading_level: 2
 Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
 :::
 
+[Правила DTO и Pydantic](../../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
+
 [Формат сообщений](./index.md#структура-сообщения) · [Функции outbox](../postgresql/outbox.md).
 
 ## <span className="operation-badge operation-badge--task">TASK</span> `relay_outbox_batch` {#relay-outbox-batch}
@@ -34,7 +36,7 @@ async def relay_outbox_batch(limit: int) -> int: ...
 
 ### Правила и ошибки
 
-Получает `ReadyOutboxRow` через `list_ready_outbox`. Для каждой строки передаёт `row["notice"]` в `publish_notice`, затем вызывает `mark_outbox_published`. `row["available_at"]` использует для диагностики ожидания в outbox. При сбое текущая запись остаётся доступной для повторной обработки.
+Получает `ReadyOutboxRow` через `list_ready_outbox`. Для каждой строки передаёт `row.notice` в `publish_notice`, затем вызывает `mark_outbox_published`. `row.available_at` использует для диагностики ожидания в outbox. При сбое текущая запись остаётся доступной для повторной обработки.
 
 ## <span className="operation-badge operation-badge--task">TASK</span> `publish_notice` {#publish-notice}
 
@@ -80,22 +82,26 @@ async def publish_notice(notice: OutboxNotice) -> None: ...
 ## DTO
 
 ~~~python
+from pydantic import AwareDatetime, Field
+from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
+from dataclasses import dataclass
+
 WorkRoute = Literal["rag.questions", "rag.results", "ingestion.jobs"]
 
 
-class RagNotice(TypedDict):
+class RagNotice(DTO):
     message_id: UUID
     route: Literal["rag.questions", "rag.results"]
     event: RequestRef
 
 
-class IngestionNotice(TypedDict):
+class IngestionNotice(DTO):
     message_id: UUID
     route: Literal["ingestion.jobs"]
     event: JobRef
 
 
-OutboxNotice = RagNotice | IngestionNotice
+OutboxNotice = Annotated[RagNotice | IngestionNotice, Field(discriminator="route")]
 ~~~
 
 [DTO RAG](../../rag-core/contracts.md#очередь-и-готовый-результат) · [DTO Ingestion](../../ingestion/contracts.md#dto).

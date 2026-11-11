@@ -11,6 +11,18 @@ def emit_event(
     run_id: str,
     **fields: object,
 ) -> None:
+    """Вывести одно JSON-событие в stdout и сразу сбросить буфер.
+
+    Args:
+        component: Владелец операции, например rag_core.
+        operation: Имя операции пайплайна.
+        event: started или finished.
+        run_id: ID запуска операции для связи событий.
+        **fields: Поля диагностики по спецификации логов; без токенов и секретов.
+
+    Returns:
+        None. Поля должны быть JSON-сериализуемыми; схему функция не валидирует.
+    """
     record = {
         "schema_version": 1,
         "component": component,

@@ -13,6 +13,8 @@ sidebar_position: 1
 
 Guardrails — внутренний шаг Python в контейнере `core`. RAG Core вызывает его с исходным вопросом перед обращением к Exact Cache, Searcher и Answer Generator. Проверка относится к вопросу пользователя. Фрагменты документов поступают в Answer Generator как данные, отдельно от инструкций. [Сценарий RAG Core](../architecture/module-composition.md) · [OWASP о прямых и косвенных инъекциях](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)
 
+Guardrails проверяет ввод, вызывает [`classify_injection(raw_question, timeout_s=detector_timeout_s)`](../model-gateway/entrypoints.md#classify-injection), сверяет профиль и применяет выбранное правило: нативный класс либо оценку и настроенный порог. Это бизнес-решение Guardrails; Model Gateway отвечает за исполнение детектора. Бюджет проверки поступает из конфигурации Runtime. Любой `StepError` переводится в `detector_unavailable` с сохранением `retryable`; при этом поиск не запускается.
+
 Только исход `allowed` открывает путь к кешу, поиску и генерации. Сообщение для пользователя формирует RAG Core.
 
 ## Нормализация

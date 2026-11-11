@@ -16,7 +16,7 @@ Runtime в фоновом цикле вызывает [`relay_outbox_batch(limit
 ## Как работает одна пачка
 
 1. [`list_ready_outbox(limit)`](./postgresql/outbox.md#list-ready-outbox) возвращает готовые неопубликованные записи `ReadyOutboxRow`. Поле `notice` содержит `message_id`, маршрут и ссылку на запрос или задание. Из `available_at` Relay берёт начало интервала ожидания записи.
-2. Для каждой записи Relay вызывает [`publish_notice(row["notice"])`](./rabbitmq/contracts.md#publish-notice). Адаптер RabbitMQ ждёт подтверждения брокера и проверяет, что сообщение маршрутизировано в очередь.
+2. Для каждой записи Relay вызывает [`publish_notice(row.notice)`](./rabbitmq/contracts.md#publish-notice). Адаптер RabbitMQ ждёт подтверждения брокера и проверяет, что сообщение маршрутизировано в очередь.
 3. После успеха Relay вызывает [`mark_outbox_published(message_id)`](./postgresql/outbox.md#mark-outbox-published), чтобы записать `published_at`. Эта отметка означает публикацию. Завершение работы фиксирует получатель.
 
 ## Кто отвечает за сбои

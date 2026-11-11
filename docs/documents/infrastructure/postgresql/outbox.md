@@ -26,7 +26,7 @@ async def list_ready_outbox(limit: int) -> list[ReadyOutboxRow]: ...
 
 ### Что отдаёт
 
-**Формат.** Список словарей Python `ReadyOutboxRow`. `[]` допустим.
+**Формат.** Список объектов Pydantic `ReadyOutboxRow`. `[]` допустим.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -94,7 +94,11 @@ async def recover_pending_work(route: WorkRoute, limit: int) -> int: ...
 ## DTO
 
 ~~~python
-class ReadyOutboxRow(TypedDict):
+from pydantic import AwareDatetime, Field
+from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
+from dataclasses import dataclass
+
+class ReadyOutboxRow(DTO):
     notice: OutboxNotice
-    available_at: datetime
+    available_at: AwareDatetime
 ~~~

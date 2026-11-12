@@ -28,7 +28,7 @@ async def register_revision(revision_id: UUID, document_id: UUID | None, staging
 
 ### Что отдаёт
 
-**Формат.** Словарь Python `AcceptedUpload` или `None`.
+**Формат.** Объект Pydantic `AcceptedUpload` или `None`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -57,7 +57,7 @@ async def claim_ingestion_job(job_id: UUID) -> ClaimedIngestionJob | None: ...
 
 ### Что отдаёт
 
-**Формат.** Словарь Python `ClaimedIngestionJob` или `None`.
+**Формат.** Объект Pydantic `ClaimedIngestionJob` или `None`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |

@@ -28,7 +28,7 @@ async def read_cached_answer(query: str) -> CacheRead | None: ...
 
 ### Что отдаёт
 
-**Формат.** Словарь Python `CacheRead` или `None`.
+**Формат.** Объект Pydantic `CacheRead` или `None`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |

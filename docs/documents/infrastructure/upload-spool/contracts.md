@@ -56,7 +56,7 @@ async def open_staged_upload(staging_ref: str) -> StagedUpload | None: ...
 
 ### Что отдаёт
 
-**Формат.** Словарь Python `StagedUpload` или `None`.
+**Формат.** Объект Pydantic `StagedUpload` или `None`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |

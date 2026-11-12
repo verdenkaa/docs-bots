@@ -26,7 +26,7 @@ async def claim_question(request_id: int) -> ClaimedQuestion | None: ...
 
 ### Что отдаёт
 
-**Формат.** Словарь Python `ClaimedQuestion` или `None`.
+**Формат.** Объект Pydantic `ClaimedQuestion` или `None`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |

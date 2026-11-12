@@ -29,7 +29,7 @@ async def get_answer(query: str, corpus_generation: int) -> RagResult | None: ..
 
 ### Что отдаёт
 
-**Формат.** Словарь Python `RagResult` или `None` при промахе, несовпадении поколения или сбое Redis.
+**Формат.** Объект Pydantic `RagResult` или `None` при промахе, несовпадении поколения или сбое Redis.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |

@@ -29,7 +29,7 @@ async def search(query: str, revision_ids: frozenset[UUID]) -> list[SearchFragme
 
 ### Что отдаёт
 
-**Формат.** Список Python из словарей `SearchFragment`, отсортированных по релевантности. `[]` означает, что кандидатов нет. `[]` в колонке поля обозначает элемент списка.
+**Формат.** Список объектов Pydantic `SearchFragment`, отсортированных по релевантности. `[]` означает, что кандидатов нет. `[]` в колонке поля обозначает элемент списка.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -46,6 +46,8 @@ async def search(query: str, revision_ids: frozenset[UUID]) -> list[SearchFragme
 При пустом наборе редакций возвращает `[]` без обращения к моделям и Qdrant. Модельные операции выполняет через Model Gateway: `embed_texts` даёт `EmbeddingResult`, опциональный `rerank` — `RerankResult`; Searcher проверяет профили и возвращает Core только фрагменты. При сбое поднимает `StepError(code, retryable)`. [DTO фрагмента](../rag-core/contracts.md#общие-dto) · [Конвейер](./pipeline.md).
 
 ## Пример полного результата
+
+Ниже — данные для валидации; внутри Python Searcher возвращает список объектов `SearchFragment`. [Правила DTO](../faq/dto.md).
 
 ~~~python
 [

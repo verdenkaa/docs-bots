@@ -28,7 +28,7 @@ async def register_question(update_id: int, chat_id: int, question_text: str) ->
 
 ### Что отдаёт
 
-**Формат.** Словарь Python `RegisteredQuestion` или `None`.
+**Формат.** Объект Pydantic `RegisteredQuestion` или `None`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
@@ -56,7 +56,7 @@ async def claim_delivery(request_id: int) -> ClaimedDelivery | None: ...
 
 ### Что отдаёт
 
-**Формат.** Словарь Python `ClaimedDelivery` или `None`.
+**Формат.** Объект Pydantic `ClaimedDelivery` или `None`.
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |

@@ -27,12 +27,19 @@ sidebar_position: 2
 4. Результат `accepted` содержит `document_id` для будущего обновления и `job_id` для диагностики. На этом этапе задание принято, публикация ещё впереди. Разбор файла и решение о пригодности текста выполняет Worker.
 
 ~~~python
-result = await accept_upload({
-    "content": file_stream,  # AsyncIterable[bytes] от адаптера
-    "source": {"filename": "Руководство.pdf", "source_url": None},
-    "document_id": None,
-})
+from rag.ingestion.contracts import UploadInput, UploadSource
+from rag.ingestion.gateway import accept_upload
+
+result = await accept_upload(
+    UploadInput(
+        content=file_stream,
+        source=UploadSource(filename="Руководство.pdf", source_url=None),
+        document_id=None,
+    )
+)
 ~~~
+
+`file_stream` предоставляет адаптер как `AsyncIterable[bytes]`. `UploadInput` — технический вход Python: поток не сериализуется в очередь, а сигнатура функции сама не преобразует словарь в объект. [Правила DTO](../faq/dto.md#потоки-и-ошибки).
 
 ## Что делать при сбое приёма
 

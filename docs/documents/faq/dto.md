@@ -34,6 +34,24 @@ decision = guardrails_adapter.validate_json('{"kind": "blocked"}')
 
 Примеры словарей в таблицах контрактов показывают данные для валидации/JSON. Возвращаемое значение внутри Python — указанный объект DTO, список объектов либо другой явно заданный тип.
 
+## База и ограничения
+
+Общая база и именованные ограничения определены в `app/rag/dto.py`. Этот блок также сверяется с кодом; ограничения применяются ко всем наследующим DTO.
+
+~~~python
+from typing import Annotated
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+
+class DTO(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", allow_inf_nan=False)
+
+
+PositiveId = Annotated[int, Field(gt=0)]
+NonNegativeInt = Annotated[int, Field(ge=0)]
+NonEmptyText = Annotated[str, StringConstraints(min_length=1, pattern=r"\S")]
+~~~
+
 ## Что проверяем
 
 - `strict=True`: не превращаем строку `"1042"` или `True` в числовой ID. JSON UUID/дат читаем через JSON-метод, а не через `json.loads` с последующей строгой проверкой Python-строк.
@@ -60,6 +78,8 @@ python -m pip install -c requirements.lock -e .
 python -m unittest discover -s tests -v
 ~~~
 
-`tests/test_contracts.py` проверяет валидацию, сериализацию и передачу доступных данных по реальным сигнатурам пути вопроса, коротких веток и индексации. Возвраты зависимостей заданы тестовыми примерами: это проверка совместимости контрактов, а не работающий RAG. [Порядок вызовов](../rag-core/flow.md#model-calls).
+`tests/test_contracts.py` проверяет валидацию, сериализацию и совместимость аргументов с реальными сигнатурами пути вопроса, коротких веток и индексации. Вспомогательная `validate_call_arguments()` не исполняет обработчики; возвраты зависимостей заданы тестовыми примерами. Это проверка совместимости контрактов, а не работающий RAG. [Порядок вызовов](../rag-core/flow.md#model-calls).
+
+`tests/test_documented_contracts.py` сверяет полные наборы сигнатур, DTO, технических dataclass и именованных типов с Python-блоками действующей документации. Документ-владелец указан в `Contracts: docs/documents/...md.` в docstring модуля; общая база `rag.dto` сверяется с этой страницей. Проверяются defaults, типы, ограничения, конфигурация и валидаторы; пояснения и `Field(description=...)` могут отличаться. Исторические страницы `drafts/` исключены. Примеры разбираются как AST без исполнения; намеренные расхождения проверяются только в памяти.
 
 Основа: [строгая валидация](https://docs.pydantic.dev/latest/concepts/strict_mode/), [дискриминируемые варианты](https://docs.pydantic.dev/latest/concepts/unions/#discriminated-unions).

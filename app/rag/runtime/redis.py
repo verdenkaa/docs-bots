@@ -9,6 +9,10 @@ from rag.dto import DTO, NonNegativeInt
 from rag.contracts import RagResult
 
 
+class CacheUnavailable(Exception):
+    """Операция Redis недоступна; Exact Cache допускает работу без кеша."""
+
+
 class CachedAnswer(RagResult):
     """Ответ Exact Cache с поколением корпуса для проверки актуальности."""
 
@@ -36,6 +40,9 @@ async def read_cached_answer(query: str) -> CacheRead | None:
 
     Returns:
         CacheRead либо None, если ключ отсутствует или данные некорректны.
+
+    Raises:
+        CacheUnavailable: Redis недоступен или превышен таймаут операции.
     """
     raise NotImplementedError
 
@@ -51,6 +58,9 @@ async def delete_cached_answer_if_unchanged(query: str, compare_token: bytes) ->
 
     Returns:
         True — удалено; False — отсутствует или изменилось после чтения.
+
+    Raises:
+        CacheUnavailable: Redis недоступен или превышен таймаут операции.
     """
     raise NotImplementedError
 
@@ -66,5 +76,8 @@ async def write_cached_answer_if_not_older(query: str, value: CachedAnswer) -> b
 
     Returns:
         True — записано; False — в ключе уже более новое поколение.
+
+    Raises:
+        CacheUnavailable: Redis недоступен или превышен таймаут операции.
     """
     raise NotImplementedError

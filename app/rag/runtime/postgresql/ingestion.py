@@ -86,6 +86,8 @@ async def begin_revision_write(attempt: IngestionAttempt, expected_chunk_count: 
 
     Raises:
         StorageError: БД недоступна или исход коммита неизвестен.
+        StepError: Код chunk_count_mismatch, retryable=False, если число
+            подготовленных чанков отличается от сохранённого.
     """
     raise NotImplementedError
 

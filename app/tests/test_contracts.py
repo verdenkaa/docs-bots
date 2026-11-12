@@ -15,6 +15,7 @@ from collections.abc import AsyncIterable
 from rag.contracts import (
     AllowedQuestion, ClaimedQuestion, GeneratedAnswer, GuardrailsResult,
     ProcessingAttempt, RagResult, RejectedQuestion, RequestRef, SourceRef,
+    StepError, StorageError,
 )
 from rag.guardrails.entrypoints import check_question
 from rag.ingestion.contracts import IngestionAttempt, JobRef, PreparedChunk, StagedUpload, UploadSource, UploadInput
@@ -31,8 +32,8 @@ from rag.rag_core.answer_generator import generate_answer
 from rag.rag_core.exact_cache import get_answer
 from rag.runtime.postgresql import ingestion as pg_ingestion, rag_core as pg_core
 from rag.runtime.qdrant import ChunkPoint, QdrantHit, find_chunks, write_revision_points
-from rag.runtime.rabbitmq import OutboxNotice, RagNotice, IngestionNotice
-from rag.runtime.redis import CachedAnswer
+from rag.runtime.rabbitmq import BrokerPublishError, OutboxNotice, RagNotice, IngestionNotice
+from rag.runtime.redis import CachedAnswer, CacheUnavailable
 from rag.searcher.entrypoints import search
 
 
@@ -51,6 +52,20 @@ class ContractTests(unittest.TestCase):
     def setUp(self):
         self.attempt = ProcessingAttempt(request_id=1, attempt_no=1, deadline_at=datetime.now(timezone.utc))
         self.revision = uuid4()
+
+    def test_public_exceptions_are_importable(self):
+        for error_type in (StepError, StorageError, BrokerPublishError, CacheUnavailable):
+            with self.subTest(error_type=error_type.__name__):
+                self.assertTrue(inspect.isclass(error_type))
+                self.assertTrue(issubclass(error_type, Exception))
+
+    def test_step_error_preserves_retry_contract(self):
+        for retryable in (False, True):
+            with self.subTest(retryable=retryable):
+                error = StepError("chunk_count_mismatch", retryable=retryable)
+                self.assertEqual(error.code, "chunk_count_mismatch")
+                self.assertIs(error.retryable, retryable)
+                self.assertEqual(str(error), "chunk_count_mismatch")
 
     def test_question_trace(self):
         envelope = RagNotice(message_id=uuid4(), route="rag.questions", event=RequestRef(request_id=1))

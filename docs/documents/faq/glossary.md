@@ -186,7 +186,7 @@ sidebar_position: 1.1
 | `PendingRevisionWrite` / `RevisionManifest` / `StagingCleanup` | Ссылка на незавершённую запись / ожидаемый состав редакции / ссылка на загрузку для уборки. | [Индексация](../infrastructure/postgresql/ingestion.md#dto) · [Очистка](../infrastructure/postgresql/cleanup.md#dto) |
 | `StepError(code, retryable)` | Технический сбой шага с кодом и признаком возможности повтора. | [Общие ошибки](../rag-core/contracts.md#исходы-шагов) |
 | `StorageError` | Сбой PostgreSQL или неизвестный коммит; в адаптере временного тома — ошибка доступа к нему. | [Общие ошибки](../rag-core/contracts.md#исходы-шагов) |
-| `CacheUnavailable` / `BrokerPublishError` | Ошибка адаптера Redis / ошибка или неизвестный исход публикации в RabbitMQ. | [Redis](../infrastructure/redis/contracts.md) · [RabbitMQ](../infrastructure/rabbitmq/contracts.md#publish-notice) |
+| `CacheUnavailable` / `BrokerPublishError` | Ошибка доступности или таймаут Redis (`rag.runtime.redis.CacheUnavailable`) / ошибка или неизвестный исход публикации в RabbitMQ. | [Redis](../infrastructure/redis/contracts.md#ошибка-доступности) · [RabbitMQ](../infrastructure/rabbitmq/contracts.md#publish-notice) |
 
 ## Telegram, инфраструктура и запуск {#runtime}
 

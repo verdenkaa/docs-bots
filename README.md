@@ -9,3 +9,12 @@ Telegram-бот, который отвечает на вопросы по заг
 | [`docs/`](docs/README.md) | Сайт документации на Docusaurus. Начните с [архитектуры MVP](docs/documents/architecture/index.md). |
 
 Для запуска стенда откройте `container-manager\manage.bat` на Windows или выполните `sh container-manager/manage.sh` на Linux/macOS. В меню выберите `2`, чтобы поднять инфраструктуру и каркас приложения.
+
+## Автоматические проверки
+
+[GitHub Actions CI](.github/workflows/ci.yml) запускается при push в любую ветку, включая `main`, и при открытии, обновлении или повторном открытии pull request. Доступен и ручной запуск из вкладки Actions. Фильтров по изменённым файлам нет: каждый запуск проверяет приложение и сайт документации.
+
+- **Python tests**: Python 3.12, установка проекта с `app/requirements.lock`, проверка зависимостей и `unittest`.
+- **Documentation tests and build**: Node.js 24, установка через `npm ci`, тесты сайта и production-сборка документации.
+
+Результаты видны в Checks pull request. Чтобы запретить слияние при сбое, в правилах целевой ветки GitHub включите **Require status checks to pass** и выберите обе проверки после их первого запуска. Workflow выполняет проверки без деплоя; публикация документации описана в [`docs/README.md`](docs/README.md).

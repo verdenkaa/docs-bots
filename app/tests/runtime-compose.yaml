@@ -1,0 +1,73 @@
+name: rag-runtime-tests
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: runtime_test
+      POSTGRES_USER: runtime_test
+      POSTGRES_PASSWORD: isolated-test-password
+    healthcheck:
+      test: [CMD, pg_isready, -U, runtime_test, -d, runtime_test]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  rabbitmq:
+    image: rabbitmq:4.1-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: runtime_test
+      RABBITMQ_DEFAULT_PASS: isolated-test-password
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, ping]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+  s3:
+    image: rustfs/rustfs:1.0.5
+    environment:
+      RUSTFS_ACCESS_KEY: runtime_test
+      RUSTFS_SECRET_KEY: isolated-test-password
+      RUSTFS_VOLUMES: /data
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:9000/health/ready]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  runner:
+    profiles: [test]
+    image: localhost/rag-runtime-tests:local
+    build:
+      context: ..
+      target: core
+    working_dir: /workspace/app
+    command: [python, -m, unittest, discover, -s, tests, -v]
+    environment:
+      RUN_RUNTIME_INTEGRATION: "1"
+      PGHOST: postgres
+      PGDATABASE: runtime_test
+      PGUSER: runtime_test
+      PGPASSWORD: isolated-test-password
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: runtime_test
+      RABBITMQ_PASSWORD: isolated-test-password
+      QDRANT_URL: http://qdrant:6333
+      S3_ENDPOINT_URL: http://s3:9000
+      S3_ACCESS_KEY: runtime_test
+      S3_SECRET_KEY: isolated-test-password
+      RAG_EMBEDDING_PROFILE: runtime-test-v1
+      RAG_EMBEDDING_DIMENSIONS: "3"
+      WORKER_SPOOL_DIR: /tmp/runtime-spool
+    volumes:
+      - ../:/workspace/app:ro
+      - ../../docs/documents:/workspace/docs/documents:ro

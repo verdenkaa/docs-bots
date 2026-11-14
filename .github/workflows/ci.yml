@@ -42,6 +42,27 @@ jobs:
         working-directory: container-manager
         run: python -m unittest discover -s tests -v
 
+  runtime-integration:
+    name: Runtime integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Start isolated infrastructure
+        run: docker compose -p rag-runtime-tests -f app/tests/runtime-compose.yaml up -d --wait
+      - name: Build test runner
+        run: docker compose -p rag-runtime-tests -f app/tests/runtime-compose.yaml build runner
+      - name: Run tests against real services
+        run: docker compose -p rag-runtime-tests -f app/tests/runtime-compose.yaml run --rm --no-deps -T runner
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose -p rag-runtime-tests -f app/tests/runtime-compose.yaml logs --tail 100
+      - name: Stop isolated infrastructure
+        if: always()
+        run: docker compose -p rag-runtime-tests -f app/tests/runtime-compose.yaml down
+
   docs-tests:
     name: Documentation tests and build
     runs-on: ubuntu-latest

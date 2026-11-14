@@ -1,3 +1,4 @@
+"""Contracts: docs/documents/telegram/module/http-adapter-entrypoints.md."""
 import logging
 
 from fastapi import APIRouter, Response

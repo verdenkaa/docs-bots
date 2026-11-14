@@ -1,10 +1,11 @@
+"""Contracts: docs/documents/telegram/module/http-adapter-entrypoints.md."""
 import hmac
 import json
 import logging
 
 from fastapi import APIRouter, Request, Response
 
-from rag.rag_api.config import WEBHOOK_SECRET
+from rag.rag_api import config
 from rag.rag_api.entrypoints import handle_telegram_update
 
 
@@ -20,7 +21,7 @@ async def telegram_webhook(request: Request) -> Response:
         "X-Telegram-Bot-Api-Secret-Token", ""
     )
 
-    if not hmac.compare_digest(secret, WEBHOOK_SECRET):
+    if not hmac.compare_digest(secret, config.WEBHOOK_SECRET):
         return Response(status_code=403)
 
     # Чтение и проверка сообщения

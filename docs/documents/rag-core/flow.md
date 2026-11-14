@@ -8,7 +8,7 @@ toc_max_heading_level: 2
 
 | Шаг | Вызов и доступные параметры | Результат / следующий путь |
 | --- | --- | --- |
-| 0. Приём | RAG API читает from.id, chat, текст/photo/caption и время. `register_question(NewQuestion(...))` проверяет допуск, повтор и слот. | accepted даёт request_id и outbox RequestRef. Управление Support, busy и denied не создают вопрос. |
+| 0. Приём | RAG API читает from.id, текущий from.username, chat, текст/photo/caption и время. `register_question(NewQuestion(...))` проверяет допуск, повтор и слот. | accepted даёт request_id и outbox RequestRef. Управление Support, busy и denied не создают вопрос. |
 | 1. Попытка | `claim_question(event.request_id)` из rag.questions. | ClaimedQuestion: input, prepared_text, received_at, attempt и закреплённое поколение. None → ACK. |
 | 2. Текст | TextQuestion.text используется напрямую. ImageQuestion при prepared_text=None → `get_question_image(file_id)` → `recognize_text(image, timeout_s=...)`. | Подпись + OCR дают raw_question; непустой результат сохраняется save_prepared_question до проверки. Пустой текст без подписи → NoticeOutcome(no_text). На повторе prepared_text уже доступен. |
 | 3. Допуск и тема | `load_revision_ids(corpus_generation)` до Guardrails. `check_question(raw_question, revision_ids)`. | allowed даёт query. blocked/invalid_input → NoticeOutcome. out_of_scope → SupportOutcome(out_of_scope). Если редакций нет, после базовых проверок → SupportOutcome(no_evidence), без Qdrant/генерации. |

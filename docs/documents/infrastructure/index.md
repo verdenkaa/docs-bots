@@ -19,7 +19,7 @@ Runtime конфигурирует [Model Gateway](../model-gateway/index.md) и
 | [Qdrant](./qdrant/index.md) | Отдельные наборы чанков и примеров темы. [Функции поиска, записи и удаления точек](./qdrant/contracts.md). |
 | [Redis](./redis/index.md) | Кеш готовых ответов и [функции адаптера Exact Cache](./redis/contracts.md). |
 | [S3 · изображения](./s3.md) | Запись изображений Ingestion через `put_image`, чтение для доставки RAG API через `get_image`. |
-| [Telegram-медиа и источники](./media.md) | Скачивание входящего изображения для OCR и метаданные HTML-заглушки. |
+| [Telegram-медиа и источники](./media.md) | [get_question_image](./media.md#get-question-image) для OCR, [prepare_telegram_photo](./media.md#prepare-telegram-photo) перед sendPhoto и [load_source_metadata](./media.md#load-source-metadata) для HTML-заглушки. |
 | [Временные файлы загрузки](./upload-spool/index.md) | Рабочий том готового Markdown и PreparedRevision; [функции записи, чтения и очистки](./upload-spool/contracts.md). |
 
 request_id связывает вопрос и бизнес-итог, delivery_id — самостоятельную доставку; одна регистрация может породить несколько уведомлений. Идентификатор задания связывает загрузку, редакцию и индексацию. PostgreSQL хранит их состояние, RabbitMQ переносит уведомления. [Владение данными и версии](../architecture/data-and-versions.md)

@@ -4,6 +4,11 @@ sidebar_position: 2
 toc_max_heading_level: 2
 ---
 
+:::warning Незавершённый контракт резервного текста
+При переполнении build_delivery_parts уже может подготовить резервный текст, но TextPart пока не хранит признак length_fallback. До реализации нужно согласовать передачу этого признака через сохранённый план в Sent и метрики; распознавание по тексту не является контрактом. Этот пробел не закрыт изменениями callback, допуска и тикетов.
+:::
+
+
 [DTO API](./contracts.md) · [Общие DTO](../../rag-core/contracts.md) · [Путь вопроса](../../rag-core/flow.md). Все результаты ниже — объекты DTO внутри Python; JSON возникает только на внешней границе.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `handle_telegram_update` {#handle-telegram-update}
@@ -19,6 +24,8 @@ async def handle_telegram_update(update: Mapping[str, object]) -> IntakeResult: 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
 | update | Mapping[str, object] | Декодированный Telegram Update. | &#123;"update_id":10001,"message":&#123;...&#125;&#125; |
+| message.from.username / callback_query.from.username | str или отсутствует | Текущее имя для допуска, нормализуется в lowercase без @. | employee_name |
+| callback_query.message.message_id | int | Сообщение с кнопкой для сверки с квитанцией. | 77 |
 | message.from.id | int | Идентичность сотрудника. | 123456789 |
 | callback_query.from.id | int | Идентичность сотрудника. | 123456789 |
 | message.chat | объект | Только type=private; ID назначения. | &#123;"id":123456789,"type":"private"&#125; |
@@ -41,7 +48,7 @@ async def handle_telegram_update(update: Mapping[str, object]) -> IntakeResult: 
 
 ### Правила и ошибки
 
-Проверяет личный чат и Access, разбирает текст/изображение либо действие Support. Время первого приёма берёт в RAG API, не из произвольного поля клиента. Для поддерживаемого вопроса вызывает register_question(NewQuestion(...)); repository сначала проверяет ledger повтора и лишь для нового вопроса — текущий допуск. Предварительный check_access не должен заменить прежний исход уже принятого update на denied. Для нового управления вызывает handle_support_action с текущей проверкой прав. Для непригодного/неподдерживаемого update вызывает record_update, чтобы сохранить пропуск и возможное уведомление без вопроса. Глобальная перегрузка и StorageError дают retry_later; занятость сотрудника — busy, не retry_later. Кнопку подтверждает коротким answerCallbackQuery через тот же Telegram-адаптер; его сбой не откатывает уже применённое действие.
+Проверяет личный чат и Access, разбирает текст/изображение либо действие Support. Время первого приёма берёт в RAG API, не из произвольного поля клиента. Для поддерживаемого вопроса вызывает register_question(NewQuestion(...)); repository сначала проверяет ledger повтора и лишь для нового вопроса — текущий допуск. Предварительный check_access не должен заменить прежний исход уже принятого update на denied. Для нового управления вызывает handle_support_action с текущей проверкой прав. Для непригодного/неподдерживаемого update вызывает record_update, чтобы сохранить пропуск и возможное уведомление без вопроса. Глобальная перегрузка и StorageError дают retry_later; занятость сотрудника — busy, не retry_later. Единственный владелец answerCallbackQuery — handle_telegram_update через Telegram-адаптер; webhook/polling второй раз не подтверждают кнопку; его сбой не откатывает уже применённое действие.
 
 ## <span className="operation-badge operation-badge--sub">SUB</span> `handle_rag_result` {#handle-rag-result}
 
@@ -124,7 +131,7 @@ async def send_answer(chat_id: int, part: DeliveryPart) -> SendResult: ...
 
 ### Правила и ошибки
 
-Для TextPart вызывает sendMessage с entities, без parse_mode. Для ImagePart получает [get_image(image_id)](../../infrastructure/s3.md#get-image) через `rag.runtime.s3` и отправляет файл sendPhoto без длинной подписи. Сбой S3 не отбрасывает уже доставленный текст. Учитывает общий/чатовый лимитер и retry_after, сам не запускает цикл повторов. Таймаут после возможной отправки даёт uncertain=True. При явном отклонении текста из-за длины допустима одна отправка «Ответ не помещается. Пожалуйста, задайте более узкий вопрос.»; успех отмечен length_fallback. Неизвестный исход исходной отправки не запускает этот fallback. [Bot API](https://core.telegram.org/bots/api#sendmessage).
+Для TextPart вызывает sendMessage с entities, без parse_mode. Для ImagePart получает [get_image(image_id)](../../infrastructure/s3.md#get-image), вызывает [prepare_telegram_photo](../../infrastructure/media.md#prepare-telegram-photo) и отправляет подготовленную JPEG-копию через sendPhoto без длинной подписи. Сбой S3 не отбрасывает уже доставленный текст. Учитывает общий/чатовый лимитер и retry_after, сам не запускает цикл повторов. Таймаут после возможной отправки даёт uncertain=True. При явном отклонении текста из-за длины допустима одна отправка «Ответ не помещается. Пожалуйста, задайте более узкий вопрос.»; успех отмечен length_fallback. Неизвестный исход исходной отправки не запускает этот fallback. [Bot API](https://core.telegram.org/bots/api#sendmessage).
 
 ## <span className="operation-badge operation-badge--task">TASK</span> `run_api_maintenance` {#run-api-maintenance}
 

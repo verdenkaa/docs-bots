@@ -7,6 +7,6 @@ RAG API работает в контейнере `core`: принимает Tele
 
 - [Устройство модуля](./module/index.md) — границы, входы и данные.
 - [Приём и доставка](./module/queue-processing.md) — очередь, повторы и ограничения.
-- [Доступ сотрудников](./module/access.md) — User ID, допуск и один активный вопрос.
+- [Доступ сотрудников](./module/access.md) — username для допуска, User ID для владельца и одного активного вопроса.
 - [Поддержка и тикеты](./module/support.md) — кнопки, автоматическая эскалация и ожидание.
 - [Точки входа](./module/entrypoints.md), [DTO](./module/contracts.md) и [HTTP-ручки](./endpoints/index.md) — целевые контракты; [функции компонентов](./module/service-entrypoints.md).

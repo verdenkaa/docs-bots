@@ -4,12 +4,13 @@ sidebar_position: 6
 toc_max_heading_level: 2
 ---
 
-Типы и поля: [DTO](./contracts.md). Техническая ошибка БД — StorageError. Чужой объект не раскрывается (NotFound), отсутствие полномочий — AccessDenied, неприменимое действие — Conflict. Web-адаптер отображает их в HTTP; Telegram получает безопасное пояснение.
+Типы и поля: [DTO](./contracts.md). Техническая ошибка БД — StorageError. Отсутствующий/ещё не созданный тикет — NotFound; отсутствие административных полномочий — AccessDenied; неприменимое действие — Conflict. Web-адаптер отображает их в HTTP; Telegram получает безопасное пояснение.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `check_access` {#check-access}
 
 ~~~python
-async def check_access(user_id: int) -> AccessRecord | None: ...
+async def check_access(username: str | None) -> AccessRecord | None:
+    ...
 ~~~
 
 **Кто вызывает.** Приём RAG API; использует Runtime.read_user_access.
@@ -18,7 +19,7 @@ async def check_access(user_id: int) -> AccessRecord | None: ...
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| user_id | int | Telegram from.id. | 123 |
+| username | str или None | Нормализованный Telegram from.username; None не допускается. | employee_name |
 
 ### Что отдаёт
 
@@ -26,7 +27,7 @@ async def check_access(user_id: int) -> AccessRecord | None: ...
 
 | Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| return | AccessRecord | Допущенный сотрудник и роль. | enabled=True |
+| return | AccessRecord | Допуск текущего username. | enabled=True |
 | return | None | Неизвестный/выключенный пользователь. | None |
 
 ### Правила и ошибки
@@ -45,8 +46,8 @@ async def set_user_access(actor: Principal, record: AccessRecord) -> AccessRecor
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Проверенный администратор. | role="admin" |
-| record | AccessRecord | Целевой сотрудник, допуск и роль. | user_id=123, enabled=True |
+| actor | Principal | Проверенный администратор. | login="admin" |
+| record | AccessRecord | Канонический username и enabled. | username="employee_name", enabled=True |
 
 ### Что отдаёт
 
@@ -54,11 +55,11 @@ async def set_user_access(actor: Principal, record: AccessRecord) -> AccessRecor
 
 | Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| return | AccessRecord | Сохранённое состояние сотрудника. | role="employee" |
+| return | AccessRecord | Сохранённое состояние сотрудника. | login="admin" |
 
 ### Правила и ошибки
 
-Проверяет admin, вызывает Runtime.write_user_access. Назначение первого администратора выполняется оператором развёртывания; открытого HTTP-bootstrap нет. Механизм входа не выбирается этим DTO. enabled=False запрещает новые вопросы; уже принятый request, его доставка и автоматическая эскалация завершаются. Изменение допуска не посылает отмену Core.
+Principal создаётся HTTP-адаптером только после проверки ADMIN_LOGIN/ADMIN_PASSWORD. Вызывает Runtime.write_user_access; допуск бота хранится по username, роли Telegram-пользователя отсутствуют. enabled=False запрещает новые вопросы; уже принятый request, его доставка и автоматическая эскалация завершаются. Изменение допуска не посылает отмену Core.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `handle_support_action` {#handle-support-action}
 
@@ -84,7 +85,7 @@ async def handle_support_action(command: SupportCommand) -> IntakeResult: ...
 
 ### Правила и ошибки
 
-Для start вычисляет check_at=received_at+10 минут, иначе None; вызывает Runtime.record_support_action. Offer без исходного успешного доставленного ответа лишь просит сначала задать вопрос. Чужой/устаревший callback не меняет case, но update подтверждается. Подтверждение не создаёт новый RAG-вопрос.
+Для callback передаёт origin и callback_message_id без потери; для текстовой просьбы origin=text, action=offer, callback_message_id=None. Для start вычисляет check_at=received_at+10 минут, иначе None; вызывает Runtime.record_support_action. Offer без исходного успешного доставленного ответа лишь просит сначала задать вопрос. Чужой/устаревший callback не меняет case, но update подтверждается. Подтверждение не создаёт новый RAG-вопрос.
 
 ## <span className="operation-badge operation-badge--task">TASK</span> `run_support_batch` {#run-support-batch}
 
@@ -124,7 +125,7 @@ async def list_tickets(actor: Principal, limit: int = 50) -> list[SupportCase]: 
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Проверенный пользователь/оператор. | role="employee" |
+| actor | Principal | Проверенный администратор. | login="admin" |
 | limit | int, 1..100 | Предел выдачи. | 50 |
 
 ### Что отдаёт
@@ -133,16 +134,17 @@ async def list_tickets(actor: Principal, limit: int = 50) -> list[SupportCase]: 
 
 | Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| return | list[SupportCase] | Только open/closed; employee видит свои, operator/admin — все. | [] |
+| return | list[SupportCase] | Только open/closed; список всех тикетов доступен только админ-панели. | [] |
 
 ### Правила и ошибки
 
-Фильтр прав применяется в Runtime до чтения/лимита. Waiting и cancelled не показываются как созданные тикеты.
+HTTP-адаптер проверяет статичный вход до чтения списка. Waiting и cancelled не показываются как созданные тикеты.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `get_ticket` {#get-ticket}
 
 ~~~python
-async def get_ticket(actor: Principal, case_id: UUID) -> TicketView: ...
+async def get_ticket(case_id: UUID) -> TicketView:
+    ...
 ~~~
 
 **Кто вызывает.** Web-страница тикета.
@@ -151,7 +153,6 @@ async def get_ticket(actor: Principal, case_id: UUID) -> TicketView: ...
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Проверенная личность. | role="employee" |
 | case_id | UUID | Идентификатор из URL. | UUID(...) |
 
 ### Что отдаёт
@@ -164,12 +165,13 @@ async def get_ticket(actor: Principal, case_id: UUID) -> TicketView: ...
 
 ### Правила и ошибки
 
-read_ticket проверяет владельца/операторскую роль. Минимальная история — один исходный вопрос с подготовленным текстом и реальным ответом, если он был; не весь диалог.
+read_ticket читает созданный тикет по публичной ссылке, без проверки владельца. Минимальная история — один исходный вопрос с подготовленным текстом и реальным ответом, если он был; не весь диалог.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `add_ticket_message` {#add-ticket-message}
 
 ~~~python
-async def add_ticket_message(actor: Principal, case_id: UUID, client_message_id: UUID, text: str) -> TicketMessage: ...
+async def add_ticket_message(actor: Principal | None, case_id: UUID, client_message_id: UUID, text: str) -> TicketMessage:
+    ...
 ~~~
 
 **Кто вызывает.** Web-форма разговора.
@@ -178,8 +180,8 @@ async def add_ticket_message(actor: Principal, case_id: UUID, client_message_id:
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Проверенный автор и тикет. | Principal(...), UUID(...) |
-| case_id | UUID | Проверенный автор и тикет. | Principal(...), UUID(...) |
+| actor | Principal или None | Проверенный оператор либо публичный посетитель. | None |
+| case_id | UUID | Тикет из ссылки. | UUID(...) |
 | client_message_id | UUID | Ключ повтора одного сообщения. | UUID(...) |
 | text | str, непустой | Текст реплики, не исполняется как HTML. | "Не открывается" |
 
@@ -193,7 +195,7 @@ async def add_ticket_message(actor: Principal, case_id: UUID, client_message_id:
 
 ### Правила и ошибки
 
-append_ticket_message проверяет доступ и open. Уникальность по case_id, author_id, client_message_id. Чужой тикет — NotFound, закрытый — Conflict. Поле author_role берётся из Principal.
+Публичный маршрут передаёт actor=None (visitor); административный — проверенный Principal (operator и author_login). Уникальный ключ (case_id,author_role,client_message_id). Сначала проверяется повтор: совпадающий текст возвращает прежнюю реплику даже после закрытия, другой текст — Conflict. Новая реплика требует open. Неизвестный/ещё не созданный тикет — NotFound. Роль и логин не принимаются из тела.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `close_ticket` {#close-ticket}
 
@@ -207,8 +209,8 @@ async def close_ticket(actor: Principal, case_id: UUID) -> SupportCase: ...
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Проверенный оператор и тикет. | role="operator" |
-| case_id | UUID | Проверенный оператор и тикет. | role="operator" |
+| actor | Principal | Проверенный администратор. | login="admin" |
+| case_id | UUID | Закрываемый тикет. | UUID(...) |
 
 ### Что отдаёт
 
@@ -220,7 +222,7 @@ async def close_ticket(actor: Principal, case_id: UUID) -> SupportCase: ...
 
 ### Правила и ошибки
 
-Runtime.close_ticket_record разрешает operator/admin. Закрытие не меняет историю и не означает автоматически, что ответ бота был успешен.
+Runtime.close_ticket_record требует Principal проверенного администратора. Закрытие не меняет историю и не означает автоматически, что ответ бота был успешен.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `get_metrics` {#get-metrics}
 
@@ -234,7 +236,7 @@ async def get_metrics(actor: Principal, from_at: datetime, to_at: datetime) -> M
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Проверенный admin. | role="admin" |
+| actor | Principal | Проверенный admin. | login="admin" |
 | from_at | UTC datetime | Полуоткрытый период, from_at &lt; to_at. | 12:00 |
 | to_at | UTC datetime | Полуоткрытый период, from_at &lt; to_at. | 13:00 |
 

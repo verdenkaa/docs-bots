@@ -9,13 +9,13 @@ from __future__ import annotations
 from rag.rag_api.contracts import AccessRecord, Principal
 
 
-async def check_access(user_id: int) -> AccessRecord | None:
+async def check_access(username: str | None) -> AccessRecord | None:
     """Прочитать действующий допуск сотрудника; сбой БД не даёт разрешение.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        user_id: Telegram from.id.
+        username: Нормализованный Telegram from.username; None не даёт допуск.
 
     Returns:
         AccessRecord или None.
@@ -24,13 +24,13 @@ async def check_access(user_id: int) -> AccessRecord | None:
 
 
 async def set_user_access(actor: Principal, record: AccessRecord) -> AccessRecord:
-    """Изменить допуск или роль сотрудника от имени проверенного администратора.
+    """Изменить допуск Telegram username от имени проверенного администратора.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         actor: Проверенный администратор.
-        record: Целевой сотрудник, допуск и роль.
+        record: Нормализованный username и enabled.
 
     Returns:
         AccessRecord.

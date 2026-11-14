@@ -46,3 +46,20 @@ async def load_source_metadata(document_id: UUID) -> SourceMetadata | None:
         SourceMetadata или None.
     """
     raise NotImplementedError
+
+
+async def prepare_telegram_photo(image: ImageContent) -> ImageContent:
+    """Подготовить копию изображения под ограничения Telegram sendPhoto.
+
+    Заглушка: преобразование пока не реализовано (NotImplementedError).
+    Runtime вне event loop нормализует ориентацию, RGB/JPEG, размеры,
+    пропорции и объём; S3-оригинал не изменяется. Непреобразуемый вход
+    даёт постоянный StepError до сетевой отправки.
+
+    Args:
+        image: Проверенные байты изображения, полученные через get_image.
+
+    Returns:
+        ImageContent с MIME image/jpeg и байтами, допустимыми для sendPhoto.
+    """
+    raise NotImplementedError

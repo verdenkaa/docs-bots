@@ -70,3 +70,30 @@ async def load_source_metadata(document_id: UUID) -> SourceMetadata | None: ...
 ### Правила и ошибки
 
 Читает PostgreSQL, не Qdrant и не оригинал. Очистка старых точек не удаляет метаданные источника. Адрес страницы строит RAG API, название не берётся из произвольной query-строки.
+
+## <span className="operation-badge operation-badge--async">ASYNC</span> `prepare_telegram_photo` {#prepare-telegram-photo}
+
+~~~python
+async def prepare_telegram_photo(image: ImageContent) -> ImageContent:
+    ...
+~~~
+
+**Кто вызывает.** RAG API.send_answer: get_image → prepare_telegram_photo → sendPhoto.
+
+### Что принимает
+
+| Параметр | Тип | Смысл |
+| --- | --- | --- |
+| image | ImageContent | Байты и проверенный MIME из S3. |
+
+### Что отдаёт
+
+ImageContent с MIME image/jpeg; это подготовленная копия, объект S3 и image_id не меняются.
+
+### Правила и ошибки
+
+Runtime декодирует изображение с лимитом памяти/пикселей, применяет ориентацию, переводит в RGB (прозрачность на белом фоне) и JPEG. Содержимое не обрезает: чрезмерно узкое/длинное изображение дополняет полями до отношения сторон не более 20; затем пропорционально уменьшает так, чтобы сумма ширины и высоты была не более 10000. Подбирает качество JPEG и при необходимости уменьшает размеры до объёма не более 10 000 000 байт. Итог повторно проверяется. Политика преобразования фиксируется конфигурацией Runtime; sendDocument не используется.
+
+CPU-работа выполняется вне event loop управляемым исполнителем в пределах срока попытки доставки. Неподдерживаемый/повреждённый или непреобразуемый вход — StepError(telegram_photo_invalid, False); временный отказ исполнителя — StepError с retryable=True. До успешного преобразования Telegram-вызова нет и uncertain=False. send_answer переводит эти ошибки в SendFailed; ранее подтверждённый текст не отправляется повторно. Байты копии существуют только в текущем вызове; повтор читает тот же объект S3 и применяет тот же профиль.
+
+[Ограничения Telegram sendPhoto](https://core.telegram.org/bots/api#sendphoto).

@@ -12,13 +12,13 @@ from uuid import UUID
 from rag.rag_api.contracts import AccessRecord, IntakeResult, MetricsSnapshot, Principal, SupportCase, SupportCommand, TicketMessage, TicketView
 
 
-async def read_user_access(user_id: int) -> AccessRecord | None:
+async def read_user_access(username: str | None) -> AccessRecord | None:
     """Прочитать текущую запись допуска, включая отключённого сотрудника.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        user_id: ID отправителя.
+        username: Нормализованный username или None.
 
     Returns:
         AccessRecord или None.
@@ -102,12 +102,12 @@ async def create_support_ticket(case_id: UUID, ticket_url: str) -> SupportCase:
 
 
 async def read_ticket_list(actor: Principal, limit: int) -> list[SupportCase]:
-    """Прочитать доступные пользователю тикеты, применив права до лимита.
+    """Прочитать тикеты для проверенного администратора.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        actor: Проверенный сотрудник/оператор.
+        actor: Проверенный администратор.
         limit: Предел выдачи.
 
     Returns:
@@ -116,13 +116,12 @@ async def read_ticket_list(actor: Principal, limit: int) -> list[SupportCase]:
     raise NotImplementedError
 
 
-async def read_ticket(actor: Principal, case_id: UUID) -> TicketView:
+async def read_ticket(case_id: UUID) -> TicketView:
     """Прочитать разрешённый тикет, контекст и сообщения.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        actor: Проверенный пользователь.
         case_id: Тикет.
 
     Returns:
@@ -131,13 +130,13 @@ async def read_ticket(actor: Principal, case_id: UUID) -> TicketView:
     raise NotImplementedError
 
 
-async def append_ticket_message(actor: Principal, case_id: UUID, client_message_id: UUID, text: str) -> TicketMessage:
+async def append_ticket_message(actor: Principal | None, case_id: UUID, client_message_id: UUID, text: str) -> TicketMessage:
     """Атомарно добавить реплику с ключом повтора в открытый доступный тикет.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        actor: Автор.
+        actor: None для посетителя либо проверенный администратор.
         case_id: Открытый тикет.
         client_message_id: Ключ повтора реплики.
         text: Содержимое, хранится как текст.
@@ -154,7 +153,7 @@ async def close_ticket_record(actor: Principal, case_id: UUID) -> SupportCase:
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        actor: Operator/admin.
+        actor: Проверенный администратор.
         case_id: Тикет.
 
     Returns:

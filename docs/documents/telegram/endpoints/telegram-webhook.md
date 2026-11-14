@@ -18,6 +18,8 @@ Content-Type: application/json, обязательный секрет в заг�
 | Поле | Тип / обязательность | Смысл / пример |
 | --- | --- | --- |
 | update_id | int, обязательно | 10001, дедупликация. |
+| message.from.username / callback_query.from.username | str или отсутствует | Имя для списка допуска; отсутствие означает denied новому действию. |
+| callback_query.message.message_id | int для callback | ID сообщения с кнопкой; передаётся в SupportCommand. |
 | message.from.id | int для сообщения | ID сотрудника. |
 | message.chat.id / type | int / строка | Личный чат, type=private. |
 | message.text | str для текста | Самостоятельный вопрос либо явная команда. |
@@ -33,7 +35,7 @@ Content-Type: application/json, обязательный секрет в заг�
 1. Проверить секрет, JSON и структуру update.
 2. Передать в handle_telegram_update. Он проверяет личный чат, допуск, повтор, вопрос либо управление.
 3. accepted/duplicate/handled/busy/denied/ignored подтверждаются после сохранённого решения. Retry_later требует повторной доставки; Core работает вне HTTP-запроса.
-4. Для callback транспорт отдельно вызывает answerCallbackQuery; это не HTTP-тело ответа webhook.
+4. answerCallbackQuery выполняет handle_telegram_update через общий Telegram-адаптер. Webhook не дублирует этот вызов; подтверждение кнопки не является HTTP-телом ответа webhook.
 
 ## Что отдаёт
 

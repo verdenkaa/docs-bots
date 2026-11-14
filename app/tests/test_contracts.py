@@ -161,7 +161,14 @@ class ContractTests(unittest.TestCase):
                     for annotation in get_type_hints(value, include_extras=True).values():
                         if annotation is UploadInput or get_origin(annotation) is AsyncIterable:
                             continue
-                        TypeAdapter(annotation)
+                        # HTTP framework objects are in-process resources, not JSON DTO.
+                        from fastapi import FastAPI, Request, Response
+                        from httpx import AsyncClient
+                        from pydantic import ConfigDict
+                        if annotation in (FastAPI, Request, Response, AsyncClient):
+                            TypeAdapter(annotation, config=ConfigDict(arbitrary_types_allowed=True))
+                        else:
+                            TypeAdapter(annotation)
 
 
 if __name__ == "__main__":

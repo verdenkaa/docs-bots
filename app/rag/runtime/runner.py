@@ -147,6 +147,12 @@ async def run_runtime(
     handler = handlers.get(component)
     if handler is not None and not _implemented(handler):
         raise StepError("business_handler_not_implemented", False)
+    if component == "questions":
+        from rag.guardrails.entrypoints import check_question
+        from rag.searcher.entrypoints import search
+
+        if not all(_implemented(step) for step in (check_question, search)):
+            raise StepError("business_handler_not_implemented", False)
     if component == "ingestion" and "RAG_WATCHDOG_FD" not in os.environ:
         raise StepError("worker_supervisor_required", False)
     stop = asyncio.Event()

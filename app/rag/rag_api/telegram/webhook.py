@@ -1,20 +1,16 @@
+"""Contracts: docs/documents/telegram/module/http-adapter-entrypoints.md."""
 import logging
 
 import httpx
 
-from rag.rag_api.config import (
-    TELEGRAM_API_URL,
-    WEBHOOK_BASE_URL,
-    WEBHOOK_PATH,
-    WEBHOOK_SECRET,
-)
+from rag.rag_api import config
 
 
 logger = logging.getLogger(__name__)
 
 
 async def telegram_api_request(client: httpx.AsyncClient, method: str, payload: dict | None = None,) -> dict:
-    response = await client.post(f"{TELEGRAM_API_URL}/{method}", json=payload or {})
+    response = await client.post(f"{config.TELEGRAM_API_URL}/{method}", json=payload or {})
 
     response.raise_for_status()
     result = response.json()
@@ -28,14 +24,14 @@ async def telegram_api_request(client: httpx.AsyncClient, method: str, payload: 
 
 
 async def register_webhook(client: httpx.AsyncClient,) -> None:
-    webhook_url = WEBHOOK_BASE_URL + WEBHOOK_PATH
+    webhook_url = config.WEBHOOK_BASE_URL + config.WEBHOOK_PATH
 
     await telegram_api_request(
         client,
         "setWebhook",
         {
             "url": webhook_url,
-            "secret_token": WEBHOOK_SECRET,
+            "secret_token": config.WEBHOOK_SECRET,
             "allowed_updates": ["message"],
             "drop_pending_updates": False,
         },

@@ -1,3 +1,4 @@
+"""Contracts: docs/documents/telegram/module/http-adapter-entrypoints.md."""
 import logging
 from contextlib import asynccontextmanager
 
@@ -17,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from rag.rag_api import config
+
+    config._get_values()
     async with httpx.AsyncClient(timeout=10.0) as client:
         # Регистрируем webhook при запуске
         await register_webhook(client)

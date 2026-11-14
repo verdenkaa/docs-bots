@@ -5,7 +5,7 @@ toc_max_heading_level: 2
 ---
 
 :::warning Что ещё уточнить
-Профиль проверен на трёх PDF кейса, их DOCX-копиях (пересобраны из PDF) и трёх небольших DOCX с подставными OCR/VLM: recognize_text и describe_image в Model Gateway пока заглушки, поэтому документ с картинками до их реализации не конвертируется. Оригинальные DOCX кейса из Word не проверялись. docling не входит в базовый образ `worker` (Alpine): без него отклоняются только PDF без тегов.
+Профиль проверен на трёх PDF кейса, их DOCX-копиях (пересобраны из PDF) и трёх небольших DOCX. Вызовы recognize_text и describe_image проверены через Model Gateway с тестовым провайдером; с настоящей VLM конвертер не запускался, качество описаний не оценивалось. Процессу Gateway нужны роли ocr и vision: без них документ с картинками получает технический отказ model_not_ready. Оригинальные DOCX кейса из Word не проверялись. docling не входит в базовый образ `worker` (Alpine): без него отклоняются только PDF без тегов.
 :::
 
 **[Контракт convert_document](./entrypoints.md#convert-document)** · [DTO](./contracts.md#dto)

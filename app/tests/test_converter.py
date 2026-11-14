@@ -81,7 +81,7 @@ def upload(data: bytes, filename: str, chunk: int = 1000) -> UploadInput:
         for start in range(0, len(data), chunk):
             yield data[start:start + chunk]
 
-    return UploadInput(content=stream(), source=UploadSource(filename=filename), document_id=None)
+    return UploadInput(content=stream(), source=UploadSource(filename=filename, access_level="employees"), document_id=None)
 
 
 class ConverterTests(unittest.IsolatedAsyncioTestCase):
@@ -215,6 +215,75 @@ class ConverterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(StepError) as caught:
             await converter._assemble("@@I-{}@@".format(0), "@@I-{}@@", [png], REVISION, ConverterSettings(_env_file=None))
         self.assertEqual((caught.exception.code, caught.exception.retryable), ("model_unavailable", True))
+
+
+
+class ConverterWithModelGatewayTests(unittest.IsolatedAsyncioTestCase):
+    """convert_document без подмены describe_image/recognize_text: вызовы идут через настоящий Model Gateway."""
+
+    async def asyncSetUp(self) -> None:
+        import os
+        import tempfile
+
+        from model_gateway_fixtures import response
+
+        from rag.model_gateway.contracts import ModelBinding
+        from rag.model_gateway.entrypoints import close_models, start_models
+        from rag.model_gateway.providers import ModelAdapter, register_provider, unregister_provider
+
+        calls = self.calls = []
+
+        class Adapter(ModelAdapter):
+            execution = "remote"
+
+            def __init__(self, binding, role):
+                self.binding, self.role = binding, role
+
+            async def start(self):
+                pass
+
+            async def invoke(self, operation, payload, *, timeout_s):
+                calls.append((operation, payload["image"]["mime_type"]))
+                return response(self.binding, self.role, operation, payload)
+
+            async def close(self):
+                pass
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        environment = mock.patch.dict(os.environ, {
+            "MODEL_GATEWAY_CACHE_DIR": temp.name, "MODEL_GATEWAY_PROVIDER_MODULES": "[]",
+            "MODEL_GATEWAY_LOCAL_LOADERS": "{}",
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
+        stdout = contextlib.redirect_stdout(io.StringIO())  # события логов
+        stdout.__enter__()
+        self.addCleanup(stdout.__exit__, None, None, None)
+        patcher = mock.patch.object(converter, "converter_settings", return_value=ConverterSettings(_env_file=None))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        name = "converter_fixture"
+        register_provider(name, Adapter)
+        self.addCleanup(unregister_provider, name)
+        await start_models({
+            role: ModelBinding(
+                profile_id=role, execution="remote", provider=name, model_id="fixture", model_revision="1",
+                endpoint="https://models.example.test", credential_env=None, max_concurrency=1,
+                embedding_dimensions=None)
+            for role in ("ocr", "vision")
+        })
+        self.addAsyncCleanup(close_models)
+        calls.clear()  # пробные вызовы при запуске ролей не считаются
+
+    async def test_docx_images_are_described_by_model_gateway(self) -> None:
+        result = await converter.convert_document(upload(build_sample_docx(), "doc.docx"), REVISION)
+
+        (image,) = result.images
+        self.assertEqual(image.ref.description, "Fixture image")  # OCR пустой: описание только от VLM
+        self.assertIn(f"![Fixture image](image://{IMAGE_ID})", result.markdown)
+        self.assertEqual(sorted(self.calls), [("describe_image", "image/png"), ("recognize_text", "image/png")])
 
 
 if __name__ == "__main__":

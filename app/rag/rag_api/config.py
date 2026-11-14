@@ -1,62 +1,55 @@
-"""Optional local dotenv; credentials are validated only when the API starts/uses them."""
-import os
-from pathlib import Path
-
-
-ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
-
-
-def load_env() -> None:
-    if not ENV_PATH.is_file():
-        return
-
-    for line in ENV_PATH.read_text(
-        encoding="utf-8-sig"
-    ).splitlines():
-        line = line.strip()
-
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        os.environ.setdefault(
-            key.strip(),
-            value.strip().strip('"').strip("'"),
-        )
-
+"""Lazy settings; no clients or environment mutation on import."""
+import re
+from urllib.parse import urlsplit
+from pydantic import Field, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from rag.runtime._config import RuntimeSettings
 
 WEBHOOK_PATH = "/telegram/webhook"
 
-def _get_values():
-    load_env()
 
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-    WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
-    WEBHOOK_BASE_URL = os.environ.get("TELEGRAM_WEBHOOK_URL", "").rstrip("/")
-    TEST_MODE = os.getenv("TEST_MODE", "0") == "1"
+class _WebhookSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_file='.env', extra='ignore', hide_input_in_errors=True)
+    secret: SecretStr = Field(default=SecretStr(''), validation_alias='TELEGRAM_WEBHOOK_SECRET')
+    public_url: str = Field(default='', validation_alias='TELEGRAM_WEBHOOK_URL')
 
-    TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-    if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN не задан")
+def trusted_base_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+            or parsed.password or parsed.query or parsed.fragment
+            or any(c.isspace() or ord(c) < 32 for c in value)):
+        raise ValueError("Invalid public HTTPS base URL")
+    try:
+        parsed.port
+    except ValueError:
+        raise ValueError("Invalid public HTTPS port") from None
+    return value.rstrip("/")
 
-    if not WEBHOOK_SECRET:
-        raise ValueError("TELEGRAM_WEBHOOK_SECRET не задан")
 
-    if not WEBHOOK_BASE_URL.startswith("https://"):
-        raise ValueError("TELEGRAM_WEBHOOK_URL должен быть HTTPS")
+class _ApiSettings:
+    # Keep secrets out of repr and error messages without adding a transport DTO.
+    def __init__(self, token, webhook_secret, public_url, telegram_base_url, timeout_s):
+        self.token = token
+        self.webhook_secret = webhook_secret
+        self.public_url = public_url
+        self.telegram_base_url = telegram_base_url
+        self.timeout_s = timeout_s
 
-    if not (
-        1 <= len(WEBHOOK_SECRET) <= 256
-        and all(
-            c.isascii() and (c.isalnum() or c in "_-")
-            for c in WEBHOOK_SECRET
-        )
-    ):
-        raise ValueError("Некорректный TELEGRAM_WEBHOOK_SECRET")
-    return locals()
+    @property
+    def telegram_url(self):
+        return self.telegram_base_url.rstrip("/") + "/bot" + self.token
 
-def __getattr__(name):
-    if name in {"BOT_TOKEN", "WEBHOOK_SECRET", "WEBHOOK_BASE_URL", "TEST_MODE", "TELEGRAM_API_URL"}:
-        return _get_values()[name]
-    raise AttributeError(name)
+
+def get_settings():
+    runtime = RuntimeSettings()
+    webhook = _WebhookSettings()
+    token = runtime.telegram_bot_token.get_secret_value()
+    if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token):
+        raise ValueError("Invalid TELEGRAM_BOT_TOKEN")
+    secret = webhook.secret.get_secret_value()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", secret):
+        raise ValueError("Invalid TELEGRAM_WEBHOOK_SECRET")
+    return _ApiSettings(token, secret,
+                       trusted_base_url(webhook.public_url),
+                       runtime.telegram_base_url, runtime.io_timeout_s)

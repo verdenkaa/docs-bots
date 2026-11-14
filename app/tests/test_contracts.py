@@ -26,7 +26,7 @@ from rag.rag_api.contracts import (
 from rag.rag_api.entrypoints import build_delivery_parts, handle_rag_result, send_answer
 from rag.rag_core.answer_generator import generate_answer
 from rag.rag_core.exact_cache import get_answer, store_answer
-from rag.runtime.media import get_question_image
+from rag.runtime.media import get_question_image, prepare_telegram_photo
 from rag.runtime.s3 import get_image
 from rag.runtime.postgresql import rag_api as pg_api, rag_core as pg_core
 from rag.runtime.qdrant import QdrantHit, find_chunks, find_topic_matches
@@ -40,7 +40,7 @@ from rag.searcher.entrypoints import search
 class ContractTests(unittest.TestCase):
     def test_question_to_parts_trace(self):
         """Каждый этап получает параметры из результата уже пройденного шага."""
-        incoming = NewQuestion(update_id=10, user_id=7, chat_id=7, received_at=NOW,
+        incoming = NewQuestion(username="employee_name", update_id=10, user_id=7, chat_id=7, received_at=NOW,
                                input=TextQuestion(kind="text", text="Где фильтр?"))
         validate_call_arguments(pg_api.register_question, incoming)
         intake = returned(pg_api.register_question, IntakeResult(kind="accepted", request_id=1))
@@ -102,6 +102,10 @@ class ContractTests(unittest.TestCase):
             validate_call_arguments(pg_api.record_delivery_part, attempt, number,
                                     receipt.message_id, receipt.variant)
         validate_call_arguments(get_image, parts[1].image.image_id)
+        raw_image = returned(get_image, ImageContent(data=b"image", mime_type="image/png"))
+        validate_call_arguments(prepare_telegram_photo, raw_image)
+        photo = returned(prepare_telegram_photo, ImageContent(data=b"jpeg", mime_type="image/jpeg"))
+        self.assertEqual(photo.mime_type, "image/jpeg")
         validate_call_arguments(pg_api.complete_delivery, attempt, True, False)
 
     def test_ocr_is_available_before_guardrails(self):

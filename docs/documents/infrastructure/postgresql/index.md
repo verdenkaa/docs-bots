@@ -28,7 +28,7 @@ toc_max_heading_level: 2
 | document_revisions | Редакция, подготовленный Markdown, публикация и очистка. |
 | corpus_state | Одна строка номера поколения корпуса. |
 | outbox | Надёжное намерение уведомления брокеру. |
-| employees | Допуск и минимальная роль интерфейса. |
+| employees | Список разрешённых Telegram username. |
 | telegram_updates | Дедупликация в том числе busy/denied/кнопок, для которых вопрос не создаётся. |
 | rag_deliveries | Несколько самостоятельных отправок: статус, ответ, фото, поддержка; их отдельные попытки. |
 | support_cases | Ожидание и сам тикет в разных состояниях, снимок контекста. |
@@ -36,7 +36,6 @@ toc_max_heading_level: 2
 
 ~~~mermaid
 erDiagram
- EMPLOYEES ||--o{ RAG_REQUESTS : "сотрудник"
  RAG_REQUESTS ||--o{ RAG_DELIVERIES : "доставки"
  RAG_REQUESTS ||--o| SUPPORT_CASES : "обращение"
  SUPPORT_CASES ||--o{ SUPPORT_MESSAGES : "реплики"
@@ -50,7 +49,8 @@ erDiagram
 | Поле | Тип | Смысл |
 | --- | --- | --- |
 | request_id | bigint PK | ID вопроса, не ID доставки. |
-| user_id, chat_id | bigint | Сотрудник и личный чат. |
+| user_id, chat_id | bigint | Стабильный владелец и личный чат. |
+| username | text | Снимок разрешённого имени на момент приёма, не FK на изменяемый список. |
 | update_id | bigint UNIQUE | Update, создавший вопрос. |
 | input | jsonb | QuestionInput: text либо file_id/caption. |
 | received_at | timestamptz | Первый приём, неизменен. |
@@ -81,19 +81,19 @@ erDiagram
 
 ### employees {#employees}
 
-user_id bigint PK, enabled boolean, role text (employee/operator/admin). Это роли интерфейса, а не документов. Первый admin назначается процедурой развёртывания, публичной bootstrap-ручки нет.
+username text PK (нижний регистр, без @), enabled boolean. Правило доступа относится к текущему имени. Активный слот и владение вопросом по-прежнему используют Telegram user_id. Статичные ADMIN_LOGIN/ADMIN_PASSWORD не хранятся в employees.
 
 ### telegram_updates {#telegram-updates}
 
-update_id bigint PK, user_id/chat_id bigint NULL, received_at timestamptz, action jsonb NULL, result jsonb. result содержит надёжный IntakeResult и ссылки. action хранит нормализованное действие Support для привязки причины offer; секретов/всего Telegram payload не требуется. У accepted вопрос есть, у busy/denied — нет. retry_later не является окончательным сохранённым исходом.
+update_id bigint PK, user_id/chat_id bigint NULL, received_at timestamptz, action jsonb NULL, result jsonb. result содержит надёжный IntakeResult и ссылки. action хранит SupportCommand: нормализованное действие, username, origin и callback_message_id для привязки причины offer; секретов/всего Telegram payload не требуется. У accepted вопрос есть, у busy/denied — нет. retry_later не является окончательным сохранённым исходом.
 
 ### support_cases {#support-cases}
 
-case_id uuid PK, request_id bigint UNIQUE, user_id bigint, state text, reason text, check_at timestamptz NULL, ticket_url text NULL, created_at/closed_at timestamptz NULL, history jsonb. Состояния — из SupportCase. Waiting ещё не созданный тикет, open/closed — уже созданный. history — снимок одного вопроса и реального ответа, не весь диалог. Нажатие не сдвигает уже начатый check_at.
+case_id uuid PK (случайный UUIDv4), request_id bigint UNIQUE, user_id bigint, state text, reason text, check_at timestamptz NULL, ticket_url text NULL, created_at/closed_at timestamptz NULL, history jsonb. Состояния — из SupportCase. Waiting ещё не созданный тикет, open/closed — уже созданный. history — снимок одного вопроса и реального ответа, не весь диалог. Нажатие не сдвигает уже начатый check_at.
 
 ### support_messages {#support-messages}
 
-message_id bigint PK, case_id uuid FK, author_id bigint, author_role text, client_message_id uuid, text text, created_at timestamptz. Уникальный ключ (case_id,author_id,client_message_id) даёт безопасный повтор реплики.
+message_id bigint PK, case_id uuid FK, author_role text (visitor/operator), author_login text NULL, client_message_id uuid, text text, created_at timestamptz. author_login задан только у оператора и получен из проверенного Principal. Уникальный ключ (case_id,author_role,client_message_id) отделяет реплики посетителей от оператора. Посетители анонимны; у них нет author_id. Повтор с тем же текстом возвращает прежнюю реплику даже после закрытия тикета.
 
 ### document_revisions {#document_revisions}
 
@@ -127,7 +127,7 @@ message_id uuid PK, route text, request_id bigint NULL, delivery_id bigint NULL,
 
 ## Вопросы и доставка {#вопросы-и-доставка}
 
-Блокировка/уникальность активного слота применяется по user_id. Транзакция приёма включает ledger, вопрос и outbox либо ledger с уведомлением отказа. Попытки Core не смешиваются с DeliveryAttempt.
+Блокировка допуска применяется по username (включая отсутствующую запись), затем блокировка/уникальность активного слота — по user_id. Транзакция приёма включает ledger, вопрос и outbox либо ledger с уведомлением отказа. Попытки Core не смешиваются с DeliveryAttempt.
 
 complete_question освобождает pinned_generation и сохраняет исход: answered/notice → awaiting_delivery, support → awaiting_support. Support после открытия тикета создаёт терминальную ticket_link-доставку. complete_delivery переводит исходный вопрос в finished только для terminal_for_request. Очереди следующего вопроса сотрудника нет; будится следующая доставка чата.
 

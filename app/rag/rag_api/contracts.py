@@ -9,10 +9,13 @@ from __future__ import annotations
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, Field, StringConstraints, model_validator
 
 from rag.contracts import DeliveryAttempt, ImageRef, QuestionInput, RagResult
 from rag.dto import DTO, NonEmptyText, NonNegativeInt, PositiveId
+
+
+TelegramUsername = Annotated[str, StringConstraints(min_length=1, max_length=32, pattern=r'^[a-z0-9_]+$')]
 
 
 class AccessDenied(Exception):
@@ -37,6 +40,7 @@ class NewQuestion(DTO):
     chat_id: PositiveId = Field(description='Положительный ID личного Telegram-чата доставки.')
     received_at: AwareDatetime = Field(description='Первое время приёма вопроса в UTC; повтор его не изменяет.')
     input: QuestionInput = Field(description='Текстовый вопрос либо Telegram file_id изображения с подписью.')
+    username: TelegramUsername | None = Field(default=None, description='Текущий from.username после нормализации; None означает отсутствие username и отказ новому вопросу.')
 
 
 class IntakeResult(DTO):
@@ -82,19 +86,31 @@ class SupportCommand(DTO):
     chat_id: PositiveId = Field(description='Положительный ID личного Telegram-чата доставки.')
     received_at: AwareDatetime = Field(description='Первое время приёма вопроса в UTC; повтор его не изменяет.')
     action: SupportAction = Field(description='Действие поддержки, которое не создаёт новый RAG-вопрос.')
+    username: TelegramUsername | None = Field(default=None, description='Текущий Telegram username для проверки допуска нового действия.')
+    origin: Literal['text', 'callback'] = Field(description='Источник действия; задаётся адаптером по структуре Telegram Update.')
+    callback_message_id: PositiveId | None = Field(default=None, description='message_id сообщения с нажатой кнопкой; только для callback.')
+
+    @model_validator(mode='after')
+    def check_origin(self) -> Self:
+        """Сохранить данные сверки кнопки и отличить её от текстовой просьбы."""
+        if (self.origin == 'callback') != (self.callback_message_id is not None):
+            raise ValueError('callback требует message_id, текстовая команда его не содержит')
+        if self.origin == 'text' and self.action.kind != 'offer':
+            raise ValueError('Текстовая команда может только предложить помощь')
+        if self.origin == 'callback' and self.action.kind == 'offer' and self.action.request_id is None:
+            raise ValueError('Реакция на кнопку требует request_id')
+        return self
 
 
 class Principal(DTO):
-    """Проверенная личность web-пользователя; роль не принимается из тела запроса."""
-    user_id: PositiveId = Field(description='Telegram User ID сотрудника; не подменяется идентификатором чата.')
-    role: Literal['employee', 'operator', 'admin'] = Field(description='Минимальная роль интерфейса: employee, operator или admin.')
+    """Администратор, проверенный HTTP-адаптером по статичным credentials из env."""
+    login: NonEmptyText = Field(description='Проверенный ADMIN_LOGIN; пароль в DTO не передаётся.')
 
 
 class AccessRecord(DTO):
-    """Допуск сотрудника и минимальная роль интерфейса."""
-    user_id: PositiveId = Field(description='Telegram User ID сотрудника; не подменяется идентификатором чата.')
+    """Разрешённый Telegram username; не учётная запись админ-панели."""
+    username: TelegramUsername = Field(description='Ключ списка допуска: нижний регистр, без @.')
     enabled: bool = Field(description='Допуск новых вопросов; отключение не отменяет уже принятый вопрос.')
-    role: Literal['employee', 'operator', 'admin'] = Field(description='Минимальная роль интерфейса: employee, operator или admin.')
 
 
 class SupportCase(DTO):
@@ -136,13 +152,20 @@ class HistoryEntry(DTO):
 
 
 class TicketMessage(DTO):
-    """Реплика сотрудника или оператора в собственной тикет-системе."""
+    """Реплика анонимного посетителя или проверенного оператора в тикет-системе."""
     message_id: PositiveId = Field(description='ID подтверждённого сообщения Telegram либо реплики тикета по типу DTO.')
     case_id: UUID = Field(description='UUID обращения поддержки, уникального для исходного вопроса.')
-    author_id: PositiveId = Field(description='Проверенный идентификатор автора реплики из Principal.')
-    author_role: Literal['employee', 'operator', 'admin'] = Field(description='Роль автора реплики на момент её создания.')
+    author_role: Literal['visitor', 'operator'] = Field(description='Посетитель по публичной ссылке либо оператор из админ-панели.')
+    author_login: NonEmptyText | None = Field(default=None, description='Проверенный логин оператора; посетитель не имеет подтверждённой личности.')
     text: NonEmptyText = Field(description='Непустой текст, назначение которого задаёт конкретный DTO.')
     created_at: AwareDatetime = Field(description='Фактическое время создания записи в UTC.')
+
+    @model_validator(mode='after')
+    def check_author(self) -> Self:
+        """Не приписывать посетителю подтверждённую личность оператора."""
+        if (self.author_role == 'operator') != (self.author_login is not None):
+            raise ValueError('Только оператор имеет author_login, и он обязателен')
+        return self
 
 
 class TicketView(DTO):

@@ -11,7 +11,7 @@ from rag.contracts import AnsweredOutcome, DeliveryAttempt, GeneratedAnswer, Ima
 from rag.ingestion.contracts import ConvertedDocument, UploadSource
 from rag.model_gateway.contracts import InjectionResult
 from rag.rag_api.contracts import (
-    ClaimedDelivery, InlineAction, IntakeResult, MetricsSnapshot,
+    AccessRecord, Principal, SupportCommand, TicketMessage, ClaimedDelivery, InlineAction, IntakeResult, MetricsSnapshot,
     SendResult, SupportAction, SupportCase, TelegramEntity, TextPart,
 )
 from rag.runtime.rabbitmq import OutboxNotice
@@ -50,6 +50,29 @@ class DtoValidationTests(unittest.TestCase):
         SupportAction(kind="offer", reason="human_request")
         SupportAction(kind="start", request_id=1)
         SupportAction(kind="confirm", case_id=uuid4())
+
+    def test_callback_origin_and_public_ticket_author(self):
+        base = dict(update_id=1, user_id=7, chat_id=7, received_at=NOW, username="employee_name")
+        start = SupportAction(kind="start", request_id=1)
+        for fields in (
+            dict(origin="callback", action=start),
+            dict(origin="text", action=start),
+            dict(origin="text", action=SupportAction(kind="offer", reason="human_request"), callback_message_id=77),
+            dict(origin="callback", callback_message_id=77, action=SupportAction(kind="offer", reason="dissatisfied")),
+        ):
+            with self.subTest(fields=fields), self.assertRaises(ValidationError):
+                SupportCommand(**base, **fields)
+        SupportCommand(**base, origin="text", action=SupportAction(kind="offer", reason="human_request"))
+        for username in ("@employee", "Employee", "", "привет", "a" * 33):
+            with self.subTest(username=username), self.assertRaises(ValidationError):
+                AccessRecord(username=username, enabled=True)
+        with self.assertRaises(ValidationError):
+            Principal(user_id=7, role="admin")
+        message = dict(message_id=1, case_id=uuid4(), text="Сообщение", created_at=NOW)
+        for author in (dict(author_role="operator"), dict(author_role="visitor", author_login="admin"),
+                       dict(author_role="visitor", author_id=7)):
+            with self.subTest(author=author), self.assertRaises(ValidationError):
+                TicketMessage(**message, **author)
 
     def test_ticket_stages(self):
         base = dict(case_id=uuid4(), request_id=1, user_id=7, reason="no_evidence")

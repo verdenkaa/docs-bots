@@ -21,7 +21,9 @@ class Conflict(Exception):
 
 ~~~python
 from typing import Self
-from pydantic import model_validator
+from pydantic import StringConstraints, model_validator
+
+TelegramUsername = Annotated[str, StringConstraints(min_length=1, max_length=32, pattern=r'^[a-z0-9_]+$')]
 
 class NewQuestion(DTO):
     update_id: NonNegativeInt
@@ -29,6 +31,7 @@ class NewQuestion(DTO):
     chat_id: PositiveId
     received_at: AwareDatetime
     input: QuestionInput
+    username: TelegramUsername | None = None
 
 class IntakeResult(DTO):
     kind: Literal['accepted', 'duplicate', 'handled', 'busy', 'denied', 'ignored', 'invalid_update', 'retry_later']
@@ -68,6 +71,19 @@ class SupportCommand(DTO):
     chat_id: PositiveId
     received_at: AwareDatetime
     action: SupportAction
+    username: TelegramUsername | None = None
+    origin: Literal['text', 'callback']
+    callback_message_id: PositiveId | None = None
+
+    @model_validator(mode='after')
+    def check_origin(self) -> Self:
+        if (self.origin == 'callback') != (self.callback_message_id is not None):
+            raise ValueError('callback требует message_id, текстовая команда его не содержит')
+        if self.origin == 'text' and self.action.kind != 'offer':
+            raise ValueError('Текстовая команда может только предложить помощь')
+        if self.origin == 'callback' and self.action.kind == 'offer' and (self.action.request_id is None):
+            raise ValueError('Реакция на кнопку требует request_id')
+        return self
 ~~~
 
 | Поле | Тип | Зачем / обязательное правило | Пример |
@@ -82,7 +98,7 @@ class SupportCommand(DTO):
 | request_id действия | PositiveId или None | Для start обязателен; для текстового offer без ID выбираем последний AnsweredOutcome с подтверждённой текстовой частью сотруднику, даже если изображения ещё в пути. | 1042 |
 | case_id действия | UUID или None | Обязателен для confirm/decline. Если переданы оба ID, они относятся к одному обращению. | `"bb32ecbf-082b-4497-a41f-4b61aa56a139"` |
 | reason | перечисление или None | Обязателен для offer, иначе None; недовольство или просьба о человеке. | `"dissatisfied"` |
-| SupportCommand.action | SupportAction | Управление, не новый вопрос в Core. Остальные поля — как у NewQuestion. | `{"kind":"start","request_id":1042}` |
+| SupportCommand.action | SupportAction | Управление, не новый вопрос в Core. user_id/chat_id/username задают отправителя; origin и callback_message_id сохраняют происхождение. | `{"kind":"start","request_id":1042}` |
 
 Блоки кода задают структуру и валидаторы, синхронизированные с каркасом. Взаимная обязательность полей проверяется model_validator; проверки прав, принадлежности и стадии атомарный переход БД должен повторить при реализации. Для ручного вызова нужен вопрос с AnsweredOutcome и подтверждённой текстовой частью ответа (включая length_fallback). Изображения могут ещё отправляться. До такой квитанции ожидание не создаётся.
 
@@ -93,13 +109,11 @@ from typing import Self
 from pydantic import model_validator
 
 class Principal(DTO):
-    user_id: PositiveId
-    role: Literal['employee', 'operator', 'admin']
+    login: NonEmptyText
 
 class AccessRecord(DTO):
-    user_id: PositiveId
+    username: TelegramUsername
     enabled: bool
-    role: Literal['employee', 'operator', 'admin']
 
 class SupportCase(DTO):
     case_id: UUID
@@ -138,10 +152,16 @@ class HistoryEntry(DTO):
 class TicketMessage(DTO):
     message_id: PositiveId
     case_id: UUID
-    author_id: PositiveId
-    author_role: Literal['employee', 'operator', 'admin']
+    author_role: Literal['visitor', 'operator']
+    author_login: NonEmptyText | None = None
     text: NonEmptyText
     created_at: AwareDatetime
+
+    @model_validator(mode='after')
+    def check_author(self) -> Self:
+        if (self.author_role == 'operator') != (self.author_login is not None):
+            raise ValueError('Только оператор имеет author_login, и он обязателен')
+        return self
 
 class TicketView(DTO):
     case: SupportCase
@@ -169,10 +189,10 @@ class MetricsSnapshot(DTO):
 
 | Поле | Тип | Смысл / правило | Пример |
 | --- | --- | --- | --- |
-| Principal.user_id, role | PositiveId, роль | Проверенная личность; не читаем роль из тела запроса. Минимальные роли интерфейса, не доступа к документам. | `123, "employee"` |
-| AccessRecord.user_id, enabled, role | ID, bool, роль | Разрешённый сотрудник и полномочия; изменяет администратор. | `123, True, "operator"` |
+| Principal.login | NonEmptyText | Проверенный ADMIN_LOGIN, пароль не передаётся. | admin |
+| AccessRecord.username, enabled | TelegramUsername, bool | Каноническое имя в списке допуска; роли web не связаны с ним. | employee_name, True |
 | SupportCase.case_id | UUID | Один case на исходный вопрос; открытый case и есть тикет собственной системы. | UUID |
-| request_id, user_id | PositiveId | Исходный вопрос и владелец; чужой пользователь не может управлять case. | `1042, 123` |
+| request_id, user_id | PositiveId | Исходный вопрос и владелец; Telegram-действия проверяют этого владельца; публичный web-доступ не ограничен им. | `1042, 123` |
 | state | перечисление | waiting/awaiting_confirmation ещё не тикет; open/closed доступны по ссылке. | `"waiting"` |
 | reason | перечисление | Причина ручной либо автоматической передачи. | `"no_evidence"` |
 | check_at | UTC-время или None | Для start: первый приём нажатия + 10 минут; повтор не сдвигает срок. | `"2026-11-14T12:10:00Z"` |
@@ -181,7 +201,7 @@ class MetricsSnapshot(DTO):
 | HistoryEntry.request_id, question_text | ID, текст | Снимок исходного вопроса; для изображения — prepared_text, подпись или отметка об изображении при ошибке OCR. | `1042, "Ошибка AUTH-17"` |
 | answer_text, outcome, received_at | текст или None, исход, время | Реальный ответ, тип исхода и время вопроса. | `None, "support", "2026-11-14T12:00:00Z"` |
 | TicketMessage.message_id, case_id | ID, UUID | Реплика в конкретном тикете. | `9, UUID(...)` |
-| author_id, author_role, text, created_at | ID, роль, текст, время | Автор из Principal и содержание сообщения. | `123, "employee", "Не открывается", UTC` |
+| author_role, author_login | visitor/operator, str или None | У visitor нет подтверждённой личности; operator получает логин из проверенного Principal. | visitor, None |
 | TicketView.case, history, messages | DTO и списки | Тикет, контекст и дальнейший разговор. | `history=[...], messages=[]` |
 | MetricsSnapshot.from_at, to_at | UTC-время | Полуоткрытый период статистики. | `[12:00,13:00)` |
 | requests, answered, escalated, dissatisfied | NonNegativeInt | Наблюдаемые счётчики; не процент решённых вопросов. | `10,7,3,1` |
@@ -316,6 +336,8 @@ SendResult = Annotated[Sent | SendFailed, Field(discriminator='kind')]
 | parts, next_part | список или None, индекс | Неизменяемый план и первая неподтверждённая часть; план сохраняем до Telegram. | `None,0` |
 | Sent.message_id, variant | ID, вариант | Квитанция Telegram и факт резервного текста. | `77,"normal"` |
 | SendFailed.retryable, uncertain, retry_after_seconds | bool, bool, число или None | Повтор, неизвестный исход и задержка конкретной отправки. | `True,True,3` |
+
+NewQuestion.username и SupportCommand.username содержат нормализованный текущий from.username; None не допускает новое действие. TelegramUsername: lowercase ASCII, без @, длина 1–32. User ID остаётся владельцем и ключом активного слота. SupportCommand.origin обязателен; callback_message_id обязателен ровно для callback. Текстовая команда может только offer; кнопочный offer обязательно содержит request_id.
 
 Callback-формат: `a:<request_id>` — недовольство/offer; `s:<request_id>` — start; `y:<case_uuid>` и `n:<case_uuid>` — confirm/decline. Все варианты укладываются в 64 байта; состояние и принадлежность проверяются даже для вручную сформированного callback. Текстовые «оператор»/«человек» вызывают offer только после доставленного ответа.
 

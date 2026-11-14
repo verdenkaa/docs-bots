@@ -4,12 +4,13 @@ sidebar_position: 2.5
 toc_max_heading_level: 2
 ---
 
-[DTO](../../telegram/module/contracts.md). Все мутации идемпотентны и проверяют права/состояние внутри транзакции. StorageError — неизвестный коммит; AccessDenied, NotFound, Conflict — известный бизнес-отказ.
+[DTO](../../telegram/module/contracts.md). Все мутации идемпотентны и проверяют состояние внутри транзакции. Административный Principal поставляет HTTP-адаптер после проверки env-credentials; публичные тикеты не проверяют employees. StorageError — неизвестный коммит; AccessDenied, NotFound, Conflict — известный бизнес-отказ.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `read_user_access` {#read-user-access}
 
 ~~~python
-async def read_user_access(user_id: int) -> AccessRecord | None: ...
+async def read_user_access(username: str | None) -> AccessRecord | None:
+    ...
 ~~~
 
 **Кто вызывает.** check_access.
@@ -18,7 +19,7 @@ async def read_user_access(user_id: int) -> AccessRecord | None: ...
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| user_id | int | ID отправителя. | 123 |
+| username | str или None | Канонический ключ списка допуска; None возвращает None. | employee_name |
 
 ### Что отдаёт
 
@@ -26,7 +27,7 @@ async def read_user_access(user_id: int) -> AccessRecord | None: ...
 
 | Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| return | AccessRecord или None | Запись допуска, включая enabled/role. | AccessRecord(...) |
+| return | AccessRecord или None | Запись допуска, включая enabled. | AccessRecord(...) |
 
 ### Правила и ошибки
 
@@ -44,7 +45,7 @@ async def write_user_access(actor: Principal, record: AccessRecord) -> AccessRec
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Проверенный admin. | role="admin" |
+| actor | Principal | Проверенный admin. | login="admin" |
 | record | AccessRecord | Новое состояние сотрудника. | enabled=False |
 
 ### Что отдаёт
@@ -57,7 +58,7 @@ async def write_user_access(actor: Principal, record: AccessRecord) -> AccessRec
 
 ### Правила и ошибки
 
-Внутри транзакции повторно проверяет актуальный enabled/admin у actor. Одинаковое повторное изменение безопасно; входящий Principal не является заменой проверки текущего допуска. Изменение target-user сериализуется с register_question по user_id. enabled=False запрещает новые вопросы, но не отменяет ранее принятый request, его доставку или автоматическое создание тикета.
+Принимает Principal только от доверенного HTTP-адаптера после проверки статичных ADMIN_LOGIN/ADMIN_PASSWORD; employees не хранит права администратора. Одинаковое повторное изменение безопасно. Изменение допуска сериализуется с register_question по нормализованному username, включая создание отсутствующего ключа. enabled=False запрещает новые вопросы, но не отменяет ранее принятый request, его доставку или автоматическое создание тикета.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `record_support_action` {#record-support-action}
 
@@ -84,7 +85,7 @@ async def record_support_action(command: SupportCommand, check_at: datetime | No
 
 ### Правила и ошибки
 
-Одна транзакция: ledger update, проверка enabled/владельца/стадии и переход. offer требует AnsweredOutcome и подтверждённую текстовую часть (normal или length_fallback), не весь набор картинок; иначе создаёт first_question-уведомление. start находит сохранённую причину offer, создаёт один waiting-case и первый срок. confirm применим только к awaiting_confirmation и ставит creating; decline ставит cancelled. Повтор не сдвигает таймер. Ссылки callback сверяются с Telegram message_id и владельцем, чужая/устаревшая команда не меняет case.
+Одна транзакция: сначала ledger update, затем для нового действия проверка enabled по command.username, владельца по command.user_id и стадии и переход. offer требует AnsweredOutcome и подтверждённую текстовую часть (normal или length_fallback), не весь набор картинок; иначе создаёт first_question-уведомление. start находит сохранённую причину offer, создаёт один waiting-case и первый срок. confirm применим только к awaiting_confirmation и ставит creating; decline ставит cancelled. Повтор не сдвигает таймер. При origin=callback сверяются command.chat_id и callback_message_id с сохранённой квитанцией доставки, user_id с владельцем, action с кнопками сохранённого плана и request_id/case_id с этой доставкой. Одного известного ID вопроса недостаточно. Чужая/устаревшая команда не меняет case. Если квитанция ещё не сохранена, но соответствующая доставка находится в sending (гонка с отправкой), вернуть retry_later без окончательной записи ledger; повтор после фиксации квитанции сможет применить действие. Без подходящей квитанции и активной отправки действие считается устаревшим, ledger сохраняет ignored. Для origin=text допустим только offer: request_id при отсутствии выбирается как последний ответ этого user_id с подтверждённой текстовой частью; callback-сверка не выполняется.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `list_pending_support` {#list-pending-support}
 
@@ -179,7 +180,7 @@ async def read_ticket_list(actor: Principal, limit: int) -> list[SupportCase]: .
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Проверенный сотрудник/оператор. | role="employee" |
+| actor | Principal | Проверенный администратор. | login="admin" |
 | limit | int, 1..100 | Предел выдачи. | 50 |
 
 ### Что отдаёт
@@ -192,12 +193,13 @@ async def read_ticket_list(actor: Principal, limit: int) -> list[SupportCase]: .
 
 ### Правила и ошибки
 
-Employee — только свои; operator/admin — все. Актуальный enabled/role проверяется по БД.
+Все open/closed для проверенного администратора; employees не участвует в web-доступе. Порядок по убыванию request_id до применения limit.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `read_ticket` {#read-ticket}
 
 ~~~python
-async def read_ticket(actor: Principal, case_id: UUID) -> TicketView: ...
+async def read_ticket(case_id: UUID) -> TicketView:
+    ...
 ~~~
 
 **Кто вызывает.** get_ticket.
@@ -206,7 +208,6 @@ async def read_ticket(actor: Principal, case_id: UUID) -> TicketView: ...
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Проверенный пользователь. | Principal(...) |
 | case_id | UUID | Тикет. | UUID(...) |
 
 ### Что отдаёт
@@ -219,12 +220,13 @@ async def read_ticket(actor: Principal, case_id: UUID) -> TicketView: ...
 
 ### Правила и ошибки
 
-Только open/closed, employee видит своё. Несуществующий/чужой объект — NotFound, а не раскрытие его названия.
+Только open/closed, доступно любому посетителю ссылки. Отсутствующий или ещё не созданный тикет — NotFound. Проверки Telegram-владельца нет.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `append_ticket_message` {#append-ticket-message}
 
 ~~~python
-async def append_ticket_message(actor: Principal, case_id: UUID, client_message_id: UUID, text: str) -> TicketMessage: ...
+async def append_ticket_message(actor: Principal | None, case_id: UUID, client_message_id: UUID, text: str) -> TicketMessage:
+    ...
 ~~~
 
 **Кто вызывает.** add_ticket_message.
@@ -233,7 +235,7 @@ async def append_ticket_message(actor: Principal, case_id: UUID, client_message_
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Автор. | Principal(...) |
+| actor | Principal или None | Проверенный оператор либо посетитель. | None |
 | case_id | UUID | Открытый тикет. | UUID(...) |
 | client_message_id | UUID | Ключ повтора реплики. | UUID(...) |
 | text | непустой str | Содержимое, хранится как текст. | Не открывается |
@@ -248,7 +250,7 @@ async def append_ticket_message(actor: Principal, case_id: UUID, client_message_
 
 ### Правила и ошибки
 
-Проверяет доступ и open. Уникальный ключ (case_id,author_id,client_message_id). Повтор с другим текстом — Conflict. Автор/роль берутся из проверенного доступа.
+actor=None означает visitor с author_login=None; Principal означает operator с author_login=actor.login. Уникальный ключ (case_id,author_role,client_message_id). Совпадающий повтор проверяется до состояния open и возвращает прежнюю реплику даже после закрытия; другой текст — Conflict. Новая реплика требует open. Посетители не имеют подтверждённого author_id. HTTP-адаптер не позволяет публичному маршруту передать Principal.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `close_ticket_record` {#close-ticket-record}
 
@@ -262,7 +264,7 @@ async def close_ticket_record(actor: Principal, case_id: UUID) -> SupportCase: .
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Operator/admin. | role="operator" |
+| actor | Principal | Проверенный администратор. | login="admin" |
 | case_id | UUID | Тикет. | UUID(...) |
 
 ### Что отдаёт
@@ -275,7 +277,7 @@ async def close_ticket_record(actor: Principal, case_id: UUID) -> SupportCase: .
 
 ### Правила и ошибки
 
-Первое закрытие сохраняет closed_at; повтор не меняет это время и безопасен. Employee не закрывает тикет этим методом.
+Первое закрытие сохраняет closed_at; повтор не меняет это время и безопасен. Публичный посетитель не вызывает этот метод; нужен Principal администратора.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `read_metrics` {#read-metrics}
 
@@ -289,7 +291,7 @@ async def read_metrics(actor: Principal, from_at: datetime, to_at: datetime) -> 
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| actor | Principal | Admin. | role="admin" |
+| actor | Principal | Admin. | login="admin" |
 | from_at | UTC datetime | Начало включительно. | UTC |
 | to_at | UTC datetime | Конец исключительно. | UTC |
 
@@ -305,4 +307,4 @@ async def read_metrics(actor: Principal, from_at: datetime, to_at: datetime) -> 
 
 Запросы относятся к received_at периода; answered/escalated — их зафиксированные итоги, dissatisfied — вопросы с зарегистрированным offer(reason=dissatisfied). Повторы/попытки не увеличивают счётчик. reply_duration_ms использует первое confirmed_at нормальной текстовой части answer и received_at; ticket_duration_ms берёт closed_at минус received_at вопроса, только для закрытых кейсов; fallback не считается доставкой исходного ответа.
 
-Автоматическое создание тикета по SupportOutcome принятого вопроса не требует повторного разрешения сотрудника на новый вопрос. Отдельные новые действия пользователя и web-просмотр по-прежнему проходят собственную проверку текущего допуска/роли.
+Автоматическое создание тикета по SupportOutcome принятого вопроса не требует повторного разрешения сотрудника на новый вопрос. Новые Telegram-действия проверяют текущий username; публичное чтение/реплики тикета не проверяют допуск Telegram, административные действия требуют входа по env.

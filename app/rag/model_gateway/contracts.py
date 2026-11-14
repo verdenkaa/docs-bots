@@ -74,7 +74,7 @@ class InjectionResult(DTO):
 
 class ModelMessage(DTO):
     """Одно сообщение диалога, передаваемого провайдеру генерации."""
-    role: Literal['system', 'user', 'assistant'] = Field(description='Минимальная роль интерфейса: employee, operator или admin.')
+    role: Literal['system', 'user', 'assistant'] = Field(description='Роль сообщения модели: system, user или assistant.')
     content: NonEmptyText = Field(description='Содержимое, передаваемое следующей операции по контракту.')
 
 

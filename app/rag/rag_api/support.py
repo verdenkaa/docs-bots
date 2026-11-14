@@ -41,12 +41,12 @@ async def run_support_batch(limit: int) -> int:
 
 
 async def list_tickets(actor: Principal, limit: int=50) -> list[SupportCase]:
-    """Получить доступные пользователю тикеты с ограничением числа записей.
+    """Получить список тикетов админ-панели с ограничением числа записей.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        actor: Проверенный пользователь/оператор.
+        actor: Проверенный администратор.
         limit: Предел выдачи.
 
     Returns:
@@ -55,13 +55,12 @@ async def list_tickets(actor: Principal, limit: int=50) -> list[SupportCase]:
     raise NotImplementedError
 
 
-async def get_ticket(actor: Principal, case_id: UUID) -> TicketView:
+async def get_ticket(case_id: UUID) -> TicketView:
     """Получить доступный тикет, исходный контекст и дальнейшие сообщения.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        actor: Проверенная личность.
         case_id: Идентификатор из URL.
 
     Returns:
@@ -70,14 +69,14 @@ async def get_ticket(actor: Principal, case_id: UUID) -> TicketView:
     raise NotImplementedError
 
 
-async def add_ticket_message(actor: Principal, case_id: UUID, client_message_id: UUID, text: str) -> TicketMessage:
+async def add_ticket_message(actor: Principal | None, case_id: UUID, client_message_id: UUID, text: str) -> TicketMessage:
     """Добавить реплику с ключом повтора в доступный открытый тикет.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        actor: Проверенный автор и тикет.
-        case_id: Проверенный автор и тикет.
+        actor: None для публичного посетителя; проверенный Principal для оператора.
+        case_id: UUID открытого тикета из ссылки.
         client_message_id: Ключ повтора одного сообщения.
         text: Текст реплики, не исполняется как HTML.
 
@@ -88,7 +87,7 @@ async def add_ticket_message(actor: Principal, case_id: UUID, client_message_id:
 
 
 async def close_ticket(actor: Principal, case_id: UUID) -> SupportCase:
-    """Идемпотентно закрыть тикет с проверкой полномочий оператора или администратора.
+    """Идемпотентно закрыть тикет с проверкой полномочий администратора.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 

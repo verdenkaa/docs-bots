@@ -26,6 +26,7 @@ htmlcov/
 *.ipr
 *___jb_tmp___
 *___jb_old___
+.venv*
 
 # Node dependencies and generated documentation
 node_modules/

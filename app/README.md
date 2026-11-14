@@ -3,6 +3,8 @@
 > [!WARNING]
 > Бизнес-сценарии ещё содержат `NotImplementedError`. Runtime и Model Gateway реализованы; конкретные модельные backend и веса подключаются отдельно. Health checks каркаса подтверждают запуск процессов.
 
+Для локальной проверки есть [адаптер Ollama и небольшой текстовый профиль](../docs/documents/model-gateway/ollama.md); OCR/vision можно добавить явно. После скачивания моделей: `python -m rag.model_gateway.ollama_setup --smoke`. Основной .env и существующий поисковый индекс команда не меняет.
+
 ## Где начать
 
 | Модуль | Код | Контракт |

@@ -26,6 +26,8 @@ from rag.runtime import _qdrant
 class ChunkPoint(SearchFragment):
     """Точка Qdrant: текст, метаданные, номер чанка и готовый плотный вектор."""
     chunk_no: NonNegativeInt = Field(description='Порядковый номер чанка с 0 внутри редакции; участвует в детерминированном ID.')
+    document_version: NonNegativeInt = Field(description='Номер версии документа с 0, закреплённый PostgreSQL за revision_id; не поколение корпуса.')
+    access_level: NonEmptyText = Field(description='Метка доступа документа, скопированная из DocumentBatch.source без изменения.')
     dense: list[float] = Field(description='Готовый плотный вектор общего embedding-профиля индекса и поиска.')
 
 

@@ -77,12 +77,12 @@ flowchart TD
 
 ## Стык с Ingestion
 
-Gateway передаёт Worker готовый Markdown, плейсхолдеры и ImageRef; source_name — название исходного документа. Изображения уже записаны Gateway в S3, оригинал не сохранён.
+Gateway сохраняет и передаёт Worker полную DocumentBatch: готовые чанки с плейсхолдерами и ImageRef, единые имя и метку доступа; source_name — название исходного документа. Изображения уже записаны Gateway в S3, оригинал не сохранён.
 
-Worker сохраняет images рядом с каждым PreparedChunk/ChunkPoint. Qdrant возвращает их в SearchFragment без генерации новых ID. Чанки и примеры одной редакции публикуются совместно через PostgreSQL. SourceRef сохраняет document_id и source_name; RAG API строит ссылку на HTML-заглушку документа, локатор раздела необязателен.
+Worker читает PreparedChunk из партии, резервирует версию документа и сохраняет images, document_version/access_level в ChunkPoint. Qdrant возвращает их в SearchFragment без генерации новых ID. Чанки и примеры одной редакции публикуются совместно через PostgreSQL. SourceRef сохраняет document_id и source_name; RAG API строит ссылку на HTML-заглушку документа, локатор раздела необязателен.
 
 [Общие DTO](./contracts.md) · [API и доставка](../telegram/module/entrypoints.md) · [PostgreSQL Core](../infrastructure/postgresql/rag-core.md)
 
-До первого вопроса Ingestion подтверждает S3 и Markdown, Worker закрепляет PreparedRevision и публикует только два полных набора. Guardrails использует topic_questions, Searcher — document_chunks; ни один модуль не должен самостоятельно выбирать другое поколение. Searcher передаёт lexical_priority в Runtime по наличию ссылки; вектор вопроса пока вычисляется независимо от Guardrails.
+До первого вопроса Ingestion подтверждает S3, Markdown и партию чанков, Worker резервирует версию с 0 и закрепляет PreparedRevision и публикует только два полных набора. Guardrails использует topic_questions, Searcher — document_chunks; ни один модуль не должен самостоятельно выбирать другое поколение. Searcher передаёт lexical_priority в Runtime по наличию ссылки; вектор вопроса пока вычисляется независимо от Guardrails.
 
 Отключение сотрудника после приёма не добавляет новый отказ в пайплайн: claim/повторы/Core продолжаются, результат или ссылка автоматической эскалации доставляются. Допуск на новый вопрос проверяет RAG API при следующей регистрации.

@@ -194,7 +194,8 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def publish(self, document=None):
         revision = uuid4()
         accepted = await ingestion.register_revision(
-            revision, document, f"uploads/{revision}", "Guide", []
+            revision, document, f"uploads/{revision}",
+            UploadSource(filename="Guide", access_level="employees"), []
         )
         job = await ingestion.claim_ingestion_job(revision)
         self.assertTrue(await ingestion.begin_revision_write(job.attempt, 1, 1))
@@ -205,6 +206,8 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             source_name="Guide",
             text="Инструкция AUTH-17 установка",
             chunk_no=0,
+            document_version=0,
+            access_level="employees",
             dense=[1.0, 0.0, 0.0],
         )
         topic = qdrant.TopicPoint(
@@ -324,7 +327,10 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_pending_write_blocks_retry_and_cleanup(self):
         revision = uuid4()
-        await ingestion.register_revision(revision, None, f"uploads/{revision}", "Guide", [])
+        await ingestion.register_revision(
+            revision, None, f"uploads/{revision}",
+            UploadSource(filename="Guide", access_level="employees"), [],
+        )
         job = await ingestion.claim_ingestion_job(revision)
         await ingestion.begin_revision_write(job.attempt, 1, 1)
         self.assertFalse(await ingestion.schedule_ingestion_retry(job.attempt, now()))
@@ -393,12 +399,14 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_spool_snapshot_is_durable_immutable_and_checked(self):
         revision = uuid4()
         ref = await upload_spool.stage_upload(
-            revision, ConvertedDocument(markdown="Document"), UploadSource(filename="Guide")
+            revision, ConvertedDocument(markdown="Document"),
+            UploadSource(filename="Guide", access_level="employees")
         )
         self.assertEqual(
             ref,
             await upload_spool.stage_upload(
-                revision, ConvertedDocument(markdown="Document"), UploadSource(filename="Guide")
+                revision, ConvertedDocument(markdown="Document"),
+                UploadSource(filename="Guide", access_level="employees")
             ),
         )
         staged = await upload_spool.open_staged_upload(ref)
@@ -409,6 +417,8 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             source_name="Guide",
             text="Document",
             chunk_no=0,
+            document_version=0,
+            access_level="employees",
             dense=[1.0, 0.0, 0.0],
         )
         topic = qdrant.TopicPoint(

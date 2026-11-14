@@ -7,10 +7,10 @@ from uuid import uuid4, uuid5
 from pydantic import ValidationError
 
 from contract_examples import DOCUMENT, IMAGE, MARKDOWN, NOW, REVISION, returned, validate_call_arguments
-from rag.contracts import ImageContent
+from rag.contracts import ImageContent, ImageRef
 from rag.ingestion.contracts import (
     AcceptedUpload, ClaimedIngestionJob, ConversionResult, ConvertedDocument, ConvertedImage,
-    IngestionAttempt, JobRef, PreparedChunk, StagedUpload, UploadInput, UploadSource,
+    DocumentBatch, IngestionAttempt, JobRef, PreparedChunk, StagedUpload, UploadInput, UploadSource,
 )
 from rag.ingestion.converter import convert_document
 from rag.ingestion.gateway import accept_upload
@@ -22,7 +22,8 @@ from rag.runtime.qdrant import (
     write_revision_points, write_topic_points,
 )
 from rag.runtime.upload_spool import (
-    PreparedRevision, load_prepared_revision, open_staged_upload, stage_upload, store_prepared_revision,
+    PreparedRevision, load_document_batch, load_prepared_revision, open_staged_upload,
+    stage_upload, store_document_batch, store_prepared_revision,
 )
 
 
@@ -30,7 +31,8 @@ def prepared_revision():
     """Полный согласованный набор из одного чанка и одного примера темы."""
     chunk = ChunkPoint(chunk_id=uuid5(REVISION, "0"), document_id=DOCUMENT,
                        revision_id=REVISION, source_name="Руководство.docx",
-                       text=MARKDOWN, images=[IMAGE], chunk_no=0, dense=[0.1, 0.2])
+                       text=MARKDOWN, images=[IMAGE], chunk_no=0, document_version=0,
+                       access_level="employees", dense=[0.1, 0.2])
     topic = TopicPoint(point_id=uuid5(REVISION, "question:0"), revision_id=REVISION,
                        question_no=0, text="Где фильтр?", dense=[0.3, 0.4])
     return PreparedRevision(revision_id=REVISION, preparation_profile="ingestion-v1",
@@ -42,7 +44,7 @@ class IngestionContractTests(unittest.TestCase):
         async def stream():
             yield b"document"
 
-        upload = UploadInput(content=stream(), source=UploadSource(filename="Руководство.docx"),
+        upload = UploadInput(content=stream(), source=UploadSource(filename="Руководство.docx", access_level="employees"),
                              document_id=None)
         validate_call_arguments(accept_upload, upload)
         validate_call_arguments(convert_document, upload, REVISION)
@@ -55,8 +57,15 @@ class IngestionContractTests(unittest.TestCase):
                                   images=[image.ref for image in converted.images])
         validate_call_arguments(stage_upload, REVISION, ready, upload.source)
         staging_ref = returned(stage_upload, f"uploads/{REVISION}")
+        # Gateway формирует и сохраняет полную партию до регистрации/outbox.
+        staged = returned(open_staged_upload, StagedUpload(
+            path=Path("uploads/converted.md"), source=upload.source, images=ready.images))
+        validate_call_arguments(prepare_chunks, staged)
+        chunks = returned(prepare_chunks, [PreparedChunk(text=ready.markdown, locator=None, images=ready.images)])
+        batch = DocumentBatch(source=upload.source, chunks=chunks)
+        validate_call_arguments(store_document_batch, staging_ref, batch)
         validate_call_arguments(pg.register_revision, REVISION, upload.document_id,
-                                staging_ref, upload.source.filename, [IMAGE.image_id])
+                                staging_ref, upload.source, [IMAGE.image_id])
         accepted = returned(pg.register_revision, AcceptedUpload(
             kind="accepted", document_id=DOCUMENT, job_id=REVISION))
         event = JobRef.model_validate_json(JobRef(job_id=accepted.job_id).model_dump_json())
@@ -64,13 +73,18 @@ class IngestionContractTests(unittest.TestCase):
         job = returned(pg.claim_ingestion_job, ClaimedIngestionJob(
             attempt=IngestionAttempt(job_id=event.job_id, attempt_no=1, deadline_at=NOW),
             document_id=accepted.document_id, staging_ref=staging_ref))
-        validate_call_arguments(open_staged_upload, job.staging_ref)
-        staged = returned(open_staged_upload, StagedUpload(
-            path=Path("uploads/converted.md"), source=upload.source, images=ready.images))
-        validate_call_arguments(prepare_chunks, staged)
-        chunks = returned(prepare_chunks, [PreparedChunk(text=ready.markdown, locator=None, images=ready.images)])
+        validate_call_arguments(load_document_batch, job.staging_ref)
+        restored_batch = returned(load_document_batch, DocumentBatch.model_validate_json(batch.model_dump_json()))
+        self.assertEqual(restored_batch, batch)
+        validate_call_arguments(pg.read_document_version, restored_batch.source.filename)
+        current = returned(pg.read_document_version, None)
+        validate_call_arguments(pg.reserve_document_version, job.attempt, current)
+        reservation = returned(pg.reserve_document_version, pg.ReservedRevision(
+            revision_id=REVISION, document_id=DOCUMENT, document_version=0, base_version=None))
         snapshot = prepared_revision()
         self.assertEqual(snapshot.points[0].text, chunks[0].text)
+        self.assertEqual(snapshot.points[0].document_version, reservation.document_version)
+        self.assertEqual(snapshot.points[0].access_level, batch.source.access_level)
         validate_call_arguments(store_prepared_revision, job.staging_ref, snapshot)
         restored = PreparedRevision.model_validate_json(snapshot.model_dump_json())
         self.assertEqual(returned(load_prepared_revision, restored), snapshot)
@@ -83,6 +97,53 @@ class IngestionContractTests(unittest.TestCase):
         validate_call_arguments(pg.publish_revision, job.attempt)
         self.assertEqual(returned(pg.publish_revision, 42), 42)
         self.assertNotIn("source_url", UploadSource.model_fields)
+
+    def test_existing_document_version_zero_is_not_absence(self):
+        current = returned(pg.read_document_version, pg.DocumentVersion(
+            document_id=DOCUMENT, document_version=0))
+        attempt = IngestionAttempt(job_id=REVISION, attempt_no=1, deadline_at=NOW)
+        validate_call_arguments(pg.reserve_document_version, attempt, current.document_version)
+        reservation = returned(pg.reserve_document_version, pg.ReservedRevision(
+            revision_id=REVISION, document_id=DOCUMENT, document_version=1, base_version=0))
+        resumed = ClaimedIngestionJob(attempt=attempt, document_id=DOCUMENT,
+            staging_ref="uploads/revision", document_version=reservation.document_version,
+            base_version=reservation.base_version, expected_chunk_count=1, expected_topic_count=1)
+        validate_call_arguments(pg.reserve_document_version, resumed.attempt, resumed.base_version)
+        # Трассировка формы повтора: он несёт закреплённую версию, а не запрашивает следующую.
+        self.assertEqual(returned(pg.reserve_document_version, reservation).document_version, resumed.document_version)
+
+    def test_batch_and_version_boundaries(self):
+        source = UploadSource(filename="Руководство.docx", access_level="employees")
+        with self.assertRaises(ValidationError):
+            DocumentBatch(source=source, chunks=[])
+        with self.assertRaises(ValidationError):
+            UploadSource(filename="Руководство.docx", access_level=" ")
+        with self.assertRaises(ValidationError):
+            UploadSource(filename="Руководство.docx")
+        first = PreparedChunk(text=MARKDOWN, locator=None, images=[IMAGE])
+        other = PreparedChunk(text=MARKDOWN, locator=None,
+            images=[ImageRef(image_id=IMAGE.image_id, description="Другое описание")])
+        with self.assertRaises(ValidationError):
+            DocumentBatch(source=source, chunks=[first, other])
+        DocumentBatch(source=source, chunks=[first, first])  # Перекрытие может повторять изображение.
+        for version, base in ((1, None), (0, 0), (2, 0), (-1, None)):
+            with self.subTest(version=version, base=base), self.assertRaises(ValidationError):
+                pg.ReservedRevision(revision_id=REVISION, document_id=DOCUMENT,
+                    document_version=version, base_version=base)
+        with self.assertRaises(ValidationError):
+            ClaimedIngestionJob(attempt=IngestionAttempt(job_id=REVISION, attempt_no=1, deadline_at=NOW),
+                document_id=DOCUMENT, staging_ref="uploads/revision", base_version=0)
+
+    def test_snapshot_keeps_one_document_version_and_access_level(self):
+        original = prepared_revision()
+        for field, value in (("document_version", 1), ("access_level", "operators"),
+                             ("source_name", "Другое имя")):
+            data = original.model_dump()
+            second = dict(data["points"][0], chunk_no=1, chunk_id=uuid5(REVISION, "1"))
+            second[field] = value
+            data["points"].append(second)
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                PreparedRevision.model_validate(data)
 
     def test_snapshot_rejects_corruption_and_wrong_identity(self):
         original = prepared_revision()

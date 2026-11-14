@@ -76,7 +76,7 @@ sidebar_position: 1.1
 | **Источник / ссылка на источник** | Документ, подтверждающий ответ, и его ссылочные метаданные. source_name — подпись; в MVP source_url=None, API строит HTML-заглушку по document_id. | [SourceRef](../rag-core/contracts.md#общие-dto) |
 | **Локатор** · SourceLocator | Место внутри источника: `page` с нумерацией от 1 и/или `section`. При неизвестном месте используется `None`. | [Подготовка текста](../ingestion/worker.md#подготовка-текста) |
 | **Временная загрузка / staging / upload spool** | Полученный после конвертации Markdown и метаданные на рабочем томе до завершения задания. Оригинальный документ туда не записывается. Подготовленные наборы закрепляются как PreparedRevision. | [Владение данными](../architecture/data-and-versions.md#кто-владеет-данными) |
-| **Манифест загрузки** · `manifest.json` | Имя файла и URL источника, сохранённые рядом с временным файлом `source`. | [Формат загрузки](../infrastructure/upload-spool/index.md#запись-временного-файла) |
+| **Манифест загрузки** · `manifest.json` | Точное имя файла, метка доступа и ImageRef рядом с converted.md и chunks.json; оригинала и URL источника нет. | [Формат загрузки](../infrastructure/upload-spool/index.md#запись-временного-файла) |
 | **Манифест редакции** · RevisionManifest | `revision_id` и ожидаемое число чанков для проверки полного набора детерминированных ID. Используется при восстановлении индекса. | [Манифесты редакций](../infrastructure/postgresql/ingestion.md#list-required-revision-manifests) |
 | **Очистка / GC** · Garbage Collection | Удаление ненужных точек и временных загрузок. Старые точки удаляются после освобождения закреплений; уборка файлов выполняется независимо. | [Очистка Worker](../ingestion/worker.md#очистка-после-обработки) |
 | **Сверка незавершённой записи** | Операторская процедура при неизвестном исходе записи Qdrant. Исключает старые операции, удаляет частичные точки и снимает блокировку повтора. | [Процедура сверки](../infrastructure/qdrant/index.md#сверка-незавершённых-записей) |
@@ -95,7 +95,7 @@ sidebar_position: 1.1
 | `update_id` / `chat_id` | ID входящего обновления Telegram для дедупликации / ID чата для порядка и доставки. | [Приём RAG API](../telegram/module/entrypoints.md#handle-telegram-update) |
 | `document_id` | UUID документа, общий для всех его редакций. `None` на входе загрузки означает новый документ. | [Ingestion](../ingestion/index.md#новый-документ-или-новая-редакция) |
 | `revision_id` / `job_id` | Один UUID редакции. В уведомлении индексации и контрактах задания называется `job_id`. | [DTO Ingestion](../ingestion/contracts.md#dto) |
-| `revision_no` | Номер редакции в порядке регистрации внутри одного документа. | [document_revisions](../infrastructure/postgresql/index.md#document_revisions) |
+| `revision_no` | Порядок регистрации загрузок внутри документа; не номер опубликованной версии. | [document_revisions](../infrastructure/postgresql/index.md#document_revisions) |
 | `chunk_no` / `chunk_id` | Номер чанка от 0 / UUID точки, вычисляемый как `uuid5(revision_id, str(chunk_no))`. Повтор редакции сохраняет эти ID. | [Сборка точки](../ingestion/contracts.md#сборка-точки-qdrant) |
 | `generation` / `corpus_generation` / `pinned_generation` | Текущее поколение в `corpus_state` / поколение в DTO и вызовах / закреплённое поколение в строке запроса. | [PostgreSQL](../infrastructure/postgresql/index.md) |
 | `revision_ids` | Набор UUID редакций, видимых в поколении запроса. RAG Core получает его из PostgreSQL и передаёт Searcher. | [Поиск](../retrieval/entrypoints.md#search) |
@@ -362,3 +362,13 @@ sidebar_position: 1.1
 | OcrResult / ImageDescription | Текст, распознанный на картинке / VLM-описание изображения документа. | [Model Gateway](../model-gateway/contracts.md#image-results) |
 
 **Отзыв допуска сотрудника:** запрет новых вопросов без отмены ранее принятого request и доставки его итога. Допуск фиксируется фактом принятия, а не новой проверкой enabled в середине Core. [Правило](../telegram/module/access.md).
+
+## Партия чанков и версия документа
+
+| Термин | Значение | Контракт |
+| --- | --- | --- |
+| DocumentBatch / chunks.json | Полное непустое разбиение одного документа; общие source.filename/access_level задаются один раз. | [DTO Ingestion](../ingestion/contracts.md) |
+| document_version / base_version | Номер публикуемой версии с 0 и предыдущая опубликованная версия; закрепляются за job_id. База None означает отсутствие предыдущей публикации. | [Резервирование](../infrastructure/postgresql/ingestion.md#reserve-document-version) |
+| DocumentVersion / ReservedRevision | Найденная опубликованная версия / идемпотентно назначенная редакция. | [DTO PostgreSQL](../infrastructure/postgresql/ingestion.md#dto-версий) |
+| source.filename | Точное регистрозависимое уникальное имя для определения документа; после поиска сохраняется document_id. | [Ingestion](../ingestion/index.md) |
+| access_level | Метка документа из доверенного адаптера; копируется в точки и не заменяет авторизацию. Словарь закрытых уровней и фильтрация пока не определены. | [Метаданные](../ingestion/contracts.md#политика-метаданных) |

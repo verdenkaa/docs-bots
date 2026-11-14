@@ -4,11 +4,7 @@ sidebar_position: 3
 toc_max_heading_level: 2
 ---
 
-:::warning Рабочий контракт
-Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
-:::
-
-Адаптер поднимает `StorageError` при недоступности PostgreSQL или неизвестном коммите. Время передаём в UTC. [Схема PostgreSQL](./index.md). [DTO RAG Core](../../rag-core/contracts.md#общие-dto).
+Все переходы сверяют processing, номер и действующий технический срок. Неизвестный коммит — StorageError. [DTO](../../rag-core/contracts.md).
 
 ## <span className="operation-badge operation-badge--db">DB</span> `claim_question` {#claim-question}
 
@@ -16,28 +12,53 @@ toc_max_heading_level: 2
 async def claim_question(request_id: int) -> ClaimedQuestion | None: ...
 ~~~
 
-**Кто вызывает.** RAG Core.
+**Кто вызывает.** Core из rag.questions.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `request_id` | `int` | Ссылка из уведомления RabbitMQ на сохранённый запрос. | `1042` |
+| request_id | int | ID сохранённого вопроса. | 1042 |
 
 ### Что отдаёт
 
-**Формат.** Объект Pydantic `ClaimedQuestion` или `None`.
+**Формат.** ClaimedQuestion или None.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `attempt` | `ProcessingAttempt` | ID, номер и срок активной попытки. | `{"request_id": 1042, "attempt_no": 1, "deadline_at": ...}` |
-| `raw_question` | `str` | Исходный question_text для Guardrails. | `"Где инструкция по установке?"` |
-| `corpus_generation` | `int` | Поколение из pinned_generation для кеша и поиска. | `42` |
-| `return` | `None` | Запрос отсутствует, уже завершён, занят или пока не готов по порядку и времени. | `None` |
+| return | ClaimedQuestion | Попытка, input, received_at, prepared_text и поколение. | corpus_generation=42 |
+| return | None | Завершён/занят/не готов либо отсутствует. | None |
 
 ### Правила и ошибки
 
-Под блокировкой чата берёт готовый по времени `queued` или `processing` с истёкшим сроком, если запрос первый на этапе обработки в этом чате. Ставит `processing`, увеличивает `attempt_no` и сохраняет срок в `resume_at`. При первом взятии закрепляет поколение, при повторе использует сохранённое. Если номер попытки выше лимита обработки, Core использует её только для фиксации технического итога. [Блокировки и повторы](../../rag-core/flow.md#транзакции-и-повторы)
+Под блокировкой сотрудника берёт queued либо истёкшую processing-попытку. Других принятых вопросов этого сотрудника нет. При первом взятии закрепляет поколение, повтор его сохраняет. Номер сверх лимита допускается только для фиксации технического исхода.
+
+## <span className="operation-badge operation-badge--db">DB</span> `save_prepared_question` {#save-prepared-question}
+
+~~~python
+async def save_prepared_question(attempt: ProcessingAttempt, text: str) -> bool: ...
+~~~
+
+**Кто вызывает.** Core после OCR, до Guardrails.
+
+### Что принимает
+
+| Параметр | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| attempt | ProcessingAttempt | Действующая попытка и объединённый OCR-текст/подпись. | 1042 |
+| text | непустой str | Действующая попытка и объединённый OCR-текст/подпись. | "Ошибка AUTH-17" |
+
+### Что отдаёт
+
+**Формат.** bool.
+
+| Поле / значение | Тип | Смысл | Пример |
+| --- | --- | --- | --- |
+| return | bool | Текст сохранён либо попытка устарела. | True |
+
+### Правила и ошибки
+
+Первый непустой prepared_text закрепляет результат OCR. Повтор использует его; изменение уже сохранённого текста — ошибка контракта. Пустой OCR без подписи не сохраняется как нормальный вопрос.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `load_revision_ids` {#load-revision-ids}
 
@@ -45,53 +66,52 @@ async def claim_question(request_id: int) -> ClaimedQuestion | None: ...
 async def load_revision_ids(corpus_generation: int) -> frozenset[UUID]: ...
 ~~~
 
-**Кто вызывает.** RAG Core.
+**Кто вызывает.** Core до Guardrails, затем тот же набор для Searcher.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `corpus_generation` | `int` | Поколение, закреплённое в PostgreSQL за этим запросом. | `42` |
+| corpus_generation | int >= 0 | Закреплённый состав. | 42 |
 
 ### Что отдаёт
 
-**Формат.** Неизменяемое множество UUID. Пустое множество допустимо.
+**Формат.** frozenset UUID.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `return` | `frozenset[UUID]` | ID редакций, чьи интервалы видимости содержат указанное поколение. | `frozenset({UUID("bb32ecbf-082b-4497-a41f-4b61aa56a139")})` |
+| return | frozenset[UUID] | Видимые редакции; пустое множество допустимо. | frozenset() |
 
 ### Правила и ошибки
 
-Включает редакцию, если нижняя граница видимости задана и не выше поколения, а верхняя граница отсутствует или выше него.
+Интервал visible_from &lt;= generation &lt; visible_until; открытый верхний предел допустим. Закрепление защищает обе разновидности точек: чанки и примеры.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `complete_question` {#complete-question}
 
 ~~~python
-async def complete_question(attempt: ProcessingAttempt, result: RagResult) -> bool: ...
+async def complete_question(attempt: ProcessingAttempt, outcome: QuestionOutcome) -> bool: ...
 ~~~
 
-**Кто вызывает.** RAG Core.
+**Кто вызывает.** Core после бизнес-ветки.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `attempt` | `ProcessingAttempt` | Активная попытка, полученная при взятии работы. | `{"request_id": 1042, "attempt_no": 1, "deadline_at": ...}` |
-| `result` | `RagResult` | Готовый текст и источники. | `{"answer_text": "См. раздел «Установка».", "sources": [...]}` |
+| attempt | ProcessingAttempt | Право обработки. | request_id=1042 |
+| outcome | QuestionOutcome | AnsweredOutcome / NoticeOutcome / SupportOutcome. | SupportOutcome(kind="support",reason="no_evidence") |
 
 ### Что отдаёт
 
-**Формат.** Одно логическое значение.
+**Формат.** bool.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `return` | `bool` | Результат, освобождение закрепления и уведомление rag.results сохранены одной транзакцией. | `True` |
-| `return` | `bool` | Переход не выполнен, например попытка потеряла право на запись. | `False` |
+| return | bool | Итог, освобождение поколения и следующий этап сохранены атомарно; False — устаревшая попытка. | True |
 
 ### Правила и ошибки
 
-Сверяет `processing`, номер и срок попытки. При коммите ставит `ready_to_deliver`, обнуляет счётчик попыток для нового этапа и очищает срок. В той же транзакции уведомляет о следующем готовом вопросе чата.
+answered создаёт самостоятельную answer-доставку content=RagResult и outbox DeliveryRef. notice создаёт notice-доставку с текстом. support создаёт/находит case в creating и сохраняет намерение Support; немедленного повторного вопроса нет. Все ветки освобождают pinned_generation. Активный слот сотрудника остаётся до терминальной доставки. Очереди следующего вопроса этого сотрудника нет.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `schedule_question_retry` {#schedule-question-retry}
 
@@ -99,24 +119,25 @@ async def complete_question(attempt: ProcessingAttempt, result: RagResult) -> bo
 async def schedule_question_retry(attempt: ProcessingAttempt, retry_at: datetime) -> bool: ...
 ~~~
 
-**Кто вызывает.** RAG Core.
+**Кто вызывает.** Core при временном сбое.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `attempt` | `ProcessingAttempt` | Активная попытка, полученная при взятии работы. | `{"request_id": 1042, "attempt_no": 1, "deadline_at": ...}` |
-| `retry_at` | `datetime` | Время, с которого можно повторить работу. Дата и время в UTC. | `datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)` |
+| attempt | ProcessingAttempt | Текущая попытка и следующий запуск. | 1042 |
+| retry_at | UTC datetime | Текущая попытка и следующий запуск. | UTC |
 
 ### Что отдаёт
 
-**Формат.** Одно логическое значение.
+**Формат.** bool.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `return` | `bool` | Ожидание и outbox для rag.questions сохранены. Поколение остаётся закреплённым. | `True` |
-| `return` | `bool` | Переход не выполнен, например попытка потеряла право на запись. | `False` |
+| return | bool | Повтор и outbox сохранены либо право утрачено. | True |
 
 ### Правила и ошибки
 
-Сверяет `processing`, номер и срок попытки. Ставит `queued`, сохраняет `retry_at` в `resume_at` и создаёт outbox с тем же `available_at`.
+Возвращает queued, сохраняет поколение и prepared_text, записывает resume_at и RequestRef с available_at. received_at не меняется. Внешние вызовы идут вне транзакции.
+
+Наличие принятого request уже подтверждает допуск на момент регистрации. Последующее enabled=False не запрещает claim/повтор/complete_question для этого request и не отменяет его модельные шаги. Сроки попыток, версия корпуса и ограничение одного активного вопроса сохраняются.

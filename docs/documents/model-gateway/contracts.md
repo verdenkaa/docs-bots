@@ -3,17 +3,13 @@ title: DTO и ошибки Model Gateway
 sidebar_position: 3
 ---
 
-:::warning Рабочий контракт
-Структуры фиксируют границу модулей. Значения профилей, пороги, провайдеры и численные лимиты выберем по кейсу; адаптеры ещё не реализованы.
-:::
+DTO ниже — целевые объекты Pydantic; код `app/rag/model_gateway/contracts.py` синхронизирован с этим разделом. Все перечисленные поля обязательны; `None` передаём явно. Транспортный JSON конкретного провайдера наружу не выходит. [Точки входа](./entrypoints.md).
 
-DTO — объекты Pydantic из `app/rag/model_gateway/contracts.py`. Все перечисленные поля обязательны; `None` передаём явно. Транспортный JSON конкретного провайдера наружу не выходит. [Точки входа](./entrypoints.md).
-
-Python-блоки задают точные типы, ограничения и валидаторы; тесты сверяют их с кодом. Таблицы поясняют назначение полей и показывают примеры. Общие ограничения `DTO`, `PositiveId`, `NonNegativeInt` и `NonEmptyText` описаны в [правилах DTO](../faq/dto.md#база-и-ограничения).
+Python-блоки задают точные типы, ограничения и валидаторы; их соответствие коду проверяет тест документационных контрактов. Таблицы поясняют назначение полей и показывают примеры. Общие ограничения `DTO`, `PositiveId`, `NonNegativeInt` и `NonEmptyText` описаны в [правилах DTO](../faq/dto.md#база-и-ограничения).
 
 ## Конфигурация роли {#binding}
 
-Runtime передаёт `Mapping[ModelRole, ModelBinding]` в `start_models`. Ключ задаёт роль, значение — один адаптер. Worker требует `embedding`; Core — `embedding`, `injection`, `generation` и `reranker`, если он включён в профиле поиска.
+Runtime передаёт `Mapping[ModelRole, ModelBinding]` в `start_models`. Ключ задаёт роль, значение — один адаптер. Core требует embedding, injection, generation, ocr и опциональный reranker. Индексатор Worker — embedding и generation для примеров вопросов; Gateway/Document Converter — ocr/vision по профилю обработки. Процесс загружает только вызываемые им роли.
 
 ~~~python
 from typing import Annotated, Literal, Self
@@ -21,7 +17,7 @@ from pydantic import Field, model_validator
 from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
 
 
-ModelRole = Literal["embedding", "reranker", "injection", "generation"]
+ModelRole = Literal["embedding", "reranker", "injection", "generation", "ocr", "vision"]
 
 
 class ModelBinding(DTO):
@@ -158,7 +154,7 @@ class ModelGenerationResult(DTO):
 | `TokenUsage.input_tokens` | Неотрицательное число входных токенов или неизвестно. | `700` |
 | `TokenUsage.output_tokens` | Неотрицательное число выходных токенов или неизвестно. | `120` |
 
-`ModelGenerationResult` — сырой результат вызова модели. Он **не заменяет** бизнес-DTO [`GenerationResult`](../rag-core/contracts.md#исходы-шагов): JSON, метки `S1` и ID чанков проверяет Answer Generator. Неизвестную причину завершения считаем ошибкой адаптера, а `length`/`filtered` не превращаем в полноценный ответ.
+`ModelGenerationResult` — сырой результат вызова модели. Он **не заменяет** бизнес-DTO [`GenerationResult`](../rag-core/contracts.md#исходы-шагов): JSON, метки `S1` и ID чанков/изображений проверяет Answer Generator; JSON примеров вопросов — Ingestion Worker. Неизвестную причину завершения считаем ошибкой адаптера, а `length`/`filtered` не превращаем в полноценный ответ.
 
 ## Ошибки {#errors}
 
@@ -174,3 +170,24 @@ class ModelGenerationResult(DTO):
 | `model_timeout` / `model_overloaded` / `model_unavailable` | `True` | Временная недоступность, исчерпан бюджет ожидания/вызова либо очередь допуска заполнена. |
 
 Известный постоянный отказ API не маркируем временным. Повтор всего вопроса назначает RAG Core, задания — Ingestion Worker. Gateway не запускает скрытые циклы повторов и не переключает провайдера.
+## OCR и описание изображения {#image-results}
+
+ImageContent берётся из [общих DTO](../rag-core/contracts.md#общие-dto).
+
+~~~python
+class OcrResult(DTO):
+    profile_id: NonEmptyText
+    text: str
+
+class ImageDescription(DTO):
+    profile_id: NonEmptyText
+    description: NonEmptyText
+~~~
+
+| Поле | Тип | Смысл | Пример |
+| --- | --- | --- | --- |
+| profile_id | str | Реально выполненный профиль OCR/VLM. | ocr-v1 / vision-v1 |
+| OcrResult.text | str | Только извлечённый текст, пустая строка допустима. | AUTH-17 |
+| ImageDescription.description | NonEmptyText | Описание изображения документа для плейсхолдера. | Схема согласования |
+
+Байты и ключи не логируются; ошибки представлены общим StepError.

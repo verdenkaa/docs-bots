@@ -4,13 +4,7 @@ sidebar_position: 4
 toc_max_heading_level: 2
 ---
 
-:::warning Рабочий контракт
-Способ подключения адаптера, форматы документов и лимиты уточним по кейсу.
-:::
-
-[Правила DTO и Pydantic](../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
-
-[Приём файла](./gateway.md) · [Обработка задания](./worker.md) · [DTO](./contracts.md#dto)
+[DTO Ingestion](./contracts.md) · [Gateway](./gateway.md) · [Worker](./worker.md)
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `accept_upload` {#accept-upload}
 
@@ -18,33 +12,60 @@ toc_max_heading_level: 2
 async def accept_upload(upload: UploadInput) -> UploadResult: ...
 ~~~
 
-**Кто вызывает.** Адаптер загрузки после проверки доступа.
+**Кто вызывает.** Адаптер после проверки доступа.
 
 ### Что принимает
 
-| Параметр | Тип | Зачем нужен | Пример |
+| Параметр / поле | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `upload` | `UploadInput` | Объект загрузки с потоком байтов и метаданными. | `{"content": file_stream, "source": {...}, "document_id": None}` |
-| `upload.content` | `AsyncIterable[bytes]` | Поток файла для записи во временный том. | `file_stream` |
-| `upload.source.filename` | `str` | Имя файла для определения формата и подписи источника. | `"Руководство по установке.pdf"` |
-| `upload.source.source_url` | `str \| None` | Адрес источника для ссылки в ответе, если он известен. | `None` |
-| `upload.document_id` | `UUID \| None` | Существующий документ при замене. `None` для нового документа. | `None` |
+| `upload` | UploadInput | Поток и метаданные. | UploadInput(...) |
+| upload.content | AsyncIterable[bytes] | Оригинал текущего вызова. | file_stream |
+| upload.source.filename | str | Название источника. | Руководство.docx |
+| upload.document_id | UUID или None | Замена либо новый документ. | None |
 
 ### Что отдаёт
 
-**Формат.** Один объект Pydantic `UploadResult`. Поля зависят от `kind`.
+**Формат.** Один вариант Pydantic UploadResult.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Параметр / поле | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `kind` | `Literal["accepted"]` | Файл, задание и outbox зафиксированы. Индексация выполняется отдельно. | `"accepted"` |
-| `document_id` | `UUID` | ID документа, который можно передать при следующем обновлении. | `UUID("43f95f66-7343-4cbc-beb5-19fd36a8ca77")` |
-| `job_id` | `UUID` | ID задания. Равен revision_id новой редакции. | `UUID("bb32ecbf-082b-4497-a41f-4b61aa56a139")` |
-| `kind` | `Literal["rejected"]` | Загрузка отклонена. | `"rejected"` |
-| `code` | `Literal["unknown_document", "invalid_upload", "too_large"]` | Причина отказа. Поле есть только в варианте rejected. | `"unknown_document"` |
+| kind | accepted / rejected | Надёжный приём / отказ. | accepted |
+| document_id / job_id | UUID / UUID | Документ / редакция; только accepted. | UUID(...) |
+| code | str | Только rejected; коды в DTO. | unsupported_format |
 
 ### Правила и ошибки
 
-При техническом сбое записи или неизвестном коммите поднимает `StorageError`. Каждая новая загрузка получает свой UUID редакции. [Повторы приёма](./gateway.md#что-делать-при-сбое-приёма)
+Конвертация/S3/Markdown выполняются до accepted. StepError/StorageError — технический сбой; неизвестный коммит не равен rejected. Новый вызов не обещает дедупликацию внешнего транспорта.
+
+## <span className="operation-badge operation-badge--async">ASYNC</span> `convert_document` {#convert-document}
+
+~~~python
+async def convert_document(upload: UploadInput, revision_id: UUID) -> ConversionResult: ...
+~~~
+
+**Кто вызывает.** Gateway до записи S3/тома/задания.
+
+### Что принимает
+
+| Параметр / поле | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| upload | UploadInput | Поток читается один раз с лимитами. | UploadInput(...) |
+| revision_id | UUID | Основа стабильных ID изображений. | UUID(...) |
+
+### Что отдаёт
+
+**Формат.** Один Pydantic ConversionResult, без оригинала.
+
+| Параметр / поле | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| markdown | NonEmptyText | Markdown с неделимыми плейсхолдерами. | `![Схема](image://…)` |
+| images | list[ConvertedImage] | Изображения в порядке документа, [] допустим. | [] |
+| images[].ref | ImageRef | UUID и OCR/VLM-описание. | ImageRef(...) |
+| images[].content | ImageContent | Проверенные байты и MIME для put_image. | ImageContent(...) |
+
+### Правила и ошибки
+
+Не пишет оригинал или S3. Окончательный отказ разбора — StepError(unsupported_format/conversion_failed, False), лимит — StepError(too_large, False); Gateway переводит их в UploadRejected. Сбой OCR/VLM остаётся техническим. [Порядок](./converter.md).
 
 ## <span className="operation-badge operation-badge--sub">SUB</span> `handle_ingestion_job` {#handle-ingestion-job}
 
@@ -52,27 +73,27 @@ async def accept_upload(upload: UploadInput) -> UploadResult: ...
 async def handle_ingestion_job(event: JobRef) -> ConsumeDecision: ...
 ~~~
 
-**Кто вызывает.** Адаптер RabbitMQ для `ingestion.jobs`.
+**Кто вызывает.** RabbitMQ-адаптер ingestion.jobs.
 
 ### Что принимает
 
-| Параметр | Тип | Зачем нужен | Пример |
+| Параметр / поле | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `event` | `JobRef` | Ссылка на сохранённое задание. | `{"job_id": UUID("bb32ecbf-082b-4497-a41f-4b61aa56a139")}` |
-| `event.job_id` | `UUID` | ID редакции для claim_ingestion_job. | `UUID("bb32ecbf-082b-4497-a41f-4b61aa56a139")` |
+| event | JobRef | Ссылка на задание, не файл. | JobRef(...) |
+| event.job_id | UUID | Ключ claim_ingestion_job. | UUID(...) |
 
 ### Что отдаёт
 
-**Формат.** Одна строка Python, значение `ConsumeDecision`.
+**Формат.** Одна строка ConsumeDecision.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Параметр / поле | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `return` | `Literal["ack"]` | Разрешает подтвердить доставку после сохранённого перехода или если работа уже не требуется. | `"ack"` |
-| `return` | `Literal["retry_broker"]` | Просит повторную доставку с задержкой, когда состояние PostgreSQL не удалось проверить или сохранить. | `"retry_broker"` |
+| return | Literal["ack"] | Переход сохранён либо БД подтвердила отсутствие доступной работы. | ack |
+| return | Literal["retry_broker"] | Состояние/коммит PostgreSQL неизвестен. | retry_broker |
 
 ### Правила и ошибки
 
-Публикация, фиксация ошибки и план повтора считаются сохранёнными переходами. `ack` также возвращаем, если PostgreSQL подтвердил, что по этому уведомлению сейчас работы нет, в том числе когда редакция ждёт сверки записи. При неизвестном состоянии или коммите возвращаем `retry_broker`. Если супервизор остановил процесс, RabbitMQ вернёт неподтверждённое уведомление при закрытии соединения. [Таблица исходов](./worker.md#повторы-и-подтверждение-очереди)
+Читает готовый MD и подготовленный набор. Публикует оба индекса. Неизвестная запись Qdrant блокирует повтор/удаление до сверки. [Все исходы](./worker.md#повторы-и-подтверждение-очереди).
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `prepare_chunks` {#prepare-chunks}
 
@@ -80,25 +101,27 @@ async def handle_ingestion_job(event: JobRef) -> ConsumeDecision: ...
 async def prepare_chunks(upload: StagedUpload) -> list[PreparedChunk]: ...
 ~~~
 
-**Кто вызывает.** Ingestion Worker после чтения файла из рабочего тома.
+**Кто вызывает.** Worker, если PreparedRevision ещё не сохранён.
 
 ### Что принимает
 
-| Параметр | Тип | Зачем нужен | Пример |
+| Параметр / поле | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `upload` | `StagedUpload` | Путь к сохранённому файлу и его метаданные. | `{"path": Path(".../source"), "source": {...}}` |
-| `upload.path` | `Path` | Локальный путь для чтения парсером. | `Path(".../source")` |
-| `upload.source` | `UploadSource` | Имя файла и адрес, прочитанные из манифеста. | `{"filename": "Руководство по установке.pdf", "source_url": None}` |
+| upload | StagedUpload | Markdown и манифест из Runtime. | StagedUpload(...) |
+| upload.path | Path | Только converted.md от адаптера тома. | Path(".../converted.md") |
+| upload.source | UploadSource | Название исходника. | Руководство.docx |
+| upload.images | list[ImageRef] | Разрешённые плейсхолдеры. | [] |
 
 ### Что отдаёт
 
-**Формат.** Упорядоченный список объектов DTO `PreparedChunk`. `[]` означает отсутствие пригодного текста.
+**Формат.** Упорядоченный список PreparedChunk; [] — нет пригодного содержимого.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Параметр / поле | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `[].text` | `str` | Текст чанка для векторизации и поиска. | `"Фрагмент инструкции по установке."` |
-| `[].locator` | `SourceLocator \| None` | Место чанка в исходном документе, если его можно определить. | `{"page": 4, "section": "Установка"}` |
+| [].text | NonEmptyText | Текст и описания для индекса. | Нажмите фильтр… |
+| [].locator | SourceLocator или None | Внутренняя диагностика, не обязательная ссылка. | None |
+| [].images | list[ImageRef] | Изображения именно этого чанка. | [] |
 
 ### Правила и ошибки
 
-При ошибке парсинга поднимает `StepError(code, retryable)`. С тем же файлом и профилем возвращает чанки в том же порядке. [Правила подготовки текста](./worker.md#подготовка-текста)
+Первично режет по разделам, крупные части — с настраиваемым перекрытием. Не разрывает плейсхолдер; неделимый блок сверх бюджета — StepError(chunk_too_large, False). Не выполняет OCR/VLM/конвертацию. Неизвестный ID — ошибка. После сохранения PreparedRevision повтор использует снимок.

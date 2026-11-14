@@ -4,41 +4,32 @@ sidebar_position: 2
 toc_max_heading_level: 2
 ---
 
-:::warning Рабочий контракт
-Модель, обучающие данные и ограничения длины уточняются.
-:::
-
-[Правила DTO и Pydantic](../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
-
-Для реализации используется `check_question`. [Место вызова в RAG Core](../rag-core/flow.md#порядок-вызовов-и-происхождение-данных).
-
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `check_question` {#check-question}
 
 ~~~python
-async def check_question(raw_question: str) -> GuardrailsResult: ...
+async def check_question(raw_question: str, revision_ids: frozenset[UUID]) -> GuardrailsResult: ...
 ~~~
 
-**Кто вызывает.** RAG Core после `claim_question`, до Exact Cache.
+**Кто вызывает.** Core после текста/OCR и load_revision_ids, до кеша.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `raw_question` | `str` | Исходный текст из PostgreSQL для проверки и нормализации. Пустая строка или только пробелы дают invalid_input. | `"Где инструкция по установке?"` |
+| raw_question | str | Исходный текст либо сохранённый prepared_text. | Ошибка AUTH-17 |
+| revision_ids | frozenset[UUID] | Редакции закреплённого поколения для примеров темы. | frozenset(&#123;UUID(...)&#125;) |
 
 ### Что отдаёт
 
-**Формат.** Один объект Pydantic. `GuardrailsResult` объединяет четыре варианта по полю `kind`. Дополнительные поля присутствуют только в указанном варианте.
+**Формат.** Один вариант GuardrailsResult.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `kind` | `Literal["allowed"]` | Вопрос допущен. | `"allowed"` |
-| `normalized_question` | `str` | Только при allowed. Непустой текст для кеша, поиска и генерации. | `"Где инструкция по установке?"` |
-| `kind` | `Literal["blocked"]` | Сработал детектор. Core просит переформулировать вопрос. | `"blocked"` |
-| `kind` | `Literal["invalid_input"]` | Ввод не прошёл проверку. Core просит прислать корректный вопрос. | `"invalid_input"` |
-| `kind` | `Literal["detector_unavailable"]` | Проверка не завершилась из-за технического сбоя. | `"detector_unavailable"` |
-| `retryable` | `bool` | Только при detector_unavailable. Core использует признак, чтобы решить, повторять ли запрос. | `True` |
+| kind / normalized_question | allowed / str | Допуск и непустой текст для остальных шагов. | "allowed" / "Где фильтр?" |
+| kind | blocked / invalid_input | Инъекция или явная бессмыслица. | "invalid_input" |
+| kind | out_of_scope | Низкое сходство с примерами темы. | "out_of_scope" |
+| kind / retryable | detector_unavailable / bool | Технический сбой обязательной проверки. | "detector_unavailable" / True |
 
 ### Правила и ошибки
 
-Успех выглядит как `{"kind": "allowed", "normalized_question": "Где инструкция по установке?"}`. Отказ выглядит как `{"kind": "blocked"}`. Внутри вызывается `Model Gateway.classify_injection(raw_question, timeout_s=detector_timeout_s)`; бюджет задан конфигурацией. Его `InjectionResult` трактуется Guardrails по правилу закреплённого профиля; наружу остаётся `GuardrailsResult`. Сбои детектора (`StepError`) преобразуются в `detector_unavailable`, сохраняя `retryable`. [Определение DTO](../rag-core/contracts.md#исходы-шагов) · [Правила нормализации](./index.md#нормализация).
+Сначала проверяет ввод/явную бессмыслицу своим простым классификатором, затем инъекцию через classify_injection; спорный осмысленный текст не отбрасывает только по этой проверке. Нормализует, сохраняя URL/числа/операторы. При непустых revision_ids получает embed_texts([query],"query",...) и find_topic_matches; по щадящему порогу решает тему. При непустых revision_ids успешная пустая выдача примеров означает неполноту индекса и detector_unavailable, а не out_of_scope. Порог применяется в Guardrails после получения ближайшего примера без серверного score_threshold. Пустой revision_ids не вызывает Qdrant и после базовых проверок даёт allowed: Core знает, что корпус пуст, и создаёт SupportOutcome(no_evidence). Сбой индекса/модели даёт detector_unavailable. Модельное изменение смысла после проверки не допускается.

@@ -4,10 +4,6 @@ sidebar_position: 2
 toc_max_heading_level: 2
 ---
 
-:::warning Рабочий контракт
-Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
-:::
-
 [Правила DTO и Pydantic](../../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
 
 [Формат сообщений](./index.md#структура-сообщения) · [Функции outbox](../postgresql/outbox.md).
@@ -53,7 +49,7 @@ async def publish_notice(notice: OutboxNotice) -> None: ...
 | `notice` | `OutboxNotice` | Уведомление из поля `notice` записи `ReadyOutboxRow`. | `{"message_id": UUID("581d505d-d09d-482b-aa88-11406ed5ae42"), "route": "rag.questions", "event": {"request_id": 1042}}` |
 | `notice.message_id` | `UUID` | Стабильный AMQP message_id. | `UUID("581d505d-d09d-482b-aa88-11406ed5ae42")` |
 | `notice.route` | `WorkRoute` | Ключ маршрутизации уведомления. | `"rag.questions"` |
-| `notice.event` | `RequestRef \| JobRef` | Данные тела сообщения. Тип определяется маршрутом. | `{"request_id": 1042}` |
+| `notice.event` | `RequestRef \| DeliveryRef \| JobRef` | Данные тела сообщения. Тип определяется маршрутом. | `{"request_id": 1042}` |
 
 ### Что отдаёт
 
@@ -89,10 +85,15 @@ from dataclasses import dataclass
 WorkRoute = Literal["rag.questions", "rag.results", "ingestion.jobs"]
 
 
-class RagNotice(DTO):
+class QuestionNotice(DTO):
     message_id: UUID
-    route: Literal["rag.questions", "rag.results"]
+    route: Literal["rag.questions"]
     event: RequestRef
+
+class ResultNotice(DTO):
+    message_id: UUID
+    route: Literal["rag.results"]
+    event: DeliveryRef
 
 
 class IngestionNotice(DTO):
@@ -101,7 +102,7 @@ class IngestionNotice(DTO):
     event: JobRef
 
 
-OutboxNotice = Annotated[RagNotice | IngestionNotice, Field(discriminator="route")]
+OutboxNotice = Annotated[QuestionNotice | ResultNotice | IngestionNotice, Field(discriminator="route")]
 ~~~
 
 [DTO RAG](../../rag-core/contracts.md#очередь-и-готовый-результат) · [DTO Ingestion](../../ingestion/contracts.md#dto).

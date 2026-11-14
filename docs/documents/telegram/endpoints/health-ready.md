@@ -4,10 +4,6 @@ sidebar_position: 4
 hide_title: true
 ---
 
-:::warning На согласовании
-Предлагаемая внутренняя проверка приёма. Предел числа незавершённых запросов нужно задать перед запуском.
-:::
-
 # <span className="operation-badge operation-badge--get">GET</span> `/health/ready`
 
 ## Назначение и доступ

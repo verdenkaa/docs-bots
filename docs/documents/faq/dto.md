@@ -3,9 +3,9 @@ title: DTO и Pydantic
 sidebar_position: 1.2
 ---
 
-:::warning Правила каркаса
-DTO и проверки уже реализованы. Обработчики и адаптеры остаются заглушками; проверки контрактов не заменяют интеграционный прогон с базами, Telegram и моделями.
-:::
+Документация задаёт **целевые контракты MVP**, включая новые OCR/Support/Ingestion DTO. DTO, точки входа и контрактные тесты каркаса синхронизированы с текущими спецификациями. Взаимная обязательность полей проверяется model_validator; прикладные операции и адаптеры пока поднимают NotImplementedError. Наличие схемы и снятие warning не означают реализованный сценарий.
+
+Канонические типы: [общие DTO](../rag-core/contracts.md), [RAG API](../telegram/module/contracts.md), [Ingestion](../ingestion/contracts.md), [Model Gateway](../model-gateway/contracts.md).
 
 ## Общий порядок
 
@@ -29,7 +29,7 @@ decision = guardrails_adapter.validate_json('{"kind": "blocked"}')
 | Проверить Python-данные из адаптера | `RequestRef.model_validate(row)`; UUID и datetime уже должны иметь свои Python-типы. |
 | Прочитать JSON | `Model.model_validate_json(raw)`; для union — заранее созданный `TypeAdapter(...).validate_json(raw)`. В JSON UUID и время представлены строками, это допустимо и в strict mode. |
 | Сохранить JSON | `model_dump_json()` либо `model_dump(mode="json")` для драйвера, принимающего JSON-совместимый словарь. |
-| Собрать другой DTO из результата | Явно выбрать его поля. Например, `RagResult(answer_text=cached.answer_text, sources=cached.sources)`; поле поколения кеша не переносим. |
+| Собрать другой DTO из результата | Явно выбрать его поля. Например, `RagResult(answer_text=cached.answer_text, sources=cached.sources, images=cached.images)`; поле поколения кеша не переносим. |
 | Получить технические значения | Список векторов, число, `None`, `ConsumeDecision` остаются обычными Python-значениями. |
 
 Примеры словарей в таблицах контрактов показывают данные для валидации/JSON. Возвращаемое значение внутри Python — указанный объект DTO, список объектов либо другой явно заданный тип.
@@ -55,8 +55,8 @@ NonEmptyText = Annotated[str, StringConstraints(min_length=1, pattern=r"\S")]
 ## Что проверяем
 
 - `strict=True`: не превращаем строку `"1042"` или `True` в числовой ID. JSON UUID/дат читаем через JSON-метод, а не через `json.loads` с последующей строгой проверкой Python-строк.
-- `extra="forbid"`: неизвестные поля отклоняются. `None` и отсутствие поля различаются: nullable-поля без default обязательны. Только поля `SourceLocator.page`/`section` можно не передавать; в объекте они равны `None`. Для восстановления разреженного локатора используем `locator.model_dump(exclude_unset=True)`.
-- Числа конечны. ID вопроса и номер взятой попытки положительны; `chunk_no` начинается с 0, поколение пустого корпуса равно 0. Отрицательный Telegram `chat_id` разрешён.
+- `extra="forbid"`: неизвестные поля отклоняются. `None` и отсутствие поля различаются: nullable-поля без default обязательны. Поля с default, например SourceLocator.page/section и списки images, допускают отсутствие; точные defaults указаны в DTO владельца. Для восстановления разреженного локатора используем `locator.model_dump(exclude_unset=True)`.
+- Числа конечны. ID вопроса и номер взятой попытки положительны; `chunk_no` начинается с 0, поколение пустого корпуса равно 0. В MVP только личные чаты: user_id и chat_id положительные; группы/каналы не регистрируются как вопросы.
 - `kind` выбирает вариант результата; `route` выбирает вид outbox. Например, маршрут `ingestion.jobs` принимает только `JobRef`, а не `RequestRef`.
 - Исходный `raw_question` допускает пустую строку: решение `invalid_input` принимает Guardrails. Нормализованный допущенный вопрос и готовый ответ должны содержать непустой текст.
 - Model Gateway проверяет наличие label/score, непустой completed-ответ и технический формат чисел. Соответствие числа векторов числу входов, профиля индексу и citations найденным чанкам проверяет реализация соответствующего шага: один DTO не имеет всех этих данных.

@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from signal import SIGINT, SIGTERM, signal
 from time import monotonic
 from uuid import uuid4
+import uvicorn
 
 from rag.runtime.events import emit_event
 
@@ -38,6 +39,15 @@ def main() -> None:
     component = {"core": "rag_core", "worker": "ingestion_worker"}[args.role]
     host = "0.0.0.0" if args.role == "core" else "127.0.0.1"
     stopping = False
+
+    host="127.0.0.1"
+
+    uvicorn.run(
+        "rag.rag_api.application:app",
+        host=host,
+        port=args.port,
+        factory=False,
+    )
 
     def stop(_signum: int, _frame: object) -> None:
         """Установить флаг штатной остановки; основной цикл завершит health-сервер."""

@@ -48,7 +48,9 @@ async def run_runtime(component: Literal['relay', 'recovery', 'questions', 'resu
 
 Запускает одну фоновую роль до SIGTERM/SIGINT, затем прекращает приём, ограниченно ждёт обработчики и закрывает модели и клиентов. Потребители передают валидированный RequestRef, DeliveryRef или JobRef владельцу бизнес-логики. Повреждённое уведомление подтверждается без вызова обработчика; неизвестное состояние PostgreSQL возвращает сообщение брокеру. У ingestion prefetch=1. Relay, recovery, maintenance и ingestion защищены отдельными сессионными advisory lock от второго активного экземпляра.
 
-Роль questions выбирает embedding/generation/injection/ocr и, при RAG_USE_RERANKER=true, reranker; ingestion выбирает embedding/generation. RAG_MODEL_BINDINGS содержит JSON-карту ModelRole → ModelBinding. В ней указывается имя переменной секрета, а не значение ключа. Embedding-профиль и размерность должны совпасть с индексом. HTTP, Relay и recovery не запускают модели. Явные заглушки бизнес-обработчиков отклоняются с business_handler_not_implemented до потребления сообщений. Реализация Runtime не заменяет ещё не реализованные RAG API/Core/Ingestion/Model Gateway.
+Роль questions выбирает embedding/generation/injection/ocr и, при RAG_USE_RERANKER=true, reranker; ingestion выбирает embedding/generation. RAG_MODEL_BINDINGS содержит JSON-карту ModelRole → ModelBinding. В ней указывается имя переменной секрета, а не значение ключа. Embedding-профиль и размерность должны совпасть с индексом. HTTP, Relay и recovery не запускают модели. Явные заглушки бизнес-обработчиков отклоняются с business_handler_not_implemented до потребления сообщений. Реализация Runtime не заменяет ещё не реализованные RAG API/Core/Ingestion. Model Gateway готов к [подключению выбранных backend](../model-gateway/providers.md); сами модели не включены.
+
+Перед запуском моделей Runtime подключает PostgreSQL-координатор model_calls. Контекст обработчика RabbitMQ содержит устойчивый request_id/job_id; повторная доставка и новая попытка используют тот же ключ модельного шага. Модельные вызовы и ожидание другого владельца выполняются вне транзакции. Состояние журнала не является бизнес-исходом вопроса или задания.
 
 ## Операционные команды
 
@@ -66,6 +68,8 @@ python -m rag.runtime serve results
 python -m rag.runtime serve maintenance
 python -m rag.runtime worker
 python -m rag.runtime pending-writes --limit 100
+python -m rag.runtime check-models --role embedding
+python -m rag.runtime model-calls --limit 100
 ~~~
 
 Администратор задаётся ADMIN_LOGIN/ADMIN_PASSWORD, а не записью Telegram в БД; прежняя команда bootstrap-admin удалена. set-access — локальная операция оператора развёртывания с настроенными административными credentials в окружении: нормализует имя и вызывает тот же write_user_access. HTTP-адаптер проверяет пароль до создания Principal; Runtime не принимает Principal из публичной формы. pending-writes только показывает истёкшие неизвестные записи, ничего не удаляет. Их сверка выполняется по [операторской процедуре](./qdrant/index.md#сверка-незавершённых-записей), автоматического снятия qdrant_write_pending нет.
@@ -75,6 +79,22 @@ python -m rag.runtime pending-writes --limit 100
 Перед запуском обновлённого кода остановите процессы приложения и выполните migrate. Миграция 002_username_access сохраняет вопросы, доставки, outbox и историю. Числовой Telegram User ID не позволяет восстановить текущее имя: старый непустой employees архивируется в legacy_employee_access, а новый список username заполняется через set-access/Access. Автоматического допуска по старому ID нет. Исторические rag_requests сохраняют username=NULL; новые принятые вопросы содержат снимок разрешённого username. start_runtime отклоняет старую схему до создания клиентов и потребителей.
 
 У прежних реплик сохраняются message_id, текст и время; исходные author_id/author_role/client_message_id остаются в технических legacy-полях. Прежние операторы обозначаются author_login=legacy-telegram:ID: это историческая метка, а не новый административный логин. При совпадении прежних ключей у разных авторов сохраняются все сообщения; последующим конфликтующим репликам назначаются устойчивые новые client_message_id. Автоматический downgrade этой смены идентичности запрещён; откат требует восстановления оператором.
+
+### Журнал модельных вызовов
+
+Текущая схема — 003_model_calls. Остановите процессы приложения и выполните migrate также при обновлении с 002_username_access. Новая миграция добавляет только технический журнал model_calls; история вопросов и модельные DTO не меняются. start_runtime отклоняет несовместимую версию схемы.
+
+model-calls выводит метаданные executing/uncertain: ключ, профиль, роль, операцию, request/job, владельца, PID/host и время. Промпты, входные тексты и результаты команда не печатает. У записей нет автоматического срока повторного захвата: TTL мог бы разрешить новый inference одновременно со старым исполнителем.
+
+Если владелец погиб, сначала остановите/проверьте все прежние процессы Runtime и их локальные исполнители; для remote отдельно подтвердите завершение задачи на сервере модели. Только после этого оператор может удалить конкретную незавершённую запись:
+
+~~~text
+python -m rag.runtime reset-model-call CALL_KEY --writers-stopped
+~~~
+
+CALL_KEY — 64-символьный хеш из model-calls. Флаг фиксирует проверку оператором; сам по себе он процессы не останавливает. Завершённый результат команда не удаляет. После сброса следующая бизнес-попытка может выполнить шаг заново. При неподтверждённой остановке оставьте запись заблокированной. [Подробности дедупликации](../model-gateway/providers.md#повторы).
+
+check-models работает отдельно от PostgreSQL, запускает только явно настроенные модели и выполняет readiness inference каждого исполнителя; без --role проверяет всю карту RAG_MODEL_BINDINGS. Пустая карта не подтверждает готовность бота. Команда может расходовать квоту/загружать веса выбранного backend; реальные секреты не выводятся.
 
 ### Кнопки Support
 

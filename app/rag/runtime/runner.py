@@ -105,7 +105,13 @@ async def _periodic(component, operation, interval, stop):
             try:
                 await operation(_get().settings.batch_size)
             except Exception:
-                emit_event("runtime", component, "finished", str(uuid4()), outcome="retry_pending")
+                emit_event(
+                    "runtime",
+                    component,
+                    "finished",
+                    str(uuid4()),
+                    outcome="retry_pending",
+                )
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except TimeoutError:
@@ -113,10 +119,19 @@ async def _periodic(component, operation, interval, stop):
 
 
 async def run_runtime(
-    component: Literal["relay", "recovery", "questions", "results", "maintenance", "ingestion"],
+    component: Literal[
+        "relay", "recovery", "questions", "results", "maintenance", "ingestion"
+    ],
 ) -> None:
     """Run one separately supervised role; SIGTERM drains work and closes resources."""
-    if component not in ("relay", "recovery", "questions", "results", "maintenance", "ingestion"):
+    if component not in (
+        "relay",
+        "recovery",
+        "questions",
+        "results",
+        "maintenance",
+        "ingestion",
+    ):
         raise ValueError("Unknown runtime component")
     from rag.ingestion.worker import handle_ingestion_job
     from rag.rag_core.entrypoints import handle_rag_question
@@ -144,19 +159,29 @@ async def run_runtime(
         except (NotImplementedError, RuntimeError):
             pass
     models_started = False
+    coordination_set = False
     try:
         await start_runtime()
         settings = _get().settings
         bindings = _bindings(component, settings)
         if bindings:
+            from rag.model_gateway.providers import configure_coordination
+            from rag.runtime._model_calls import _PostgresModelCalls
+
+            configure_coordination(_PostgresModelCalls())
+            coordination_set = True
             await prepare_runtime_storage()
             models_started = True  # Close partial startup too.
             async with asyncio.timeout(settings.startup_timeout_s):
                 await start_models(bindings)
         if component == "relay":
-            await _periodic(component, relay_outbox_batch, settings.relay_interval_s, stop)
+            await _periodic(
+                component, relay_outbox_batch, settings.relay_interval_s, stop
+            )
         elif component == "recovery":
-            await _periodic(component, _recover_batch, settings.recovery_interval_s, stop)
+            await _periodic(
+                component, _recover_batch, settings.recovery_interval_s, stop
+            )
         elif component == "maintenance":
             await _periodic(component, handler, settings.recovery_interval_s, stop)
         else:
@@ -177,6 +202,17 @@ async def run_runtime(
                 async with asyncio.timeout(_get().settings.shutdown_timeout_s):
                     await close_models()
         finally:
+            if coordination_set:
+                try:
+                    configure_coordination(None)
+                except StepError:
+                    emit_event(
+                        "runtime",
+                        "close_models",
+                        "finished",
+                        str(uuid4()),
+                        outcome="shutdown_incomplete",
+                    )
             await close_runtime()
             for signum in installed:
                 loop.remove_signal_handler(signum)

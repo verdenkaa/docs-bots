@@ -154,3 +154,19 @@ class _Outbox(_Base):
 class _SchemaVersion(_Base):
     __tablename__ = "alembic_version"
     version_num: Mapped[str] = mapped_column(String(32), primary_key=True)
+
+
+class _ModelCall(_Base):
+    __tablename__ = "model_calls"
+    call_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[UUID] = mapped_column(Uuid)
+    owner_pid: Mapped[int] = mapped_column(Integer)
+    owner_host: Mapped[str] = mapped_column(Text)
+    work_ref: Mapped[str] = mapped_column(Text)
+    profile_id: Mapped[str] = mapped_column(Text)
+    model_role: Mapped[str] = mapped_column(Text)
+    operation: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(Text)
+    result: Mapped[dict[str, Any] | None] = mapped_column(_json_type)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

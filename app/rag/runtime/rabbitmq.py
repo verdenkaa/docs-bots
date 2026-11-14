@@ -22,7 +22,7 @@ from aio_pika.exceptions import AMQPException
 from pamqp.commands import Basic
 from pydantic import TypeAdapter, ValidationError
 from rag.runtime._state import _get
-from rag.runtime.events import emit_event
+from rag.runtime.events import emit_event, _event_context
 from rag.runtime import _watchdog
 
 
@@ -132,7 +132,8 @@ async def _consume(route, handler, stop):
             try:
                 if route == "ingestion.jobs":
                     _watchdog._begin(state.settings.io_timeout_s, event.job_id)
-                decision = await handler(event)
+                with _event_context(message_id=message.message_id, route=route, **event.model_dump(mode="json")):
+                    decision = await handler(event)
                 if decision not in ("ack","retry_broker"):
                     raise ValueError("Invalid ConsumeDecision")
             except Exception:

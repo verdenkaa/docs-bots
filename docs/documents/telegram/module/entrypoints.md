@@ -4,13 +4,7 @@ sidebar_position: 2
 toc_max_heading_level: 2
 ---
 
-:::warning Рабочий контракт
-Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
-:::
-
-[Правила DTO и Pydantic](../../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
-
-[Общие DTO уведомления, попытки и результата](../../rag-core/contracts.md).
+[DTO API](./contracts.md) · [Общие DTO](../../rag-core/contracts.md) · [Путь вопроса](../../rag-core/flow.md). Все результаты ниже — объекты DTO внутри Python; JSON возникает только на внешней границе.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `handle_telegram_update` {#handle-telegram-update}
 
@@ -18,136 +12,148 @@ toc_max_heading_level: 2
 async def handle_telegram_update(update: Mapping[str, object]) -> IntakeResult: ...
 ~~~
 
-**Кто вызывает.** Webhook после проверки секрета или адаптер long polling.
+**Кто вызывает.** Webhook после проверки секрета либо альтернативный polling-адаптер.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `update` | `Mapping[str, object]` | Декодированный объект Telegram Update. | `{"update_id": 10001, "message": {...}}` |
-| `update.update_id` | `int` | Дедупликация принятого обновления. | `10001` |
-| `update.message.chat.id` | `int` | Адрес доставки и ключ порядка чата. Для текстового вопроса. | `123456789` |
-| `update.message.text` | `str` | Исходный вопрос для регистрации и Guardrails. Для текстового вопроса. | `"Где инструкция по установке?"` |
+| update | Mapping[str, object] | Декодированный Telegram Update. | &#123;"update_id":10001,"message":&#123;...&#125;&#125; |
+| message.from.id | int | Идентичность сотрудника. | 123456789 |
+| callback_query.from.id | int | Идентичность сотрудника. | 123456789 |
+| message.chat | объект | Только type=private; ID назначения. | &#123;"id":123456789,"type":"private"&#125; |
+| callback_query.message.chat | объект | Только type=private; ID назначения. | &#123;"id":123456789,"type":"private"&#125; |
+| message.text | текст | Вопрос; photo даёт file_id выбранного размера. Image-document допустим по разрешённому MIME. | "Где фильтр?" |
+| photo | список PhotoSize | Вопрос; photo даёт file_id выбранного размера. Image-document допустим по разрешённому MIME. | "Где фильтр?" |
+| caption | текст | Вопрос; photo даёт file_id выбранного размера. Image-document допустим по разрешённому MIME. | "Где фильтр?" |
+| callback_query.id | строки | Подтверждение нажатия и компактное действие. | "cq-1" |
+| data | строки | Подтверждение нажатия и компактное действие. | "s:1042" |
 
 ### Что отдаёт
 
-**Формат.** Один объект Pydantic `IntakeResult`. Только варианты `accepted` и `duplicate` содержат `request_id`.
+**Формат.** Один IntakeResult; поля и инварианты — в [DTO](./contracts.md#приём).
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `kind` | `Literal["accepted", "duplicate"]` | Вопрос зарегистрирован или был принят раньше. | `"accepted"` |
-| `request_id` | `int` | ID зарегистрированного вопроса. | `1042` |
-| `kind` | `Literal["ignored", "invalid_update", "retry_later"]` | Обновление пропущено, некорректно или требует повтора приёма. | `"retry_later"` |
+| kind | accepted / duplicate / handled / busy / denied / ignored | Надёжно завершённый приём; только accepted создаёт вопрос. | "accepted" |
+| request_id / delivery_id / case_id | ID или None | Реальные ссылки на созданные/найденные объекты. | 1042 / None / None |
+| kind | invalid_update / retry_later | Некорректный вход либо техническая необходимость повтора. | "retry_later" |
 
 ### Правила и ошибки
 
-`ignored` означает корректное обновление вне сценария. Для текстового вопроса `register_question` возвращает прежний или новый ID. Если лимит достигнут или PostgreSQL вернул `StorageError`, обработчик возвращает `retry_later`. Для `invalid_update` webhook возвращает `400`, для `retry_later` — `503`. [Регистрация в PostgreSQL](../../infrastructure/postgresql/rag-api.md#register-question)
+Проверяет личный чат и Access, разбирает текст/изображение либо действие Support. Время первого приёма берёт в RAG API, не из произвольного поля клиента. Для поддерживаемого вопроса вызывает register_question(NewQuestion(...)); repository сначала проверяет ledger повтора и лишь для нового вопроса — текущий допуск. Предварительный check_access не должен заменить прежний исход уже принятого update на denied. Для нового управления вызывает handle_support_action с текущей проверкой прав. Для непригодного/неподдерживаемого update вызывает record_update, чтобы сохранить пропуск и возможное уведомление без вопроса. Глобальная перегрузка и StorageError дают retry_later; занятость сотрудника — busy, не retry_later. Кнопку подтверждает коротким answerCallbackQuery через тот же Telegram-адаптер; его сбой не откатывает уже применённое действие.
 
 ## <span className="operation-badge operation-badge--sub">SUB</span> `handle_rag_result` {#handle-rag-result}
 
 ~~~python
-async def handle_rag_result(event: RequestRef) -> ConsumeDecision: ...
+async def handle_rag_result(event: DeliveryRef) -> ConsumeDecision: ...
 ~~~
 
-**Кто вызывает.** Адаптер RabbitMQ после проверки уведомления из `rag.results`.
+**Кто вызывает.** Адаптер rag.results.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `event` | `RequestRef` | Ссылка на строку запроса в PostgreSQL. | `{"request_id": 1042}` |
-| `event.request_id` | `int` | ID для получения итога и активной попытки из claim_delivery. | `1042` |
+| event.delivery_id | PositiveId | ID самостоятельной доставки из RabbitMQ. | 2085 |
 
 ### Что отдаёт
 
-**Формат.** Одна строка Python, значение `ConsumeDecision`.
+**Формат.** Одна строка Python.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `return` | `Literal["ack"]` | Разрешает подтвердить доставку после сохранённого перехода или если работа уже не требуется. | `"ack"` |
-| `return` | `Literal["retry_broker"]` | Просит повторную доставку с задержкой, когда состояние PostgreSQL не удалось проверить или сохранить. | `"retry_broker"` |
+| return | ack | Сохранён переход или уведомление уже не требует работы. | "ack" |
+| return | retry_broker | Состояние/коммит PostgreSQL неизвестны. | "retry_broker" |
 
 ### Правила и ошибки
 
-При `None` от `claim_delivery` возвращает `ack`. Если попытка взята, вызывает `send_answer` и фиксирует исход или повтор. При исчерпании попыток только фиксирует итог. Неизвестное состояние или коммит дают `retry_broker`. [Доставка и повторы](./queue-processing.md#отправка-результата)
+claim_delivery(delivery_id) отдаёт ClaimedDelivery либо None. Если parts отсутствуют, строит build_delivery_parts и сохраняет store_delivery_parts до первого внешнего вызова. Берёт части с next_part, вызывает send_answer и после подтверждения record_delivery_part. При временной ошибке — schedule_delivery_retry; после последней части либо окончательной ошибки — complete_delivery. Статус/предложение проверяются на актуальность при claim. Потерявшая право попытка не продолжает отправку следующих частей. Ни поиск, ни создание тикета здесь не повторяются. Последующий отзыв допуска не отменяет доставку ранее принятого request; отправляем оставшиеся части с обычными повторами.
+
+## <span className="operation-badge operation-badge--call">CALL</span> `build_delivery_parts` {#build-delivery-parts}
+
+~~~python
+def build_delivery_parts(delivery: ClaimedDelivery, source_base_url: str) -> list[DeliveryPart]: ...
+~~~
+
+**Кто вызывает.** handle_rag_result, только если план ещё не сохранён.
+
+### Что принимает
+
+| Параметр | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| delivery | ClaimedDelivery | Контент/состояние и назначение из PostgreSQL. | purpose="answer", content=RagResult(...) |
+| source_base_url | str | Проверенный адрес RAG API из конфигурации для ссылок источников. | "https://bot.example" |
+
+### Что отдаёт
+
+**Формат.** Непустой упорядоченный список TextPart/ImagePart.
+
+| Поле / значение | Тип | Смысл | Пример |
+| --- | --- | --- | --- |
+| return[0] | TextPart | Текст, ссылки источников, форматирование и допустимые действия. | &#123;"kind":"text","text":"Откройте…","entities":[],"actions":[]&#125; |
+| return[1:] | list[ImagePart] | Нужные файлы по уникальным ID, если они есть. | [&#123;"kind":"image","image":&#123;...&#125;&#125;] |
+
+### Правила и ошибки
+
+Чистая сборка без I/O. Для answer/notice использует content; для status/busy/denied/first_question — стандартный текст; offer даёт кнопку s:request_id; confirmation — y/n:case_id; ticket_link использует case.ticket_url. Обычный ответ может предложить «Ответ не помог» (a:request_id), но не кнопку оператора. Переводит Markdown в видимый текст + entities с UTF-16-смещениями; image-маркеры становятся описаниями, файлы — отдельными частями. Источник группируется по document_id, ссылка ведёт на /sources/&#123;document_id&#125;. Видимый текст ограничен 4096 единицами UTF-16, из них до 512 — источники. При переполнении сохраняет хотя бы один источник либо даёт короткий резервный текст и реакцию недовольства. План один раз сохраняется в PostgreSQL.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `send_answer` {#send-answer}
 
 ~~~python
-async def send_answer(chat_id: int, result: RagResult) -> SendResult: ...
+async def send_answer(chat_id: int, part: DeliveryPart) -> SendResult: ...
 ~~~
 
-**Кто вызывает.** `handle_rag_result` после взятия попытки доставки.
+**Кто вызывает.** handle_rag_result после сохранения плана.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `chat_id` | `int` | Чат из ClaimedDelivery. | `123456789` |
-| `result` | `RagResult` | Сохранённые текст и список источников из ClaimedDelivery. | `{"answer_text": "См. раздел «Установка».", "sources": [...]}` |
+| chat_id | int | Личный чат из ClaimedDelivery. | 123456789 |
+| part | DeliveryPart | Одна неизменяемая часть, не весь RagResult. | TextPart(...) |
 
 ### Что отдаёт
 
-**Формат.** Один объект Pydantic `SendResult`. Дополнительные поля есть только для `failed`.
+**Формат.** Один вариант SendResult.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `kind` | `Literal["sent"]` | Telegram подтвердил отправку ответа или резервного текста. | `"sent"` |
-| `kind` | `Literal["failed"]` | Отправка не подтверждена. | `"failed"` |
-| `retryable` | `bool` | Можно ли повторить отправку. | `True` |
-| `uncertain` | `bool` | Могло ли сообщение дойти без подтверждения. | `True` |
-| `retry_after_seconds` | `int \| None` | Задержка, если её вернул Telegram. | `None` |
+| kind / message_id / variant | sent / int / normal или length_fallback | Квитанция одной отправки Telegram. | "sent" / 77 / "normal" |
+| kind / retryable / uncertain / retry_after_seconds | failed / bool / bool / int или None | Ошибка конкретной части. | "failed" / True / True / None |
 
 ### Правила и ошибки
 
-Доставка рассчитана на одно сообщение. Telegram ограничивает видимый текст 4096 символами. Для локальной проверки используем консервативный предел в 4096 единиц UTF-16 и учитываем весь видимый текст, включая переводы строк. Источникам выделяем до 512 единиц вместе с заголовком блока. Это оставляет 3584 единицы для текста при полном блоке. Если места меньше, сокращаем названия, убираем необязательные детали и оставляем первые источники, которые помещаются. Для ответа по документам сохраняем хотя бы одну ссылку или краткое название источника. [Telegram sendMessage](https://core.telegram.org/bots/api#sendmessage)
+Для TextPart вызывает sendMessage с entities, без parse_mode. Для ImagePart получает [get_image(image_id)](../../infrastructure/s3.md#get-image) через `rag.runtime.s3` и отправляет файл sendPhoto без длинной подписи. Сбой S3 не отбрасывает уже доставленный текст. Учитывает общий/чатовый лимитер и retry_after, сам не запускает цикл повторов. Таймаут после возможной отправки даёт uncertain=True. При явном отклонении текста из-за длины допустима одна отправка «Ответ не помещается. Пожалуйста, задайте более узкий вопрос.»; успех отмечен length_fallback. Неизвестный исход исходной отправки не запускает этот fallback. [Bot API](https://core.telegram.org/bots/api#sendmessage).
 
-Если целый ответ с минимальным оформлением всё ещё не помещается, в той же попытке отправляем обычным текстом без источников: «Ответ не помещается в одно сообщение. Пожалуйста, задайте более узкий вопрос.» Если Telegram явно отклонил исходное сообщение из-за длины, один раз отправляем этот же резервный текст в пределах срока и лимита частоты текущей попытки. При таймауте исходного вызова применяем обычные правила неизвестного исхода. По ответу на резервный текст возвращаем тот же `SendResult`: подтверждение даёт `sent`, временный сбой или отказ обрабатывается по общим правилам. В логе отмечаем `delivery_variant="length_fallback"`.
-
-## DTO
+## <span className="operation-badge operation-badge--task">TASK</span> `run_api_maintenance` {#run-api-maintenance}
 
 ~~~python
-from pydantic import AwareDatetime, Field
-from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
-from dataclasses import dataclass
-
-from collections.abc import Mapping
-from typing import Annotated, Literal
-
-
-class RegisteredQuestion(DTO):
-    request_id: PositiveId
-    created: bool
-
-
-class RecordedUpdate(DTO):
-    kind: Literal["accepted", "duplicate"]
-    request_id: PositiveId
-
-
-class UnrecordedUpdate(DTO):
-    kind: Literal["ignored", "invalid_update", "retry_later"]
-
-
-IntakeResult = Annotated[RecordedUpdate | UnrecordedUpdate, Field(discriminator="kind")]
-
-
-class ClaimedDelivery(DTO):
-    attempt: ProcessingAttempt
-    chat_id: int
-    result: RagResult
-
-
-class Sent(DTO):
-    kind: Literal["sent"]
-
-
-class SendFailed(DTO):
-    kind: Literal["failed"]
-    retryable: bool
-    uncertain: bool
-    retry_after_seconds: NonNegativeInt | None
-
-
-SendResult = Annotated[Sent | SendFailed, Field(discriminator="kind")]
+async def run_api_maintenance(limit: int) -> int: ...
 ~~~
+
+**Кто вызывает.** Runtime в фоновом цикле RAG API.
+
+### Что принимает
+
+| Параметр | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| limit | int > 0 | Максимальная пачка для каждого фонового прохода. | 20 |
+
+### Что отдаёт
+
+**Формат.** Целое число.
+
+| Поле / значение | Тип | Смысл | Пример |
+| --- | --- | --- | --- |
+| return | int >= 0 | Количество сохранённых фоновых переходов: статусы и действия поддержки. | 3 |
+
+### Правила и ошибки
+
+Берёт UTC now, вызывает queue_waiting_statuses(now,limit) и run_support_batch(limit). Статус создаётся один раз после 10 секунд без итога; 20 секунд — только метрика. Пустой проход ждёт, сбой повторяется с задержкой; deadline технических попыток задаётся отдельно.
+
+## DTO {#dto}
+
+Определения вынесены в [DTO RAG API](./contracts.md); общие RequestRef, DeliveryRef, RagResult и попытки — в [общую страницу](../../rag-core/contracts.md). Старый send_answer(chat_id, result) заменён отправкой одной части. Core публикует delivery_id, а не request_id в rag.results.
+
+[Access и Support: функции](./service-entrypoints.md) · [Инфраструктурные функции](../../infrastructure/postgresql/rag-api.md)

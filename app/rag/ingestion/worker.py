@@ -1,5 +1,10 @@
-"""Contracts: docs/documents/ingestion/entrypoints.md."""
+"""Contracts: docs/documents/ingestion/entrypoints.md.
 
+Каркас модуля: DTO валидируются, прикладные точки входа реализует владелец.
+"""
+
+
+from __future__ import annotations
 
 from rag.contracts import ConsumeDecision
 from rag.ingestion.contracts import JobRef, PreparedChunk, StagedUpload
@@ -8,27 +13,26 @@ from rag.ingestion.contracts import JobRef, PreparedChunk, StagedUpload
 async def handle_ingestion_job(event: JobRef) -> ConsumeDecision:
     """Провести задание через парсинг, эмбеддинг, запись и публикацию редакции.
 
-    Заглушка: реализация пока отсутствует (NotImplementedError).
+    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        event: Ссылка на сохранённое задание.
+        event: Ссылка на задание, не файл.
 
     Returns:
-        ConsumeDecision: ack после устойчивого исхода, retry_broker при неизвестном
-        переходе в PostgreSQL. Возврат сам по себе не отправляет AMQP ACK.
+        Одна строка ConsumeDecision.
     """
     raise NotImplementedError
 
 
 async def prepare_chunks(upload: StagedUpload) -> list[PreparedChunk]:
-    """Распарсить временный исходник и нарезать его на чанки.
+    """Нарезать готовый Markdown на чанки без разрыва плейсхолдеров.
 
-    Заглушка: реализация пока отсутствует (NotImplementedError).
+    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        upload: Путь к сохранённому файлу и его метаданные.
+        upload: Markdown и манифест из Runtime.
 
     Returns:
-        Список PreparedChunk в порядке будущих chunk_no, без эмбеддингов.
+        Упорядоченный список PreparedChunk; [] — нет пригодного содержимого.
     """
     raise NotImplementedError

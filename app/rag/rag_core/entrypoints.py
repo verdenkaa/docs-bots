@@ -1,19 +1,23 @@
-"""Contracts: docs/documents/rag-core/entrypoints.md."""
+"""Contracts: docs/documents/rag-core/entrypoints.md.
 
+Каркас модуля: DTO валидируются, прикладные точки входа реализует владелец.
+"""
+
+
+from __future__ import annotations
 
 from rag.contracts import ConsumeDecision, RequestRef
 
 
 async def handle_rag_question(event: RequestRef) -> ConsumeDecision:
-    """Оркестрировать Guardrails → Exact Cache → Searcher → Answer Generator.
+    """Оркестрировать текст/OCR, Guardrails, кеш, поиск, генерацию и сохранение QuestionOutcome.
 
-    Заглушка: реализация пока отсутствует (NotImplementedError).
+    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        event: Ссылка на строку запроса в PostgreSQL.
+        event: Вход по контракту владельца.
 
     Returns:
-        ConsumeDecision для адаптера RabbitMQ. Ответ сохраняется с outbox rag.results
-        транзакцией complete_question; непосредственно в очередь его отправляет Relay.
+        Одна строка ConsumeDecision.
     """
     raise NotImplementedError

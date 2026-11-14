@@ -3,10 +3,6 @@ title: RabbitMQ
 sidebar_position: 1
 ---
 
-:::warning Рабочий формат очередей
-Формат уведомлений и топология предложены для MVP. Лимиты и настройки хранения уточним по нагрузке.
-:::
-
 ## Что вызывать
 
 | Задача | Контракты функций |
@@ -23,18 +19,24 @@ sidebar_position: 1
 | Очередь | Кто ставит работу | Кто читает | Ссылка в сообщении |
 | --- | --- | --- | --- |
 | `rag.questions` | RAG API | RAG Core | `request_id` сохранённого вопроса. |
-| `rag.results` | RAG Core | RAG API | `request_id` сохранённого результата. |
+| `rag.results` | RAG Core и компоненты RAG API | RAG API | `delivery_id` самостоятельной доставки. |
 | `ingestion.jobs` | Ingestion Gateway | Ingestion Worker | `job_id` равен `revision_id` строки с заданием. |
 
 ## Структура сообщения
 
-Свойство AMQP `message_id` равно идентификатору записи outbox. Тело с типом `application/json` содержит номер запроса или UUID задания. По нему получатель читает запись в PostgreSQL. Очередь определяет назначение уведомления.
+Свойство AMQP `message_id` равно идентификатору записи outbox. Тело с типом `application/json` содержит числовой ID вопроса/доставки либо UUID задания. По нему получатель читает запись в PostgreSQL. Очередь определяет назначение уведомления.
 
-Для `rag.questions` и `rag.results` используем [DTO `RequestRef`](../../rag-core/contracts.md#очередь-и-готовый-результат).
+Для rag.questions используем RequestRef, для rag.results — DeliveryRef. [DTO](../../rag-core/contracts.md#очередь-и-готовый-результат).
 
 ```json
 { "request_id": 1042 }
 ```
+
+Для rag.results:
+
+~~~json
+{ "delivery_id": 2085 }
+~~~
 
 Для `ingestion.jobs`:
 

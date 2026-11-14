@@ -4,10 +4,6 @@ sidebar_position: 5
 toc_max_heading_level: 2
 ---
 
-:::warning Рабочий контракт
-Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
-:::
-
 Адаптер поднимает `StorageError` при недоступности PostgreSQL или неизвестном коммите. Время передаём в UTC. [Схема PostgreSQL](./index.md).
 
 ## <span className="operation-badge operation-badge--db">DB</span> `list_finished_staging` {#list-finished-staging}
@@ -35,7 +31,7 @@ async def list_finished_staging(limit: int) -> list[StagingCleanup]: ...
 
 ### Правила и ошибки
 
-Берём завершённые задания с заполненным `staging_ref`, включая `published`, `failed`, `retired`, `deleting` и `cleaned`. Очистка точек может закончиться раньше очистки файла.
+Берём завершённые задания с заполненным `staging_ref` и qdrant_write_pending=false, включая `published`, `failed`, `retired`, `deleting` и `cleaned`. Очистка точек может закончиться раньше очистки файла.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `clear_staging_ref` {#clear-staging-ref}
 
@@ -141,7 +137,7 @@ async def finish_revision_cleanup(revision_id: UUID) -> bool: ...
 
 ### Правила и ошибки
 
-Метаданные редакции и границы видимости остаются в PostgreSQL. Очистка точек и временной загрузки независимы.
+Метаданные редакции и границы видимости остаются в PostgreSQL. Очистка точек и временной загрузки независимы. Очистка S3, истории и метаданных source_name не входит в эти функции; source_name/image_ids остаются в PostgreSQL.
 
 ## DTO
 

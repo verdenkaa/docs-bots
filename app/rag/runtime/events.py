@@ -1,4 +1,4 @@
-"""Structured events for docs/documents/faq/logging.md."""
+"""JSON-события по спецификации docs/documents/faq/logging.md."""
 
 import json
 from typing import Literal

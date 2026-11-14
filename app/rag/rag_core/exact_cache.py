@@ -1,5 +1,10 @@
-"""Contracts: docs/documents/rag-core/exact-cache-entrypoints.md."""
+"""Contracts: docs/documents/rag-core/exact-cache-entrypoints.md.
 
+Каркас модуля: DTO валидируются, прикладные точки входа реализует владелец.
+"""
+
+
+from __future__ import annotations
 
 from rag.contracts import RagResult
 
@@ -7,15 +12,14 @@ from rag.contracts import RagResult
 async def get_answer(query: str, corpus_generation: int) -> RagResult | None:
     """Найти точный ответ и сверить его поколение с закреплённым за запросом.
 
-    Заглушка: реализация пока отсутствует (NotImplementedError).
+    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         query: Нормализованный вопрос из Guardrails.
         corpus_generation: Поколение, закреплённое в PostgreSQL за этим запросом.
 
     Returns:
-        RagResult при совпадении, None при промахе, устаревании или сбое кеша.
-        Устаревшее значение удаляется условно, без удаления новой конкурентной записи.
+        Объект Pydantic `RagResult` или `None` при промахе, несовпадении поколения или сбое Redis.
     """
     raise NotImplementedError
 
@@ -23,7 +27,7 @@ async def get_answer(query: str, corpus_generation: int) -> RagResult | None:
 async def store_answer(query: str, corpus_generation: int, result: RagResult) -> None:
     """Сохранить точный ответ с поколением, не затирая более новую запись.
 
-    Заглушка: реализация пока отсутствует (NotImplementedError).
+    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         query: Нормализованный вопрос из Guardrails.
@@ -31,6 +35,6 @@ async def store_answer(query: str, corpus_generation: int, result: RagResult) ->
         result: Текст ответа и непустой список источников, уже сохранённые в PostgreSQL.
 
     Returns:
-        None; сбой Redis не должен срывать готовый ответ.
+        Одно значение Python, `None`.
     """
     raise NotImplementedError

@@ -4,10 +4,6 @@ sidebar_position: 2
 toc_max_heading_level: 2
 ---
 
-:::warning Рабочий контракт
-Сигнатуры и DTO заданы для независимой реализации модулей. Backend, модели и численные ограничения уточним по кейсу; в коде стоят NotImplementedError.
-:::
-
 [Правила DTO и Pydantic](../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
 
 Функции находятся в `app/rag/model_gateway/entrypoints.py`. Binding и бюджеты шагов поставляет Runtime при сборке; вызывающие модули не создают клиентов SDK. [DTO и ошибки](./contracts.md) · [Жизненный цикл](./lifecycle.md).
@@ -159,7 +155,7 @@ async def classify_injection(text: str, *, timeout_s: float) -> InjectionResult:
 async def generate(messages: Sequence[ModelMessage], options: GenerationOptions, *, timeout_s: float) -> ModelGenerationResult: ...
 ~~~
 
-**Кто вызывает.** Answer Generator после сборки контекста и меток источников.
+**Кто вызывает.** Answer Generator после сборки контекста/меток либо Worker при генерации примеров темы. Промпт и бизнес-JSON валидирует вызывающий.
 
 ### Что принимает
 
@@ -182,6 +178,62 @@ async def generate(messages: Sequence[ModelMessage], options: GenerationOptions,
 
 ### Правила и ошибки
 
-При stream адаптер собирает фрагменты по порядку; обрыв до подтверждённого завершения — StepError, накопленный текст не выдаётся за успех. Answer Generator принимает только completed и валидный бизнес-JSON; length/filtered становятся StepError("generation_incomplete", False). Gateway не интерпретирует citations и не выдаёт RagResult. [Все вложенные поля](./contracts.md#generation).
+При stream адаптер собирает фрагменты по порядку; обрыв до подтверждённого завершения — StepError, накопленный текст не выдаётся за успех. Answer Generator принимает только completed и валидный бизнес-JSON; length/filtered становятся StepError("generation_incomplete", False). Worker также принимает только completed, проверяет свой JSON вопросов и сохраняет результат до записи индексов. Gateway не интерпретирует citations/вопросы и не выдаёт RagResult/TopicPoint. [Все вложенные поля](./contracts.md#generation).
 
 Все ошибки — [StepError с согласованным кодом и retryable](./contracts.md#errors). Числа в примерах иллюстративны и не задают рабочие лимиты. [Откуда берутся параметры](../rag-core/flow.md#model-calls).
+
+## <span className="operation-badge operation-badge--async">ASYNC</span> `recognize_text` {#recognize-text}
+
+~~~python
+async def recognize_text(image: ImageContent, *, timeout_s: float) -> OcrResult: ...
+~~~
+
+**Кто вызывает.** Core для изображения пользователя; Document Converter при необходимости.
+
+### Что принимает
+
+| Параметр | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| image | ImageContent | Байты и проверенный MIME из Runtime. | ImageContent(...) |
+| timeout_s | float > 0 | Весь бюджет, включая ожидание исполнителя. | 15.0 |
+
+### Что отдаёт
+
+**Формат.** OcrResult.
+
+| Поле / значение | Тип | Смысл | Пример |
+| --- | --- | --- | --- |
+| profile_id | str | Профиль реально выполненного OCR. | ocr-v1 |
+| text | str | Извлечённый текст; пустая строка допустима. | Ошибка AUTH-17 |
+
+### Правила и ошибки
+
+Не отвечает на вопрос по интерфейсу и не выдумывает описание. Пустой OCR — успешное наблюдение; ошибка сервиса — StepError. Байты/секреты не логируются, локальное вычисление не блокирует event loop.
+
+## <span className="operation-badge operation-badge--async">ASYNC</span> `describe_image` {#describe-image}
+
+~~~python
+async def describe_image(image: ImageContent, *, timeout_s: float) -> ImageDescription: ...
+~~~
+
+**Кто вызывает.** Document Converter внутри Ingestion Gateway.
+
+### Что принимает
+
+| Параметр | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| image | ImageContent | Извлечённое изображение документа. | ImageContent(...) |
+| timeout_s | float > 0 | Бюджет Gateway. | 20.0 |
+
+### Что отдаёт
+
+**Формат.** ImageDescription.
+
+| Поле / значение | Тип | Смысл | Пример |
+| --- | --- | --- | --- |
+| profile_id | str | Профиль VLM. | vision-v1 |
+| description | NonEmptyText | Описание изображения для Markdown и embedding. | Схема согласования... |
+
+### Правила и ошибки
+
+Только модельный результат; image_id и запись S3 принадлежат Gateway. Для входящих изображений пользователя этот вызов не используется.

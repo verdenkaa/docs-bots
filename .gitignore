@@ -7,7 +7,7 @@
 # Python bytecode, virtual environments and tooling
 __pycache__/
 *.py[cod]
-.venv/
+.venv*
 venv/
 .pytest_cache/
 .mypy_cache/

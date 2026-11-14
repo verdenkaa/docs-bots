@@ -74,7 +74,7 @@ async def start_runtime() -> None:
             resources.engine = _engine(settings)
             async with resources.engine.connect() as connection:
                 version = await connection.scalar(select(_SchemaVersion.version_num))
-                if version != "003_model_calls":
+                if version != "004_ingestion_documents":
                     raise RuntimeError(
                         "Runtime schema requires migration; run python -m rag.runtime migrate"
                     )

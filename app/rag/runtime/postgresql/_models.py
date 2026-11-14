@@ -114,12 +114,25 @@ class _SupportMessage(_Base):
     legacy_client_message_id: Mapped[UUID | None] = mapped_column(Uuid)
 
 
+class _Document(_Base):
+    __tablename__ = "documents"
+    document_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    source_name: Mapped[str] = mapped_column(Text(collation="C"), unique=True)
+    current_revision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("document_revisions.revision_id", use_alter=True)
+    )
+    current_version: Mapped[int | None] = mapped_column(Integer)
+
+
 class _Revision(_Base):
     __tablename__ = "document_revisions"
     revision_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
-    document_id: Mapped[UUID] = mapped_column(Uuid)
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("documents.document_id"))
     revision_no: Mapped[int] = mapped_column(Integer)
     source_name: Mapped[str] = mapped_column(Text)
+    access_level: Mapped[str] = mapped_column(Text)
+    document_version: Mapped[int | None] = mapped_column(Integer)
+    base_version: Mapped[int | None] = mapped_column(Integer)
     image_ids: Mapped[list[str]] = mapped_column(_json_type, server_default="[]")
     staging_ref: Mapped[str | None] = mapped_column(Text)
     state: Mapped[str] = mapped_column(Text, server_default="queued")

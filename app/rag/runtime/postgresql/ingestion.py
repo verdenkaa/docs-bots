@@ -10,10 +10,10 @@ from datetime import datetime, timedelta
 from typing import Self
 from uuid import UUID, uuid4
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 from sqlalchemy import func, insert, or_, select, union, update
 
-from rag.contracts import StepError
+from rag.contracts import StepError, StorageError
 from rag.dto import DTO, NonNegativeInt, PositiveId
 from rag.ingestion.contracts import AcceptedUpload, ClaimedIngestionJob, IngestionAttempt, UploadSource
 from rag.runtime._state import _get
@@ -34,7 +34,7 @@ from ._db import (
     _wake_ingestion,
 )
 
-from ._models import _CorpusState, _Request, _Revision
+from ._models import _CorpusState, _Document, _Request, _Revision
 
 
 class DocumentVersion(DTO):
@@ -105,6 +105,10 @@ async def register_revision(
     source = UploadSource.model_validate(
         source.model_dump() if isinstance(source, UploadSource) else source
     )
+    if not isinstance(revision_id, UUID) or (
+        document_id is not None and not isinstance(document_id, UUID)
+    ):
+        raise ValueError("Expected revision/document UUIDs")
     source_name = source.filename
     _text(source_name)
     if _staging_revision(staging_ref) != revision_id:
@@ -122,22 +126,41 @@ async def register_revision(
                 (document_id is not None and document_id != old["document_id"])
                 or old["staging_ref"] not in (None, staging_ref)
                 or old["source_name"] != source_name
+                or old["access_level"] != source.access_level
                 or _data(old["image_ids"]) != [str(item) for item in image_ids]
             ):
                 raise StepError("revision_conflict", False)
             return AcceptedUpload(
                 kind="accepted", job_id=revision_id, document_id=old["document_id"]
             )
-        selected_document = document_id or uuid4()
+        # Serialize first registration by exact filename as well as by document.
+        # No source bytes, model calls or spool I/O belong in this transaction.
+        await _lock(session, "document_name", source_name)
+        if document_id is not None:
+            document = await _one(
+                session, select(_Document).where(_Document.document_id == document_id)
+            )
+            if document is None:
+                return None
+            if document["source_name"] != source_name:
+                raise StepError("document_name_conflict", False)
+        else:
+            document = await _one(
+                session, select(_Document).where(_Document.source_name == source_name)
+            )
+        selected_document = document["document_id"] if document is not None else uuid4()
         await _lock(session, "document", selected_document)
+        if document is None:
+            await _execute(
+                session,
+                insert(_Document).values(document_id=selected_document, source_name=source_name),
+            )
         previous = await _one(
             session,
             select(func.max(_Revision.revision_no).label("number")).where(
                 _Revision.document_id == selected_document
             ),
         )
-        if document_id is not None and previous["number"] is None:
-            return None
         await _execute(
             session,
             insert(_Revision).values(
@@ -146,6 +169,7 @@ async def register_revision(
                 revision_no=(previous["number"] or 0) + 1,
                 staging_ref=staging_ref,
                 source_name=source_name,
+                access_level=source.access_level,
                 image_ids=_data(_json([str(item) for item in image_ids])),
             ),
         )
@@ -183,6 +207,8 @@ async def claim_ingestion_job(job_id: UUID) -> ClaimedIngestionJob | None:
     Returns:
         Объект Pydantic `ClaimedIngestionJob` или `None`.
     """
+    if not isinstance(job_id, UUID):
+        raise ValueError("Expected a job UUID")
     async with _transaction() as session:
         await _lock(session, "ingestion-worker", 0)
         row = await _one(
@@ -217,21 +243,27 @@ async def claim_ingestion_job(job_id: UUID) -> ClaimedIngestionJob | None:
             return None
         deadline = now + timedelta(seconds=_get().settings.ingestion_timeout_s)
         number = row["attempt_no"] + 1
+        attempt = IngestionAttempt(job_id=job_id, attempt_no=number, deadline_at=deadline)
+        try:
+            claimed = ClaimedIngestionJob(
+                attempt=attempt,
+                document_id=row["document_id"],
+                staging_ref=row["staging_ref"],
+                document_version=row["document_version"],
+                base_version=row["base_version"],
+                expected_chunk_count=row["expected_chunk_count"],
+                expected_topic_count=row["expected_topic_count"],
+            )
+        except ValidationError:
+            raise StorageError("Invalid stored ingestion job") from None
         await _execute(
             session,
             update(_Revision)
             .where(_Revision.revision_id == job_id)
             .values(state="indexing", attempt_no=number, resume_at=deadline),
         )
-        attempt = IngestionAttempt(job_id=job_id, attempt_no=number, deadline_at=deadline)
         _watchdog._claimed(attempt)
-        return ClaimedIngestionJob(
-            attempt=attempt,
-            document_id=row["document_id"],
-            staging_ref=row["staging_ref"],
-            expected_chunk_count=row["expected_chunk_count"],
-            expected_topic_count=row["expected_topic_count"],
-        )
+        return claimed
 
 
 async def begin_revision_write(

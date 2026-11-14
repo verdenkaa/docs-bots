@@ -195,11 +195,12 @@ class DocumentedContractTests(unittest.TestCase):
             ("ingestion/contracts.md", "@dataclass(frozen=True)", "@dataclass(frozen=False)"),
             ("faq/dto.md", "strict=True", "strict=False"),
             ("faq/dto.md", "Field(gt=0)", "Field(ge=0)"),
-            ("rag-core/contracts.md", 'discriminator="kind"', 'discriminator="other"'),
+            ("rag-core/contracts.md", "discriminator='kind'", "discriminator='other'"),
         ]
         for suffix, original, replacement in variants:
             with self.subTest(suffix=suffix, replacement=replacement), self.assertRaises(AssertionError):
                 path = f"docs/documents/{suffix}"
+                self.assertIn(original, self.documents[path])
                 documents = dict(self.documents)
                 documents[path] = documents[path].replace(original, replacement)
                 assert_documented_contracts(self.sources, documents)

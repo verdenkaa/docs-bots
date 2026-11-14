@@ -1,4 +1,4 @@
-"""Run either scaffold role with its process health checks."""
+"""Запуск роли каркаса с HTTP-проверками живости процесса."""
 
 import argparse
 from datetime import UTC, datetime

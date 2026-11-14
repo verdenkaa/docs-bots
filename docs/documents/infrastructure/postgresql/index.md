@@ -1,110 +1,140 @@
 ---
-title: PostgreSQL
+title: "PostgreSQL"
 sidebar_position: 1
+toc_max_heading_level: 2
 ---
-
-:::warning Проект схемы данных
-Четыре таблицы для первого среза. Имена полей и типы уточним в ORM-моделях и миграциях.
-:::
 
 ## Что вызывать
 
-| Задача | Контракты функций |
+| Задача | Контракт |
 | --- | --- |
-| RAG API · принять вопрос и доставить итог | [`register_question`](./rag-api.md#register-question), [`claim_delivery`](./rag-api.md#claim-delivery), [`schedule_delivery_retry`](./rag-api.md#schedule-delivery-retry), [`complete_delivery`](./rag-api.md#complete-delivery) |
-| RAG Core · взять вопрос, получить редакции и сохранить итог | [`claim_question`](./rag-core.md#claim-question), [`load_revision_ids`](./rag-core.md#load-revision-ids), [`complete_question`](./rag-core.md#complete-question), [`schedule_question_retry`](./rag-core.md#schedule-question-retry) |
-| Ingestion · принять и опубликовать редакцию | [`register_revision`](./ingestion.md#register-revision), [`claim_ingestion_job`](./ingestion.md#claim-ingestion-job), [`begin_revision_write`](./ingestion.md#begin-revision-write), [`publish_revision`](./ingestion.md#publish-revision), [`schedule_ingestion_retry`](./ingestion.md#schedule-ingestion-retry), [`fail_ingestion_job`](./ingestion.md#fail-ingestion-job) |
-| Runtime · сверить запись или восстановленный индекс | [`list_pending_revision_writes`](./ingestion.md#list-pending-revision-writes), [`clear_revision_write_pending`](./ingestion.md#clear-revision-write-pending), [`list_required_revision_manifests`](./ingestion.md#list-required-revision-manifests) |
-| Ingestion · убрать временные файлы и точки | [`list_finished_staging`](./cleanup.md#list-finished-staging), [`clear_staging_ref`](./cleanup.md#clear-staging-ref), [`is_staging_referenced`](./cleanup.md#is-staging-referenced), [`claim_revision_cleanup`](./cleanup.md#claim-revision-cleanup), [`finish_revision_cleanup`](./cleanup.md#finish-revision-cleanup) |
-| Queue Relay и Runtime · публикация и восстановление | [`list_ready_outbox`](./outbox.md#list-ready-outbox), [`mark_outbox_published`](./outbox.md#mark-outbox-published), [`recover_pending_work`](./outbox.md#recover-pending-work) |
+| Приём, ledger update, слот и доставка | [RAG API](./rag-api.md) |
+| Вопрос, OCR-текст, поколение и бизнес-итог | [RAG Core](./rag-core.md) |
+| Допуски, ожидания, тикеты, реплики, метрики | [Access/Support](./support.md) |
+| Загрузка, индекс, публикация | [Ingestion](./ingestion.md) |
+| Очистка временных/поисковых данных | [Очистка](./cleanup.md) |
+| Relay и восстановление | [Outbox](./outbox.md) |
+| HTML-заглушка источника | [load_source_metadata](../media.md#load-source-metadata) |
 
-## Запуск и роль
+Один PostgreSQL с именованным томом. Оба контейнера используют Runtime; бизнес-правила принадлежат владельцам. Транзакции короткие, внешние вызовы Telegram/S3/Qdrant/моделей идут вне них.
 
-Поднимаем один PostgreSQL с именованным томом. Оба контейнера подключаются через адаптеры Runtime. Миграции применяем отдельно перед запуском обработчиков. PostgreSQL хранит состояние запросов, доставки и редакций. Текст и векторы фрагментов лежат в Qdrant. [Тома и перезапуск](../startup.md#что-переживает-перезапуск)
+## Таблицы {#четыре-таблицы}
 
-## Четыре таблицы
+Сохраняем исходные четыре таблицы и добавляем пять по новым обязанностям. Отдельных таблиц для каждого DTO, изображения ответа или фонового таймера нет.
+
+| Таблица | Зачем отдельно |
+| --- | --- |
+| rag_requests | Вопрос и его единственный бизнес-итог. |
+| document_revisions | Редакция, подготовленный Markdown, публикация и очистка. |
+| corpus_state | Одна строка номера поколения корпуса. |
+| outbox | Надёжное намерение уведомления брокеру. |
+| employees | Допуск и минимальная роль интерфейса. |
+| telegram_updates | Дедупликация в том числе busy/denied/кнопок, для которых вопрос не создаётся. |
+| rag_deliveries | Несколько самостоятельных отправок: статус, ответ, фото, поддержка; их отдельные попытки. |
+| support_cases | Ожидание и сам тикет в разных состояниях, снимок контекста. |
+| support_messages | Разговор и независимая дедупликация реплик. |
 
 ~~~mermaid
 erDiagram
-  RAG_REQUESTS o|--o{ OUTBOX : "уведомления RAG"
-  DOCUMENT_REVISIONS o|--o{ OUTBOX : "уведомления индексации"
-  CORPUS_STATE
+ EMPLOYEES ||--o{ RAG_REQUESTS : "сотрудник"
+ RAG_REQUESTS ||--o{ RAG_DELIVERIES : "доставки"
+ RAG_REQUESTS ||--o| SUPPORT_CASES : "обращение"
+ SUPPORT_CASES ||--o{ SUPPORT_MESSAGES : "реплики"
+ RAG_REQUESTS o|--o{ OUTBOX : "вопрос"
+ RAG_DELIVERIES o|--o{ OUTBOX : "доставка"
+ DOCUMENT_REVISIONS o|--o{ OUTBOX : "индексация"
 ~~~
 
-### `rag_requests`
+### rag_requests {#rag_requests}
 
-Одна строка на принятый вопрос. В MVP эта база обслуживает одного Telegram-бота. Вопрос сначала обрабатывается, затем готовый результат доставляется, поэтому для обоих этапов достаточно одного состояния и общих полей повтора.
-
-| Поле | Тип | Что хранит |
+| Поле | Тип | Смысл |
 | --- | --- | --- |
-| `request_id` | `bigint`, PK | Внутренний номер из общей последовательности. На него ссылается очередь. Внутри одного чата по нему определяем порядок приёма. |
-| `chat_id` | `bigint` | Идентификатор чата, куда отправить итог. |
-| `update_id` | `bigint`, UNIQUE | Идентификатор обновления Telegram для распознавания повторного приёма. |
-| `question_text` | `text` | Исходный текст вопроса до проверки и нормализации. |
-| `state` | `text` | Место вопроса в общем потоке от ожидания обработки до завершения доставки. |
-| `pinned_generation` | `bigint` | Поколение корпуса для поиска, сверки кеша и восстановления. Очищается при сохранении результата. |
-| `result` | `jsonb` | `RagResult` с готовым текстом и источниками. Сохраняется перед отправкой, чтобы повтор доставки использовал тот же ответ. |
-| `attempt_no` | `integer` | Номер попытки на текущем этапе. Сбрасывается при переходе от обработки к доставке. |
-| `resume_at` | `timestamptz` | В ожидании задаёт время следующей попытки. Во время активной попытки задаёт срок, после которого её можно считать прерванной. |
-| `delivery_uncertain` | `boolean` | Была ли попытка, которую Telegram мог принять без подтверждения. Нужен для выбора итогового состояния, если доставка завершилась без подтверждённого успеха. |
+| request_id | bigint PK | ID вопроса, не ID доставки. |
+| user_id, chat_id | bigint | Сотрудник и личный чат. |
+| update_id | bigint UNIQUE | Update, создавший вопрос. |
+| input | jsonb | QuestionInput: text либо file_id/caption. |
+| received_at | timestamptz | Первый приём, неизменен. |
+| prepared_text | text NULL | Сохранённый OCR-текст с подписью. |
+| state | text | queued, processing, awaiting_delivery, awaiting_support, finished. |
+| pinned_generation | bigint NULL | Закрепление только поиска/проверки темы. |
+| result | jsonb NULL | QuestionOutcome; answered содержит RagResult, support — причину. |
+| attempt_no, resume_at | integer, timestamptz NULL | Попытка обработки и её срок/повтор. Доставка имеет свои поля в другой таблице. |
 
-### `document_revisions`
+Уникальный активный вопрос по user_id для state != finished. Окончательный исход доставки освобождает слот, готовность текста сама по себе — нет.
 
-Одна строка на редакцию документа. Она же хранит состояние задания индексации.
+### rag_deliveries {#rag-deliveries}
 
-| Поле | Тип | Что хранит |
+| Поле | Тип | Смысл |
 | --- | --- | --- |
-| `revision_id` | `uuid`, PK | Идентификатор редакции. В очереди индексации передаётся как `job_id`. |
-| `document_id` | `uuid` | Общий идентификатор документа для всех его редакций. |
-| `revision_no` | `bigint` | Номер редакции в порядке загрузки этого документа. |
-| `staging_ref` | `text` | Ключ файла и его манифеста в рабочем томе. Очищается после удаления загрузки. |
-| `state` | `text` | Этап подготовки, публикации или очистки редакции. |
-| `attempt_no` | `integer` | Номер попытки индексации. Начинается с 0 до первого взятия задания. |
-| `resume_at` | `timestamptz` | Время следующего запуска в ожидании или срок активной попытки. |
-| `expected_chunk_count` | `integer`, nullable | Ожидаемое число чанков, сохраняется перед первой записью в Qdrant. Вместе с `revision_id` задаёт полный набор детерминированных ID для проверки индекса. |
-| `qdrant_write_pending` | `boolean`, default false | Признак начатой записи, который блокирует повтор и очистку до успешной публикации или сверки. Переживает рестарт Worker. |
-| `visible_from_generation` | `bigint` | Первое поколение, в котором видна редакция. До публикации поле пустое. |
-| `visible_until_generation` | `bigint` | Первое поколение, в котором редакция уже скрыта. У текущей опубликованной редакции поле пустое. |
+| delivery_id | bigint PK | Ссылка DeliveryRef в rag.results, порядок в чате. |
+| user_id, chat_id | bigint | Получатель и назначение. |
+| request_id, case_id | bigint NULL, uuid NULL | Связи, если применимы. |
+| purpose | text | answer, notice, status, busy, denied, first_question, support_offer, support_confirmation, ticket_link. |
+| content | jsonb NULL | RagResult для answer/notice; остальные сообщения строит API по purpose/связанному case. |
+| terminal_for_request | boolean | Конечная доставка вопроса, освобождающая слот. Статусы/ручное ожидание им не являются. |
+| parts, receipts | jsonb NULL, jsonb | Неизменяемый список DeliveryPart и подтверждения по индексу с message_id/variant/confirmed_at (UTC-время фиксации подтверждения). |
+| next_part | integer | Первая неподтверждённая часть. |
+| state | text | waiting, sending, delivered, failed, unknown, cancelled. |
+| attempt_no, resume_at, delivery_uncertain | integer, timestamptz NULL, boolean | Попытки доставки, время/срок и накопленная неоднозначность. |
 
-### `corpus_state`
+Уникальность status на request_id; одна terminal_for_request-доставка вопроса. Другие уведомления имеют ключи исходного update/case/стадии, не создаются повторно.
 
-Одна служебная строка с текущим номером версии всей базы документов для поиска. Состав базы на этот номер определяем по интервалам видимости в `document_revisions`. Сами чанки хранятся в Qdrant. [Пример смены поколения](../../architecture/data-and-versions.md#как-меняется-версия-корпуса)
+### employees {#employees}
 
-| Поле | Тип | Что хранит |
+user_id bigint PK, enabled boolean, role text (employee/operator/admin). Это роли интерфейса, а не документов. Первый admin назначается процедурой развёртывания, публичной bootstrap-ручки нет.
+
+### telegram_updates {#telegram-updates}
+
+update_id bigint PK, user_id/chat_id bigint NULL, received_at timestamptz, action jsonb NULL, result jsonb. result содержит надёжный IntakeResult и ссылки. action хранит нормализованное действие Support для привязки причины offer; секретов/всего Telegram payload не требуется. У accepted вопрос есть, у busy/denied — нет. retry_later не является окончательным сохранённым исходом.
+
+### support_cases {#support-cases}
+
+case_id uuid PK, request_id bigint UNIQUE, user_id bigint, state text, reason text, check_at timestamptz NULL, ticket_url text NULL, created_at/closed_at timestamptz NULL, history jsonb. Состояния — из SupportCase. Waiting ещё не созданный тикет, open/closed — уже созданный. history — снимок одного вопроса и реального ответа, не весь диалог. Нажатие не сдвигает уже начатый check_at.
+
+### support_messages {#support-messages}
+
+message_id bigint PK, case_id uuid FK, author_id bigint, author_role text, client_message_id uuid, text text, created_at timestamptz. Уникальный ключ (case_id,author_id,client_message_id) даёт безопасный повтор реплики.
+
+### document_revisions {#document_revisions}
+
+
+| Поле | Тип | Что хранит и зачем |
 | --- | --- | --- |
-| `singleton_id` | `smallint`, PK | Постоянный технический ключ, по которому читаем и блокируем единственную строку. |
-| `generation` | `bigint` | Номер текущего опубликованного поколения. Для пустого корпуса равен 0. |
+| revision_id | uuid PK | ID редакции, равен job_id; не меняется при повторе. |
+| document_id | uuid | Идентичность документа между заменами; внешней таблицы документов в MVP нет. |
+| revision_no | integer | Последовательный номер редакции внутри document_id; уникальная пара. |
+| source_name | text | Название исходника для чанков и HTML-заглушки, сохраняется после уборки точек. |
+| image_ids | jsonb | Список UUID изображений S3 этой редакции; без байтов/секретов. |
+| staging_ref | text NULL | Ключ готового Markdown, манифеста и PreparedRevision; очищается после удаления каталога. |
+| state | text | queued, indexing, published, retired, failed, deleting или cleaned. |
+| attempt_no | integer | Число взятий задания; новая попытка увеличивает его. |
+| resume_at | timestamptz NULL | В queued — время готовности; в indexing — deadline текущей попытки. |
+| qdrant_write_pending | boolean | Запись любого из двух наборов начата; при неизвестном исходе блокирует повтор/очистку. |
+| expected_chunk_count | integer NULL | Ожидаемый полный набор UUIDv5 чанков; положителен после begin_revision_write. |
+| expected_topic_count | integer NULL | Ожидаемый полный набор UUIDv5 примеров темы; положителен после begin_revision_write. |
+| visible_from | bigint NULL | Поколение публикации включительно; до публикации NULL. |
+| visible_until | bigint NULL | Поколение замены исключительно; NULL — открытая верхняя граница. |
 
-Номер поколения нужен для двух решений. RAG Core закрепляет по нему весь набор редакций для вопроса. Exact Cache по нему проверяет актуальность ответа, даже если в корпус просто добавился новый документ. Worker меняет поколение вместе с публикацией в одной транзакции. Подготовка чанков и прерванная загрузка поколение не меняют.
+staging_ref не указывает на оригинал. Оба ожидаемых числа сохраняются после публикации; при очистке сохраняются также идентичность, название, image_ids и интервалы. Наличие одного revision_id в Qdrant не подтверждает полноту редакции.
 
-### `outbox`
+### corpus_state {#corpus_state}
 
-Одна строка на уведомление для RabbitMQ. Маршрут определяет, какое из двух полей-ссылок заполняется. [Формат сообщений](../rabbitmq/index.md)
+singleton_id smallint PK — постоянный ключ единственной строки; generation bigint — номер опубликованного состава. Пустой корпус имеет 0. Это версия всего набора, включая примеры темы, не ID одного документа.
 
-| Поле | Тип | Что хранит |
-| --- | --- | --- |
-| `message_id` | `uuid`, PK | Идентификатор уведомления. Повторная публикация этой записи использует тот же ID. |
-| `route` | `text` | Назначение уведомления, например `rag.questions` или `ingestion.jobs`. |
-| `request_id` | `bigint`, FK | Ссылка на запрос, если уведомление касается обработки вопроса или доставки итога. |
-| `revision_id` | `uuid`, FK | Ссылка на редакцию, если уведомление касается индексации. |
-| `available_at` | `timestamptz` | Время, с которого Queue Relay может отправить уведомление. |
-| `published_at` | `timestamptz` | Время, когда Queue Relay зафиксировал подтверждение публикации. До этого поле пустое. |
+### outbox {#outbox}
 
-## Вопросы и доставка
+message_id uuid PK, route text, request_id bigint NULL, delivery_id bigint NULL, revision_id uuid NULL, available_at/published_at timestamptz. Ровно одна ссылка соответствует маршруту: rag.questions → request_id, rag.results → delivery_id, ingestion.jobs → revision_id. AMQP message_id — ID этой записи, не ID работы.
 
-- Уникальность `update_id` защищает от повторов Telegram. `request_id` выдаём под короткой блокировкой по чату и в той же транзакции сохраняем вопрос и outbox для `rag.questions`. Выбор следующего вопроса или ответа согласуем по тому же ключу чата.
-- RAG Core сохраняет итог и запись для `rag.results` вместе. После этого сохранённое поколение больше не удерживает редакции. RAG API отправляет готовый итог и записывает результат доставки в ту же строку запроса.
-- Обработка идёт из `queued` в `processing` и заканчивается в `ready_to_deliver`. Доставка идёт из `ready_to_deliver` в `delivering` и заканчивается в `delivered`, `delivery_failed` или `delivery_unknown`. При повторе возвращаем строку в состояние ожидания своего этапа. Пустой `resume_at` в ожидании означает, что работу можно взять по времени.
-- Фиксация проверяет активное состояние, номер и срок попытки. Глобальный лимит приёма учитывает все нетерминальные запросы, включая те, чьё уведомление уже в RabbitMQ.
+## Вопросы и доставка {#вопросы-и-доставка}
 
-[Функции PostgreSQL для регистрации и доставки](./rag-api.md) · [Восстановление очередей и работа с outbox](./outbox.md)
+Блокировка/уникальность активного слота применяется по user_id. Транзакция приёма включает ledger, вопрос и outbox либо ledger с уведомлением отказа. Попытки Core не смешиваются с DeliveryAttempt.
 
-## Редакции и поколения
+complete_question освобождает pinned_generation и сохраняет исход: answered/notice → awaiting_delivery, support → awaiting_support. Support после открытия тикета создаёт терминальную ticket_link-доставку. complete_delivery переводит исходный вопрос в finished только для terminal_for_request. Очереди следующего вопроса сотрудника нет; будится следующая доставка чата.
 
-- Ingestion Gateway передаёт ID редакции, временную ссылку и, при обновлении, ID документа. PostgreSQL при регистрации выделяет ID нового документа или использует известный. В строке редакции сохраняет её номер, ссылку и состояние задания. [Функции для Ingestion](./ingestion.md) · [Как выбирается документ](../../ingestion/index.md#новый-документ-или-новая-редакция)
-- Видимость задаёт интервал `[visible_from_generation, visible_until_generation)`. Пока нижняя граница пуста, редакция готовится. При публикации worker одной транзакцией закрывает интервал прежней редакции, открывает новый, увеличивает поколение и сохраняет итог задания. Для одного документа в каждом поколении видна максимум одна редакция.
-- Закрепление запроса, публикация и разрешение очистки согласуются короткой блокировкой строки `corpus_state`. Старые фрагменты можно очистить после закрытия интервала, когда в него больше не попадает поколение незавершённого запроса. [Данные и версии](../../architecture/data-and-versions.md) · [Блокировки PostgreSQL](https://www.postgresql.org/docs/17/explicit-locking.html)
+## Редакции и поколения {#редакции-и-поколения}
 
-## Повтор и восстановление
+Закрепление, публикация и разрешение очистки синхронизируются через corpus_state. load_revision_ids используется до Guardrails, затем тот же набор в Searcher. Оба индекса фильтруются по revision_id. Метаданные источника, изображения и готовые ответы живут отдельно от закрепления поисковых точек.
 
-Временные отметки и индексы по порядку чата, готовым повторам, закреплённым поколениям и неопубликованному outbox помогают находить работу после сбоя. Очереди пополняются из сохранённого состояния. Поиск между закреплением поколения и фиксацией итога можно повторить по тому же поколению. [Состояния и сбои](../../architecture/lifecycle.md)
+## Хранение и восстановление {#повтор-и-восстановление}
+
+Индексы нужны для активного user_id, готовых state/resume_at, chat_id/delivery_id, case state/check_at и неопубликованного outbox/available_at. Точные DDL/ORM ещё не реализованы. Очистка ledger не может разрешить повтор update, который ещё может повторно прийти; сроки хранения согласуются отдельно. [Outbox](./outbox.md) · [Очистка](./cleanup.md)

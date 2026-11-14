@@ -1,190 +1,162 @@
-"""Проверки контрактов на примерах данных; сам RAG-пайплайн здесь не реализуется."""
+"""Трассировка новых контрактов вопроса, OCR, результата и самостоятельной доставки."""
 
 import importlib
 import inspect
-import json
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import get_type_hints, get_origin
 import unittest
-from uuid import uuid4, uuid5
+from collections.abc import AsyncIterable
+from pathlib import Path
+from typing import get_origin, get_type_hints
 
 from pydantic import TypeAdapter, ValidationError
-from collections.abc import AsyncIterable
 
-from rag.contracts import (
-    AllowedQuestion, ClaimedQuestion, GeneratedAnswer, GuardrailsResult,
-    ProcessingAttempt, RagResult, RejectedQuestion, RequestRef, SourceRef,
-    StepError, StorageError,
+from contract_examples import (
+    DOCUMENT, IMAGE, MARKDOWN, NOW, REVISION, processing_attempt,
+    returned, source, validate_call_arguments,
 )
+from rag.contracts import AllowedQuestion, AnsweredOutcome, ClaimedQuestion, DeliveryAttempt, DeliveryRef, GeneratedAnswer, ImageContent, ImageQuestion, NoticeOutcome, OutOfScope, QuestionInput, QuestionOutcome, RagResult, RequestRef, SearchFragment, StepError, StorageError, SupportOutcome, TextQuestion
+from rag.dto import DTO
 from rag.guardrails.entrypoints import check_question
-from rag.ingestion.contracts import IngestionAttempt, JobRef, PreparedChunk, StagedUpload, UploadSource, UploadInput
-from rag.ingestion.worker import prepare_chunks
-from rag.ingestion.gateway import accept_upload
-from rag.runtime.upload_spool import stage_upload
-from rag.model_gateway.contracts import (
-    EmbeddingResult, GenerationOptions, InjectionResult, ModelGenerationResult, ModelMessage,
+from rag.ingestion.contracts import UploadInput
+from rag.model_gateway.contracts import EmbeddingResult, OcrResult
+from rag.model_gateway.entrypoints import embed_texts, recognize_text
+from rag.rag_api.contracts import (
+    AccessDenied, ClaimedDelivery, Conflict, ImagePart, IntakeResult, NewQuestion,
+    NotFound, Sent, TextPart,
 )
-from rag.model_gateway.entrypoints import embed_texts, classify_injection, generate, rerank
-from rag.rag_api.contracts import ClaimedDelivery
-from rag.rag_api.entrypoints import send_answer
+from rag.rag_api.entrypoints import build_delivery_parts, handle_rag_result, send_answer
 from rag.rag_core.answer_generator import generate_answer
-from rag.rag_core.exact_cache import get_answer
-from rag.runtime.postgresql import ingestion as pg_ingestion, rag_core as pg_core
-from rag.runtime.qdrant import ChunkPoint, QdrantHit, find_chunks, write_revision_points
-from rag.runtime.rabbitmq import BrokerPublishError, OutboxNotice, RagNotice, IngestionNotice
-from rag.runtime.redis import CachedAnswer, CacheUnavailable
+from rag.rag_core.exact_cache import get_answer, store_answer
+from rag.runtime.media import get_question_image
+from rag.runtime.s3 import get_image
+from rag.runtime.postgresql import rag_api as pg_api, rag_core as pg_core
+from rag.runtime.qdrant import QdrantHit, find_chunks, find_topic_matches
+from rag.runtime.rabbitmq import (
+    BrokerPublishError, OutboxNotice, QuestionNotice, ResultNotice,
+)
+from rag.runtime.redis import CacheUnavailable, CachedAnswer
 from rag.searcher.entrypoints import search
 
 
-def validate_call_arguments(function, *args, **kwargs):
-    """Проверить аргументы без вызова функции и передачи ей преобразованных значений."""
-    bound = inspect.signature(function).bind(*args, **kwargs)
-    for name, value in bound.arguments.items():
-        TypeAdapter(get_type_hints(function, include_extras=True)[name]).validate_python(value)
-
-
-def returned(function, value):
-    return TypeAdapter(get_type_hints(function, include_extras=True)["return"]).validate_python(value)
-
-
 class ContractTests(unittest.TestCase):
-    def setUp(self):
-        self.attempt = ProcessingAttempt(request_id=1, attempt_no=1, deadline_at=datetime.now(timezone.utc))
-        self.revision = uuid4()
-
-    def test_public_exceptions_are_importable(self):
-        for error_type in (StepError, StorageError, BrokerPublishError, CacheUnavailable):
-            with self.subTest(error_type=error_type.__name__):
-                self.assertTrue(inspect.isclass(error_type))
-                self.assertTrue(issubclass(error_type, Exception))
-
-    def test_step_error_preserves_retry_contract(self):
-        for retryable in (False, True):
-            with self.subTest(retryable=retryable):
-                error = StepError("chunk_count_mismatch", retryable=retryable)
-                self.assertEqual(error.code, "chunk_count_mismatch")
-                self.assertIs(error.retryable, retryable)
-                self.assertEqual(str(error), "chunk_count_mismatch")
-
-    def test_question_trace(self):
-        envelope = RagNotice(message_id=uuid4(), route="rag.questions", event=RequestRef(request_id=1))
-        envelope = TypeAdapter(OutboxNotice).validate_json(envelope.model_dump_json())
-        validate_call_arguments(pg_core.claim_question, envelope.event.request_id)
-        question = returned(pg_core.claim_question, ClaimedQuestion(
-            attempt=self.attempt, raw_question="Как установить?", corpus_generation=1))
-        validate_call_arguments(check_question, question.raw_question)
-        validate_call_arguments(classify_injection, question.raw_question, timeout_s=2.0)
-        observation = InjectionResult(profile_id="guard-v1", label="benign", score=None)
-        self.assertEqual(observation.label, "benign")
-        allowed = returned(check_question, AllowedQuestion(kind="allowed", normalized_question=question.raw_question))
+    def test_question_to_parts_trace(self):
+        """Каждый этап получает параметры из результата уже пройденного шага."""
+        incoming = NewQuestion(update_id=10, user_id=7, chat_id=7, received_at=NOW,
+                               input=TextQuestion(kind="text", text="Где фильтр?"))
+        validate_call_arguments(pg_api.register_question, incoming)
+        intake = returned(pg_api.register_question, IntakeResult(kind="accepted", request_id=1))
+        notice = QuestionNotice(message_id=REVISION, route="rag.questions",
+                                event=RequestRef(request_id=intake.request_id))
+        notice = TypeAdapter(OutboxNotice).validate_json(notice.model_dump_json())
+        validate_call_arguments(pg_core.claim_question, notice.event.request_id)
+        job = returned(pg_core.claim_question, ClaimedQuestion(
+            attempt=processing_attempt(), input=incoming.input, received_at=incoming.received_at,
+            corpus_generation=42))
+        validate_call_arguments(pg_core.load_revision_ids, job.corpus_generation)
+        revisions = returned(pg_core.load_revision_ids, frozenset({REVISION}))
+        validate_call_arguments(check_question, job.input.text, revisions)
+        allowed = returned(check_question, AllowedQuestion(
+            kind="allowed", normalized_question=job.input.text))
         query = allowed.normalized_question
-        validate_call_arguments(get_answer, query, question.corpus_generation)
+        validate_call_arguments(embed_texts, [query], "query", timeout_s=2.0)
+        embedding = returned(embed_texts, EmbeddingResult(profile_id="embedding-v1", vectors=[[0.1, 0.2]]))
+        validate_call_arguments(find_topic_matches, embedding.vectors[0], revisions)
+        validate_call_arguments(get_answer, query, job.corpus_generation)
         self.assertIsNone(returned(get_answer, None))
-        validate_call_arguments(pg_core.load_revision_ids, question.corpus_generation)
-        revisions = returned(pg_core.load_revision_ids, frozenset({self.revision}))
         validate_call_arguments(search, query, revisions)
-        validate_call_arguments(embed_texts, [query], "query", timeout_s=5.0)
-        embedding = returned(embed_texts, EmbeddingResult(profile_id="emb-v1", vectors=[[0.1, 0.2]]))
-        validate_call_arguments(find_chunks, query, embedding.vectors[0], revisions, 10)
-        point = ChunkPoint(chunk_id=uuid5(self.revision, "0"), document_id=uuid4(),
-            revision_id=self.revision, source_name="guide", locator=None, source_url=None,
-            text="Инструкция", chunk_no=0, dense=embedding.vectors[0])
-        hits = returned(find_chunks, [QdrantHit(fragment=point, score=1.0)])
-        validate_call_arguments(rerank, query, [hit.fragment.text for hit in hits], timeout_s=5.0)
+        validate_call_arguments(find_chunks, query, embedding.vectors[0], revisions, 10,
+                                lexical_priority=False)
+        fragment = SearchFragment(**source().model_dump(), text=MARKDOWN, images=[IMAGE])
+        hits = returned(find_chunks, [QdrantHit(fragment=fragment, score=0.72)])
         fragments = returned(search, [hit.fragment for hit in hits])
         validate_call_arguments(generate_answer, query, fragments)
-        validate_call_arguments(generate, [ModelMessage(role="user", content=query)],
-             GenerationOptions(max_output_tokens=100, temperature=None), timeout_s=30.0)
-        output = ModelGenerationResult(profile_id="gen-v1", text='{"kind":"answered"}',
-            finish_reason="completed", usage=None)
-        self.assertEqual(output.finish_reason, "completed")
-        answer = returned(generate_answer, GeneratedAnswer(kind="answered", answer_text="Ответ",
-            cited_chunk_ids=[fragments[0].chunk_id]))
-        by_id = {fragment.chunk_id: fragment for fragment in fragments}
-        result = RagResult(answer_text=answer.answer_text, sources=[
-            SourceRef.model_validate(by_id[cid].model_dump(include=set(SourceRef.model_fields)))
-            for cid in answer.cited_chunk_ids])
-        validate_call_arguments(pg_core.complete_question, question.attempt, result)
-        # Сохраняем JSON и читаем его заново для отдельной попытки доставки.
+        answer = returned(generate_answer, GeneratedAnswer(
+            kind="answered", answer_text=MARKDOWN,
+            cited_chunk_ids=[fragments[0].chunk_id], cited_image_ids=[IMAGE.image_id]))
+        result = RagResult(answer_text=answer.answer_text, sources=[source()], images=[IMAGE])
+        outcome = AnsweredOutcome(kind="answered", result=result)
+        validate_call_arguments(pg_core.complete_question, job.attempt, outcome)
+        validate_call_arguments(store_answer, query, job.corpus_generation, result)
+        cached = CachedAnswer(corpus_generation=42, **result.model_dump())
+        self.assertEqual(returned(get_answer, RagResult(
+            **cached.model_dump(include=set(RagResult.model_fields)))), result)
+
+        # Очередь результата ссылается на доставку, а не на request_id.
+        delivery_event = ResultNotice(message_id=DOCUMENT, route="rag.results",
+                                      event=DeliveryRef(delivery_id=2))
+        delivery_event = TypeAdapter(OutboxNotice).validate_json(delivery_event.model_dump_json())
+        validate_call_arguments(handle_rag_result, delivery_event.event)
+        validate_call_arguments(pg_api.claim_delivery, delivery_event.event.delivery_id)
+        attempt = DeliveryAttempt(delivery_id=2, attempt_no=1, deadline_at=NOW)
         restored = RagResult.model_validate_json(result.model_dump_json())
-        delivery = ClaimedDelivery(attempt=self.attempt, chat_id=-100, result=restored)
-        validate_call_arguments(send_answer, delivery.chat_id, delivery.result)
-        self.assertEqual(restored.sources[0].chunk_id, point.chunk_id)
+        delivery = returned(pg_api.claim_delivery, ClaimedDelivery(
+            attempt=attempt, user_id=7, chat_id=7, request_id=1, purpose="answer", content=restored))
+        validate_call_arguments(build_delivery_parts, delivery, "https://bot.example")
+        parts = returned(build_delivery_parts, [
+            TextPart(kind="text", text="Откройте фильтр. Схема согласования"),
+            ImagePart(kind="image", image=IMAGE),
+        ])
+        validate_call_arguments(pg_api.store_delivery_parts, attempt, parts)
+        for number, part in enumerate(parts):
+            validate_call_arguments(send_answer, delivery.chat_id, part)
+            receipt = returned(send_answer, Sent(kind="sent", message_id=77 + number))
+            validate_call_arguments(pg_api.record_delivery_part, attempt, number,
+                                    receipt.message_id, receipt.variant)
+        validate_call_arguments(get_image, parts[1].image.image_id)
+        validate_call_arguments(pg_api.complete_delivery, attempt, True, False)
 
-    def test_ingestion_trace(self):
-        source = UploadSource(filename="guide.txt", source_url=None)
-        upload = StagedUpload(path=Path("source"), source=source)
-        validate_call_arguments(prepare_chunks, upload)
-        chunks = returned(prepare_chunks, [PreparedChunk(text="Инструкция", locator=None)])
-        validate_call_arguments(embed_texts, [c.text for c in chunks], "document", timeout_s=5.0)
-        embedding = returned(embed_texts, EmbeddingResult(profile_id="emb-v1", vectors=[[0.1]]))
-        attempt = IngestionAttempt(job_id=self.revision, attempt_no=1, deadline_at=self.attempt.deadline_at)
-        validate_call_arguments(pg_ingestion.begin_revision_write, attempt, len(chunks))
-        points = [ChunkPoint(chunk_id=uuid5(self.revision, str(i)), document_id=uuid4(),
-            revision_id=self.revision, source_name=source.filename, source_url=source.source_url,
-            locator=chunk.locator, text=chunk.text, chunk_no=i, dense=embedding.vectors[i])
-            for i, chunk in enumerate(chunks)]
-        validate_call_arguments(write_revision_points, self.revision, points)
-        validate_call_arguments(pg_ingestion.publish_revision, attempt)
-        notice = IngestionNotice(message_id=uuid4(), route="ingestion.jobs", event=JobRef(job_id=self.revision))
-        self.assertEqual(TypeAdapter(OutboxNotice).validate_json(notice.model_dump_json()).event.job_id, self.revision)
+    def test_ocr_is_available_before_guardrails(self):
+        image_input = ImageQuestion(kind="image", file_id="telegram-file", caption="Ошибка входа")
+        restored = TypeAdapter(QuestionInput).validate_json(image_input.model_dump_json())
+        validate_call_arguments(get_question_image, restored.file_id)
+        image = returned(get_question_image, ImageContent(data=b"\xff\xd8", mime_type="image/jpeg"))
+        validate_call_arguments(recognize_text, image, timeout_s=3.0)
+        observation = returned(recognize_text, OcrResult(profile_id="ocr-v1", text="AUTH-17"))
+        prepared_text = restored.caption + "\n" + observation.text
+        validate_call_arguments(pg_core.save_prepared_question, processing_attempt(), prepared_text)
+        resumed = ClaimedQuestion(attempt=processing_attempt(), input=restored, received_at=NOW,
+                                  corpus_generation=42, prepared_text=prepared_text)
+        validate_call_arguments(check_question, resumed.prepared_text, frozenset({REVISION}))
+        self.assertEqual(returned(recognize_text, OcrResult(profile_id="ocr-v1", text="")).text, "")
 
-    def test_upload_stream_is_not_a_json_message(self):
-        async def content():
-            yield b"guide"
-        upload = UploadInput(content=content(), source=UploadSource(filename="guide.txt", source_url=None), document_id=None)
-        inspect.signature(accept_upload).bind(upload)
-        bound = inspect.signature(stage_upload).bind(self.revision, upload.content, upload.source)
-        self.assertIsInstance(bound.arguments["content"], AsyncIterable)
-        self.assertIsInstance(upload.source, UploadSource)
-        with self.assertRaises(TypeError):
-            json.dumps(upload)
-
-    def test_short_paths_and_empty_corpus(self):
-        question = ClaimedQuestion(attempt=self.attempt, raw_question=" ", corpus_generation=0)
-        validate_call_arguments(check_question, question.raw_question)
-        rejected = TypeAdapter(GuardrailsResult).validate_json('{"kind":"invalid_input"}')
-        self.assertIsInstance(rejected, RejectedQuestion)
-        validate_call_arguments(get_answer, "вопрос", 0)
+    def test_short_paths_and_old_contracts(self):
+        for outcome in (
+            SupportOutcome(kind="support", reason="out_of_scope"),
+            SupportOutcome(kind="support", reason="no_evidence"),
+            NoticeOutcome(kind="notice", code="technical_error", text="Повторите позже"),
+        ):
+            restored = TypeAdapter(QuestionOutcome).validate_json(outcome.model_dump_json())
+            validate_call_arguments(pg_core.complete_question, processing_attempt(), restored)
+        self.assertIsInstance(returned(check_question, OutOfScope(kind="out_of_scope")), OutOfScope)
         validate_call_arguments(search, "вопрос", frozenset())
         self.assertEqual(returned(search, []), [])
-        cached = CachedAnswer(answer_text="Ответ", sources=[], corpus_generation=0)
-        # Явно выбираем поля: служебные поля кеша не должны попадать в строгий RagResult.
-        result = RagResult(answer_text=cached.answer_text, sources=cached.sources)
-        validate_call_arguments(pg_core.complete_question, self.attempt, result)
+        with self.assertRaises(ValidationError):
+            validate_call_arguments(handle_rag_result, RequestRef(request_id=1))
+        with self.assertRaises(ValidationError):
+            validate_call_arguments(pg_api.complete_delivery, processing_attempt(), True, False)
+        with self.assertRaises(TypeError):
+            validate_call_arguments(check_question, "нет набора редакций")
 
-    def test_reject_malformed_boundaries(self):
-        for raw in ['{"request_id":"1"}', '{"request_id":true}', '{"request_id":0}', '{"request_id":1,"extra":0}']:
-            with self.subTest(raw=raw), self.assertRaises(ValidationError):
-                RequestRef.model_validate_json(raw)
-        with self.assertRaises(ValidationError):
-            TypeAdapter(OutboxNotice).validate_json(json.dumps({"message_id":str(uuid4()),
-                "route":"ingestion.jobs", "event":{"request_id":1}}))
-        with self.assertRaises(ValidationError):
-            InjectionResult(profile_id="guard-v1", label=None, score=None)
-        with self.assertRaises(ValidationError):
-            InjectionResult(profile_id="guard-v1", label=None, score=float("nan"))
-        with self.assertRaises(ValidationError):
-            UploadSource(filename="guide.txt")  # поле source_url обязательно, хотя допускает None
-        with self.assertRaises(ValidationError):
-            ModelGenerationResult(profile_id="gen-v1", text="", finish_reason="completed", usage=None)
-        with self.assertRaises(ValidationError):
-            GeneratedAnswer(kind="answered", answer_text="Ответ", cited_chunk_ids=[])
-        with self.assertRaises(ValidationError):
-            ProcessingAttempt(request_id=1, attempt_no=1, deadline_at=datetime.now())
+    def test_public_exceptions_and_retry_contract(self):
+        for error in (StepError, StorageError, BrokerPublishError, CacheUnavailable,
+                      AccessDenied, NotFound, Conflict):
+            self.assertTrue(issubclass(error, Exception))
+        failure = StepError("chunk_count_mismatch", retryable=False)
+        self.assertEqual((failure.code, failure.retryable, str(failure)),
+                         ("chunk_count_mismatch", False, "chunk_count_mismatch"))
 
     def test_all_models_and_annotations_resolve(self):
-        from rag.dto import DTO
-        for file in (Path(__file__).parents[1] / "rag").rglob("*.py"):
-            module = importlib.import_module(".".join(file.relative_to(Path(__file__).parents[1]).with_suffix("").parts))
+        app = Path(__file__).parents[1]
+        for file in (app / "rag").rglob("*.py"):
+            module = importlib.import_module(".".join(file.relative_to(app).with_suffix("").parts))
             for value in vars(module).values():
+                if getattr(value, "__module__", None) != module.__name__:
+                    continue
                 if inspect.isclass(value) and issubclass(value, DTO):
                     value.model_json_schema()
-                if inspect.iscoroutinefunction(value):
+                if inspect.isfunction(value):
                     for annotation in get_type_hints(value, include_extras=True).values():
                         if annotation is UploadInput or get_origin(annotation) is AsyncIterable:
-                            continue  # технические потоки Python не являются JSON DTO
+                            continue
                         TypeAdapter(annotation)
 
 

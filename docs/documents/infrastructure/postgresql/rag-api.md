@@ -4,125 +4,228 @@ sidebar_position: 2
 toc_max_heading_level: 2
 ---
 
-:::warning Рабочий контракт
-Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
-:::
+Типы: [DTO RAG API](../../telegram/module/contracts.md), [общие DTO](../../rag-core/contracts.md). Время UTC. Повтор update проверяется **до** лимита/занятости и возвращает прежние ссылки. Бизнес-решение выбирает RAG API; здесь описаны согласованные проверки и запись состояния.
 
-Адаптер поднимает `StorageError` при недоступности PostgreSQL или неизвестном коммите. Время передаём в UTC. [Схема PostgreSQL](./index.md). [DTO RAG API](../../telegram/module/entrypoints.md#dto).
+Доставки busy/denied/first_question не требуют content: текст формирует RAG API по purpose. В IntakeResult они возвращаются как delivery_id; уведомление и результат update сохраняются вместе.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `register_question` {#register-question}
 
 ~~~python
-async def register_question(update_id: int, chat_id: int, question_text: str) -> RegisteredQuestion | None: ...
+async def register_question(question: NewQuestion) -> IntakeResult: ...
 ~~~
 
-**Кто вызывает.** RAG API.
+**Кто вызывает.** Приём RAG API.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `update_id` | `int` | Telegram Update ID для дедупликации. | `10001` |
-| `chat_id` | `int` | Чат для доставки и порядок вопросов. | `123456789` |
-| `question_text` | `str` | Исходный текст Telegram Update, который позже получит Guardrails. | `"Где инструкция по установке?"` |
+| question | NewQuestion | Проверенный личный чат, отправитель, вход и время. | input.kind="image" |
 
 ### Что отдаёт
 
-**Формат.** Объект Pydantic `RegisteredQuestion` или `None`.
+**Формат.** IntakeResult.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `request_id` | `int` | ID принятого вопроса. Для повтора возвращается прежний. | `1042` |
-| `created` | `bool` | True для новой записи и False для дубликата. | `True` |
-| `return` | `None` | Достигнут лимит принятых запросов, по которым доставка ещё не завершена. | `None` |
+| kind / request_id / delivery_id | исход и ID или None | accepted, duplicate, busy, denied либо retry_later. | "accepted",1042,None |
 
 ### Правила и ошибки
 
-Проверку `update_id`, проверку лимита и вставку согласует между всеми процессами приёма. Уже принятый вопрос возвращает прежний ID даже при достигнутом лимите. Новый запрос и outbox для `rag.questions` фиксирует одной транзакцией. [Контракт RAG API](../../telegram/module/entrypoints.md#handle-telegram-update)
+Под блокировкой сотрудника проверяет ledger update, актуальный допуск и активный слот. accepted сохраняет question, ledger, слот и outbox rag.questions. busy/denied сохраняют только ledger и самостоятельное уведомление; нового вопроса нет. Глобальная перегрузка возвращает retry_later без фиксации окончательного исхода. У уже принятого update прежний исход не меняется, даже если сотрудника позднее отключили: ledger проверяется до нового решения о допуске. Новая регистрация и изменение enabled синхронизируются по одному user_id, поэтому решает порядок их коммитов.
+
+## <span className="operation-badge operation-badge--db">DB</span> `record_update` {#record-update}
+
+~~~python
+async def record_update(update_id: int, user_id: int | None, chat_id: int | None, received_at: datetime, kind: Literal['ignored', 'denied', 'invalid_update']) -> IntakeResult: ...
+~~~
+
+**Кто вызывает.** Приём для неподдерживаемого типа/чата или отказа.
+
+### Что принимает
+
+| Параметр | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| update_id | int | Идентичность и время обработанного update. | 10001 |
+| received_at | UTC datetime | Идентичность и время обработанного update. | UTC |
+| user_id | int или None | Получатель, если достоверно известен личный чат. | 123 |
+| chat_id | int или None | Получатель, если достоверно известен личный чат. | 123 |
+| kind | перечисление | Выбранный RAG API окончательный исход. | "ignored" |
+
+### Что отдаёт
+
+**Формат.** IntakeResult.
+
+| Поле / значение | Тип | Смысл | Пример |
+| --- | --- | --- | --- |
+| return | IntakeResult | Прежний исход либо сохранённый пропуск/отказ. | kind="ignored" |
+
+### Правила и ошибки
+
+Сохраняет ledger без вопроса. Для denied с известным личным получателем создаёт доставку purpose=denied. Неподдерживаемая группа не получает уведомление в чат. Повтор не создаёт второе уведомление.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `claim_delivery` {#claim-delivery}
 
 ~~~python
-async def claim_delivery(request_id: int) -> ClaimedDelivery | None: ...
+async def claim_delivery(delivery_id: int) -> ClaimedDelivery | None: ...
 ~~~
 
-**Кто вызывает.** RAG API.
+**Кто вызывает.** handle_rag_result.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `request_id` | `int` | Ссылка из уведомления RabbitMQ на сохранённый запрос. | `1042` |
+| delivery_id | int | Ссылка из DeliveryRef. | 2085 |
 
 ### Что отдаёт
 
-**Формат.** Объект Pydantic `ClaimedDelivery` или `None`.
+**Формат.** ClaimedDelivery или None.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `attempt` | `ProcessingAttempt` | Номер и срок активной попытки доставки. | `{"request_id": 1042, "attempt_no": 1, "deadline_at": ...}` |
-| `chat_id` | `int` | Чат, в который отправляем результат. | `123456789` |
-| `result` | `RagResult` | Сохранённый итог для send_answer. | `{"answer_text": "См. раздел «Установка».", "sources": [...]}` |
-| `return` | `None` | В момент вызова готовой доставки нет. | `None` |
+| return | ClaimedDelivery | Попытка, контент/case, план и прогресс. | next_part=1 |
+| return | None | Отсутствует/завершено/занято/ещё рано; либо устаревший статус. | None |
 
 ### Правила и ошибки
 
-Под блокировкой чата проверяет порядок и берёт готовый по времени `ready_to_deliver` или `delivering` с истёкшим сроком. Увеличивает `attempt_no`, ставит `delivering` и записывает срок в `resume_at`. При взятии истёкшей попытки выставляет `delivery_uncertain`, потому что отправка могла успеть дойти. Если номер новой попытки выше лимита доставки, RAG API использует её только для фиксации итога. Если строки запроса нет, адаптер фиксирует диагностическое событие перед возвратом `None`.
+Под блокировкой чата берёт первую готовую доставку по delivery_id, увеличивает попытку и фиксирует срок. Истёкшая sending-попытка отмечается неоднозначной. Загружает content и SupportCase по назначению, без обращения к Qdrant. Устаревший status/offer/confirmation отменяет; завершение/отмена будит следующую доставку через outbox. Доставки уже принятого request не отменяются из-за последующего enabled=False: текст, оставшиеся изображения и терминальная ссылка автоматической эскалации досылаются по сохранённому плану. Слот освобождается по обычному конечному исходу доставки.
+
+## <span className="operation-badge operation-badge--db">DB</span> `store_delivery_parts` {#store-delivery-parts}
+
+~~~python
+async def store_delivery_parts(attempt: DeliveryAttempt, parts: Sequence[DeliveryPart]) -> bool: ...
+~~~
+
+**Кто вызывает.** handle_rag_result до первого Telegram-вызова.
+
+### Что принимает
+
+| Параметр | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| attempt | DeliveryAttempt | Взятая попытка. | delivery_id=2085 |
+| parts | непустой список | Уже собранный неизменяемый план. | [TextPart(...),ImagePart(...)] |
+
+### Что отдаёт
+
+**Формат.** bool.
+
+| Поле / значение | Тип | Смысл | Пример |
+| --- | --- | --- | --- |
+| return | bool | План сохранён/совпадает, либо попытка потеряла право. | True / False |
+
+### Правила и ошибки
+
+Проверяет срок, номер и sending. Первый план сохраняет; совпадающий повтор безопасен, другой план после начала отправки — ошибка контракта. Сетевой вызов запрещён до подтверждённого коммита.
+
+## <span className="operation-badge operation-badge--db">DB</span> `record_delivery_part` {#record-delivery-part}
+
+~~~python
+async def record_delivery_part(attempt: DeliveryAttempt, part_no: int, message_id: int, variant: Literal['normal', 'length_fallback']) -> bool: ...
+~~~
+
+**Кто вызывает.** После Sent от send_answer.
+
+### Что принимает
+
+| Параметр | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| attempt | DeliveryAttempt | Право и индекс текущей части. | 2085 |
+| part_no | int >= 0 | Право и индекс текущей части. | 0 |
+| message_id | int | Реальная квитанция Telegram. | 77 |
+| variant | вариант | Реальная квитанция Telegram. | "normal" |
+
+### Что отдаёт
+
+**Формат.** bool.
+
+| Поле / значение | Тип | Смысл | Пример |
+| --- | --- | --- | --- |
+| return | bool | Квитанция сохранена и next_part сдвинут либо попытка устарела. | True |
+
+### Правила и ошибки
+
+Принимает только ожидаемую часть; совпадающий повтор не создаёт вторую квитанцию. Хранит Telegram message_id и confirmed_at текущей фиксации для callback и метрик. Повтор подтверждения сохраняет первое время, не перезаписывает его. При неизвестном коммите повтор читает прогресс; повторная отправка уже подтверждённой в БД части не выполняется.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `schedule_delivery_retry` {#schedule-delivery-retry}
 
 ~~~python
-async def schedule_delivery_retry(attempt: ProcessingAttempt, retry_at: datetime, uncertain: bool) -> bool: ...
+async def schedule_delivery_retry(attempt: DeliveryAttempt, retry_at: datetime, uncertain: bool) -> bool: ...
 ~~~
 
-**Кто вызывает.** RAG API.
+**Кто вызывает.** RAG API после временного сбоя.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `attempt` | `ProcessingAttempt` | Активная попытка, полученная при взятии работы. | `{"request_id": 1042, "attempt_no": 1, "deadline_at": ...}` |
-| `retry_at` | `datetime` | Время, с которого можно повторить работу. Дата и время в UTC. | `datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)` |
-| `uncertain` | `bool` | Могла ли текущая отправка дойти без подтверждения. | `True` |
+| attempt | DeliveryAttempt | Текущая попытка доставки. | 2085 |
+| retry_at | UTC datetime | Следующий запуск и возможная отправка текущей части. | UTC |
+| uncertain | bool | Следующий запуск и возможная отправка текущей части. | True |
 
 ### Что отдаёт
 
-**Формат.** Одно логическое значение.
+**Формат.** bool.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `return` | `bool` | Состояние ожидания и outbox для rag.results сохранены. | `True` |
-| `return` | `bool` | Переход не выполнен, например попытка потеряла право на запись. | `False` |
+| return | bool | Ожидание и outbox rag.results сохранены либо попытка устарела. | True |
 
 ### Правила и ошибки
 
-Сверяет `delivering`, номер и срок попытки. Возвращает запрос в `ready_to_deliver`, сохраняет `retry_at` в `resume_at` и добавляет outbox с тем же `available_at`. Признак неоднозначности накапливается по всем попыткам доставки.
+Сверяет срок/номер; сохраняет план, next_part, накопленную неоднозначность и available_at. Retry_after не продлевает технический предел повторов бесконечно.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `complete_delivery` {#complete-delivery}
 
 ~~~python
-async def complete_delivery(attempt: ProcessingAttempt, delivered: bool, uncertain: bool) -> bool: ...
+async def complete_delivery(attempt: DeliveryAttempt, delivered: bool, uncertain: bool) -> bool: ...
 ~~~
 
-**Кто вызывает.** RAG API.
+**Кто вызывает.** После всех частей либо окончательной ошибки.
 
 ### Что принимает
 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
-| `attempt` | `ProcessingAttempt` | Активная попытка, полученная при взятии работы. | `{"request_id": 1042, "attempt_no": 1, "deadline_at": ...}` |
-| `delivered` | `bool` | Подтвердил ли Telegram отправку. | `False` |
-| `uncertain` | `bool` | Могла ли текущая отправка дойти без подтверждения. | `True` |
+| attempt | DeliveryAttempt | Текущая попытка. | 2085 |
+| delivered | bool | Все части подтверждены / хотя бы одна могла дойти. | True |
+| uncertain | bool | Все части подтверждены / хотя бы одна могла дойти. | False |
 
 ### Что отдаёт
 
-**Формат.** Одно логическое значение.
+**Формат.** bool.
 
-| Поле или значение | Тип | Зачем нужно | Пример |
+| Поле / значение | Тип | Смысл | Пример |
 | --- | --- | --- | --- |
-| `return` | `bool` | Терминальное состояние сохранено. Следующая готовая доставка поставлена в outbox, если она есть. | `True` |
-| `return` | `bool` | Переход не выполнен, например попытка потеряла право на запись. | `False` |
+| return | bool | Конечное состояние сохранено либо попытка устарела. | True |
 
 ### Правила и ошибки
 
-Сверяет `delivering`, номер и срок попытки. Подтверждённая отправка даёт `delivered`. Если подтверждения нет, учитывает сохранённый `delivery_uncertain` и текущий `uncertain`. При любой неоднозначности сохраняет `delivery_unknown`, иначе `delivery_failed`. Следующая готовая доставка ставится под той же блокировкой чата.
+Сохраняет delivered, failed либо unknown с учётом прежней неоднозначности. Для delivered все части подтверждены. Только terminal_for_request освобождает активный слот исходного вопроса; status/offer/confirmation этого не делают. Под той же блокировкой будит следующую готовую доставку.
+
+## <span className="operation-badge operation-badge--db">DB</span> `queue_waiting_statuses` {#queue-waiting-statuses}
+
+~~~python
+async def queue_waiting_statuses(now: datetime, limit: int) -> int: ...
+~~~
+
+**Кто вызывает.** run_api_maintenance.
+
+### Что принимает
+
+| Параметр | Тип | Зачем нужен | Пример |
+| --- | --- | --- | --- |
+| now | UTC datetime | Момент и предел пачки. | UTC |
+| limit | int > 0 | Момент и предел пачки. | 20 |
+
+### Что отдаёт
+
+**Формат.** int.
+
+| Поле / значение | Тип | Смысл | Пример |
+| --- | --- | --- | --- |
+| return | int >= 0 | Число новых статусов. | 2 |
+
+### Правила и ошибки
+
+Для вопроса без готового итога и с received_at &lt;= now-10 секунд создаёт один status и outbox. Уникальный ключ (request_id,purpose=status) защищает от повторов. 20 секунд здесь не проверяются как deadline.

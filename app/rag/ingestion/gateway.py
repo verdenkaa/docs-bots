@@ -1,19 +1,23 @@
-"""Contracts: docs/documents/ingestion/entrypoints.md."""
+"""Contracts: docs/documents/ingestion/entrypoints.md.
 
+Каркас модуля: DTO валидируются, прикладные точки входа реализует владелец.
+"""
+
+
+from __future__ import annotations
 
 from rag.ingestion.contracts import UploadInput, UploadResult
 
 
 async def accept_upload(upload: UploadInput) -> UploadResult:
-    """Принять поток файла, сохранить временный исходник и зарегистрировать индексацию.
+    """Конвертировать документ, подтвердить S3/Markdown и зарегистрировать задание с outbox.
 
-    Заглушка: реализация пока отсутствует (NotImplementedError).
+    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
-        upload: Объект загрузки с потоком байтов и метаданными.
+        upload: Поток и метаданные.
 
     Returns:
-        UploadResult: accepted с job_id/document_id либо ожидаемый rejected.
-        После подтверждения исходник должен переживать рестарт Worker.
+        Один вариант Pydantic UploadResult.
     """
     raise NotImplementedError

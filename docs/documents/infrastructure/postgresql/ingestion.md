@@ -4,16 +4,12 @@ sidebar_position: 4
 toc_max_heading_level: 2
 ---
 
-:::warning Рабочий контракт
-Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
-:::
-
 Адаптер поднимает `StorageError` при недоступности PostgreSQL или неизвестном коммите. Время передаём в UTC. [Схема PostgreSQL](./index.md). [DTO Ingestion](../../ingestion/contracts.md#dto).
 
 ## <span className="operation-badge operation-badge--db">DB</span> `register_revision` {#register-revision}
 
 ~~~python
-async def register_revision(revision_id: UUID, document_id: UUID | None, staging_ref: str) -> AcceptedUpload | None: ...
+async def register_revision(revision_id: UUID, document_id: UUID | None, staging_ref: str, source_name: str, image_ids: Sequence[UUID]) -> AcceptedUpload | None: ...
 ~~~
 
 **Кто вызывает.** Ingestion Gateway после записи во временный том.
@@ -24,7 +20,9 @@ async def register_revision(revision_id: UUID, document_id: UUID | None, staging
 | --- | --- | --- | --- |
 | `revision_id` | `UUID` | ID редакции, равный ID задания индексации. | `UUID("bb32ecbf-082b-4497-a41f-4b61aa56a139")` |
 | `document_id` | `UUID \| None` | ID обновляемого документа. None означает, что нужно выделить новый ID. | `None` |
-| `staging_ref` | `str` | Внутренний ключ файла и манифеста во временном томе. | `"uploads/bb32ecbf-082b-4497-a41f-4b61aa56a139"` |
+| `staging_ref` | `str` | Ключ готового Markdown и манифеста, не оригинала. | `"uploads/bb32ecbf-082b-4497-a41f-4b61aa56a139"` |
+| source_name | str, непустой | Название исходного документа из UploadSource.filename для чанков и HTML-заглушки. | Реестр мебели.docx |
+| image_ids | Sequence[UUID] | ID уже сохранённых Gateway изображений; [] допустимо. | [] |
 
 ### Что отдаёт
 
@@ -39,7 +37,7 @@ async def register_revision(revision_id: UUID, document_id: UUID | None, staging
 
 ### Правила и ошибки
 
-Повтор той же операции с тем же `revision_id` возвращает уже зарегистрированное задание. `revision_no` выделяется под блокировкой по документу. Регистрацию также согласуем по `revision_id` с [проверкой оставшихся загрузок](./cleanup.md#is-staging-referenced).
+Сохраняет source_name и image_ids в строке редакции, чтобы метаданные не исчезли после удаления временного Markdown. Повтор той же операции с тем же revision_id возвращает уже зарегистрированное задание; отличающиеся метаданные под тем же ID — конфликт. `revision_no` выделяется под блокировкой по документу. Регистрацию также согласуем по `revision_id` с [проверкой оставшихся загрузок](./cleanup.md#is-staging-referenced).
 
 ## <span className="operation-badge operation-badge--db">DB</span> `claim_ingestion_job` {#claim-ingestion-job}
 
@@ -64,6 +62,8 @@ async def claim_ingestion_job(job_id: UUID) -> ClaimedIngestionJob | None: ...
 | `attempt` | `IngestionAttempt` | Активная попытка с номером и сроком. | `{"job_id": UUID("bb32ecbf-082b-4497-a41f-4b61aa56a139"), "attempt_no": 1, "deadline_at": ...}` |
 | `document_id` | `UUID` | ID документа для payload точек. | `UUID("43f95f66-7343-4cbc-beb5-19fd36a8ca77")` |
 | `staging_ref` | `str` | Ключ загрузки для open_staged_upload. | `"uploads/bb32ecbf-082b-4497-a41f-4b61aa56a139"` |
+| `expected_chunk_count` | `int или None` | Сохранённое число чанков; None до первой записи. | 100 |
+| `expected_topic_count` | `int или None` | Сохранённое число примеров; None до первой записи. | 12 |
 | `return` | `None` | Задание отсутствует, занято, завершено или ещё не готово к запуску. | `None` |
 
 ### Правила и ошибки
@@ -75,7 +75,7 @@ async def claim_ingestion_job(job_id: UUID) -> ClaimedIngestionJob | None: ...
 ## <span className="operation-badge operation-badge--db">DB</span> `begin_revision_write` {#begin-revision-write}
 
 ~~~python
-async def begin_revision_write(attempt: IngestionAttempt, expected_chunk_count: int) -> bool: ...
+async def begin_revision_write(attempt: IngestionAttempt, expected_chunk_count: int, expected_topic_count: int) -> bool: ...
 ~~~
 
 **Кто вызывает.** Ingestion Worker непосредственно перед первым запросом записи точек в Qdrant.
@@ -85,7 +85,8 @@ async def begin_revision_write(attempt: IngestionAttempt, expected_chunk_count: 
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
 | `attempt` | `IngestionAttempt` | Право текущей попытки начать запись. | `{"job_id": revision_id, "attempt_no": 1, "deadline_at": ...}` |
-| `expected_chunk_count` | `int` | Положительное число точек полной редакции, из которого восстанавливается набор ID. | `100` |
+| `expected_chunk_count` | `int` | Положительное число чанков полной редакции. | `100` |
+| `expected_topic_count` | `int` | Положительное число примеров вопросов этой редакции. | `12` |
 
 ### Что отдаёт
 
@@ -93,12 +94,12 @@ async def begin_revision_write(attempt: IngestionAttempt, expected_chunk_count: 
 
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
-| `return` | `bool` | Число чанков и `qdrant_write_pending=true` сохранены, запись разрешена. | `True` |
+| `return` | `bool` | Числа чанков/примеров и `qdrant_write_pending=true` сохранены, запись разрешена. | `True` |
 | `return` | `bool` | Попытка утратила право записи или признак уже установлен. | `False` |
 
 ### Правила и ошибки
 
-Сверяет состояние, номер и срок попытки. Сохраняет число чанков при первой записи. Если на повторе сохранённое число расходится с подготовленным, поднимает `StepError("chunk_count_mismatch", retryable=False)` до установки признака. При `False` или неизвестном коммите Worker не отправляет запись в Qdrant.
+Сверяет состояние, номер и срок попытки. Сохраняет ожидаемые числа чанков и примеров при первой записи. При расхождении любого набора повтор отклоняется; один qdrant_write_pending охватывает обе записи. Если на повторе расходится число чанков, поднимает StepError("chunk_count_mismatch", False), для числа примеров — StepError("topic_count_mismatch", False), до установки признака. Подготовленный снимок перед этим проверен и не заменяется заново сгенерированным содержимым. При `False` или неизвестном коммите Worker не отправляет запись в Qdrant.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `publish_revision` {#publish-revision}
 
@@ -125,7 +126,7 @@ async def publish_revision(attempt: IngestionAttempt) -> int | None: ...
 
 ### Правила и ошибки
 
-Публикация требует установленный `qdrant_write_pending` и сохранённое положительное `expected_chunk_count`. После подтверждения записи и проверки полного набора точек Worker вызывает этот переход. Транзакция снимает признак, переводит редакцию в `published`, выводит предыдущую в `retired`, меняет интервалы видимости и увеличивает поколение. Ожидаемое число чанков остаётся в строке редакции.
+Публикация требует qdrant_write_pending и положительные expected_chunk_count/expected_topic_count. До перехода проверены полные наборы чанков и примеров. После подтверждения записи и проверки полного набора точек Worker вызывает этот переход. Транзакция снимает признак, переводит редакцию в `published`, выводит предыдущую в `retired`, меняет интервалы видимости и увеличивает поколение. Оба ожидаемых числа остаются в строке редакции.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `schedule_ingestion_retry` {#schedule-ingestion-retry}
 
@@ -235,7 +236,7 @@ async def clear_revision_write_pending(revision_id: UUID, attempt_no: int) -> bo
 
 ### Правила и ошибки
 
-Под блокировкой строки сверяет `indexing`, истёкший срок, номер попытки и установленный признак. Меняет только признак. Срок, число попыток и число чанков сохраняются. При неизвестном коммите сначала перечитываем состояние.
+Под блокировкой строки сверяет `indexing`, истёкший срок, номер попытки и установленный признак. Меняет только признак. Срок, число попыток и оба ожидаемых числа сохраняются; PreparedRevision также сохраняется для повтора. При неизвестном коммите сначала перечитываем состояние.
 
 ## <span className="operation-badge operation-badge--db">DB</span> `list_required_revision_manifests` {#list-required-revision-manifests}
 
@@ -256,7 +257,8 @@ async def list_required_revision_manifests() -> list[RevisionManifest]: ...
 | Поле или значение | Тип | Зачем нужно | Пример |
 | --- | --- | --- | --- |
 | `[].revision_id` | `UUID` | Уникальный ID редакции для сверки точек. | `UUID("bb32ecbf-082b-4497-a41f-4b61aa56a139")` |
-| `[].expected_chunk_count` | `int \| None` | Положительное число ожидаемых чанков. `None` означает, что для старой редакции полнота неизвестна. | `100` |
+| `[].expected_chunk_count` | `int или None` | Полный ожидаемый набор чанков. None означает неизвестную полноту старой редакции. | 100 |
+| `[].expected_topic_count` | `int или None` | Полный ожидаемый набор примеров; None требует восстановления из доверенного манифеста. | 12 |
 
 ### Правила и ошибки
 
@@ -281,4 +283,5 @@ class PendingRevisionWrite(DTO):
 class RevisionManifest(DTO):
     revision_id: UUID
     expected_chunk_count: PositiveId | None
+    expected_topic_count: PositiveId | None
 ~~~

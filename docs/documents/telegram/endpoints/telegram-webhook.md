@@ -1,69 +1,52 @@
 ---
 title: "POST /telegram/webhook"
 sidebar_position: 2
+toc_max_heading_level: 2
 hide_title: true
 ---
-
-:::warning На согласовании
-Ручку включаем только при выборе webhook. Решение о режиме, список поддерживаемых чатов и команды бота уточним по кейсу.
-:::
 
 # <span className="operation-badge operation-badge--post">POST</span> `/telegram/webhook`
 
 ## Назначение и доступ
 
-Telegram вызывает `POST /telegram/webhook` по HTTPS для доставки обновлений. RAG API проверяет `X-Telegram-Bot-Api-Secret-Token` по секрету, заданному при регистрации webhook. [Telegram Bot API](https://core.telegram.org/bots/api#setwebhook)
+Telegram доставляет update по HTTPS. Проверяется X-Telegram-Bot-Api-Secret-Token; это подлинность Telegram, а допуск сотрудника отдельно проверяет Access.
 
 ## Что принимает
 
-`Content-Type: application/json`. Параметры пути и строки запроса отсутствуют. Тело — объект Telegram Update.
+Content-Type: application/json, обязательный секрет в заголовке. Тело — Telegram Update.
 
-| Поле | Тип и обязательность | Для чего |
+| Поле | Тип / обязательность | Смысл / пример |
 | --- | --- | --- |
-| `X-Telegram-Bot-Api-Secret-Token` | Обязательный строковый заголовок. | Проверка источника обновления. |
-| `update_id` | Обязательное целое число. | Дедупликация в пределах бота. |
-| `message.chat.id` | Целое число для текстового сообщения. | Назначение ответа и порядок внутри чата. |
-| `message.text` | Строка для текстового вопроса. | Исходный вопрос для RAG Core. Пригодность текста проверяет Guardrails. |
+| update_id | int, обязательно | 10001, дедупликация. |
+| message.from.id | int для сообщения | ID сотрудника. |
+| message.chat.id / type | int / строка | Личный чат, type=private. |
+| message.text | str для текста | Самостоятельный вопрос либо явная команда. |
+| message.photo / caption | список PhotoSize / str или отсутствует | Изображение и подпись; выбирается file_id. |
+| message.document | объект, только разрешённое изображение | file_id и проверяемый формат; обычные документы идут в Ingestion, не в RAG-вопрос. |
+| callback_query.id / from.id | str / int для callback | Квитанция нажатия и отправитель. |
+| callback_query.message.chat / data | объект / str для callback | Только личный чат; действие a:/s:/y:/n:. |
 
-Пример входящего запроса. Остальные поля Telegram могут присутствовать. [Telegram Update](https://core.telegram.org/bots/api#update)
-
-```http
-POST /telegram/webhook HTTP/1.1
-Host: bot.example.org
-Content-Type: application/json
-X-Telegram-Bot-Api-Secret-Token: example_secret
-
-{
-  "update_id": 10001,
-  "message": {
-    "message_id": 7,
-    "date": 1760000000,
-    "chat": { "id": 123456789, "type": "private" },
-    "text": "Где найти инструкцию по установке?"
-  }
-}
-```
+Поля Telegram вне используемого сценария могут присутствовать; неподдерживаемый корректный update — ignored.
 
 ## Бизнес-логика
 
-1. Проверяем секрет и валидность обновления. Корректное обновление вне поддерживаемого сценария подтверждаем без постановки вопроса.
-2. Регистрируем вопрос и запись outbox для `rag.questions` одной транзакцией. Повторный `update_id` уже принятого обновления возвращает подтверждение и использует существующий запрос.
-3. Отвечаем Telegram после коммита. Queue Relay публикует уведомление отдельно, а готовый результат RAG API отправляет в чат. [Приём и доставка через очередь](../module/queue-processing.md)
+1. Проверить секрет, JSON и структуру update.
+2. Передать в handle_telegram_update. Он проверяет личный чат, допуск, повтор, вопрос либо управление.
+3. accepted/duplicate/handled/busy/denied/ignored подтверждаются после сохранённого решения. Retry_later требует повторной доставки; Core работает вне HTTP-запроса.
+4. Для callback транспорт отдельно вызывает answerCallbackQuery; это не HTTP-тело ответа webhook.
 
 ## Что отдаёт
 
-`200 OK` с пустым телом. Такой ответ подтверждает принятую, повторную или корректную пропущенную доставку Telegram Update.
+200 OK с пустым телом для надёжно обработанного update. Бизнес-отказ доступа/занятости сотрудника не является HTTP-403/503 и не ставит вопрос повторно.
 
 ## Ошибки и повторы
 
-| HTTP-код | Код ошибки, если предусмотрен | Когда возникает | Действие клиента |
-| --- | --- | --- | --- |
-| `400` | — | Некорректный JSON или обязательные данные обновления отсутствуют. | Проверить формат отправляемого Update. |
-| `403` | — | Секрет отсутствует или не совпал. | Проверить настройку секрета webhook. |
-| `503` | — | PostgreSQL не позволяет подтвердить транзакцию или достигнут лимит незавершённых запросов при приёме нового вопроса. | Telegram может повторить доставку обновления. |
-
-Если Telegram повторит запрос после таймаута, дедупликация по `update_id` защитит от второй постановки вопроса. Повторные доставки Telegram ограничены. [Telegram Bot API](https://core.telegram.org/bots/api#setwebhook)
+| HTTP | Причина | Действие |
+| --- | --- | --- |
+| 400 | Некорректный JSON или нет обязательного update_id/структуры. | Исправить вход. |
+| 403 | Отсутствует/неверен секрет Telegram. | Проверить настройку webhook. |
+| 503 | retry_later: PostgreSQL/коммит неизвестны либо глобальная ёмкость исчерпана. | Telegram может повторить тот же update. |
 
 ## Связанные контракты
 
-[Модуль RAG API](../module/index.md) · [Маршруты RabbitMQ](../../architecture/message-flow.md)
+[Приём](../module/entrypoints.md#handle-telegram-update) · [DTO](../module/contracts.md) · [Telegram Bot API](https://core.telegram.org/bots/api#setwebhook)

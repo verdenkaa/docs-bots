@@ -4,10 +4,6 @@ sidebar_position: 3
 hide_title: true
 ---
 
-:::warning На согласовании
-Предлагаемая внутренняя проверка. Адрес и период вызова задаёт среда запуска.
-:::
-
 # <span className="operation-badge operation-badge--get">GET</span> `/health/live`
 
 ## Назначение и доступ

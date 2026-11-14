@@ -4,10 +4,6 @@ sidebar_position: 2
 toc_max_heading_level: 2
 ---
 
-:::warning Рабочий контракт
-Контракты заданы для MVP. Лимиты и настройки запуска уточняются при реализации.
-:::
-
 [Правила DTO и Pydantic](../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
 
 
@@ -39,11 +35,14 @@ async def search(query: str, revision_ids: frozenset[UUID]) -> list[SearchFragme
 | `[].text` | `str` | Текст для контекста генератора. | `"Фрагмент инструкции по установке."` |
 | `[].source_name` | `str` | Название источника для пользователя. | `"Руководство по установке.pdf"` |
 | `[].locator` | `SourceLocator \| None` | Место в документе, если его можно указать. | `{"page": 4, "section": "Установка"}` |
-| `[].source_url` | `str \| None` | Адрес источника, если он доступен. | `None` |
+| `[].source_url` | `str \| None` | В MVP None: API строит ссылку на HTML-заглушку документа. | `None` |
+| `[].images` | `list[ImageRef]` | ID/описания изображений этого чанка из payload. | `[]` |
+
+Фрагмент также возвращает images: list[ImageRef] из payload; без изображений это []. Источник ID — Gateway, не Searcher.
 
 ### Правила и ошибки
 
-При пустом наборе редакций возвращает `[]` без обращения к моделям и Qdrant. Модельные операции выполняет через Model Gateway: `embed_texts` даёт `EmbeddingResult`, опциональный `rerank` — `RerankResult`; Searcher проверяет профили и возвращает Core только фрагменты. При сбое поднимает `StepError(code, retryable)`. [DTO фрагмента](../rag-core/contracts.md#общие-dto) · [Конвейер](./pipeline.md).
+При пустом наборе редакций возвращает `[]` без обращения к моделям и Qdrant. Для вопроса со ссылкой явно передаёт lexical_priority=True в find_chunks; численные веса берёт из профиля. Примеры topic_questions не ищет и не возвращает. Модельные операции выполняет через Model Gateway: `embed_texts` даёт `EmbeddingResult`, опциональный `rerank` — `RerankResult`; Searcher проверяет профили и возвращает Core только фрагменты. При сбое поднимает `StepError(code, retryable)`. [DTO фрагмента](../rag-core/contracts.md#общие-dto) · [Конвейер](./pipeline.md).
 
 ## Пример полного результата
 

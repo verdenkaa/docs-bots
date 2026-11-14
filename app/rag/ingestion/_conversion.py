@@ -34,6 +34,9 @@ class _ConversionSettings(BaseModel):
     max_image_bytes: PositiveId = 20 * 1024 * 1024
     max_images: PositiveId = 1000
     max_description_characters: PositiveId = 8000
+    parse_timeout_s: float = Field(default=120, gt=0)
+    parse_memory_bytes: int = Field(default=4 * 1024**3, ge=256 * 1024 * 1024)
+    max_parser_output_bytes: PositiveId = 128 * 1024 * 1024
 
     @classmethod
     def from_environment(cls) -> _ConversionSettings:

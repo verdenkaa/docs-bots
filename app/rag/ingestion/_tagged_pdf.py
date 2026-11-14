@@ -15,8 +15,9 @@ from __future__ import annotations
 import collections
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from io import BytesIO
+
+from rag.ingestion._parsers import ParseRefused
 
 INLINE_TAGS = {"Span", "Link", "Reference", "Quote", "Code", "Annot", "Figure", "Formula", "Lbl"}
 SKIP_TAGS = {"TOC", "TOCI"}
@@ -44,21 +45,22 @@ class PoorTagsError(UntaggedPdfError):
     """Теги есть, но полагаться на них нельзя: они покрывают не весь текст или не несут структуры."""
 
 
-@dataclass
 class Leaf:
-    """Кусок содержимого страницы (marked content), на который ссылается тег."""
+    """Internal marked-content position, not a boundary DTO."""
 
-    page: int
-    mcid: int
+    def __init__(self, page: int, mcid: int) -> None:
+        self.page, self.mcid = page, mcid
 
 
-@dataclass
 class Elem:
-    tag: str
-    attrs: dict = field(default_factory=dict)
-    alt: str | None = None
-    uri: str | None = None
-    kids: list = field(default_factory=list)
+    """Internal PDF structure node; mutable collections belong to one parse."""
+
+    def __init__(self, tag: str, attrs: dict | None = None, alt: str | None = None,
+                 uri: str | None = None, kids: list | None = None) -> None:
+        self.tag = tag
+        self.attrs = {} if attrs is None else attrs
+        self.alt, self.uri = alt, uri
+        self.kids = [] if kids is None else kids
 
 
 class TaggedPdfConverter:
@@ -448,8 +450,7 @@ class TaggedPdfConverter:
             for kind, bbox, name in self._graphics.get((leaf.page, leaf.mcid), [])
         ]
         if not graphics:
-            self.stats["figures_without_graphics"] += 1
-            return ("", FIGURE, None)
+            raise ParseRefused("unsupported_format", "PDF figure has no extractable graphics")
         page = graphics[0][0]
         on_page = [g for g in graphics if g[0] == page]
         images = [g for g in on_page if g[1] == "images"]

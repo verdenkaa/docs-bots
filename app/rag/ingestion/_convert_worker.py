@@ -1,10 +1,7 @@
-"""Один разбор документа в одноразовом процессе: stdin — оригинал, stdout — Markdown и картинки.
+"""One memory-bounded parse. stdin: original; stdout: framed Markdown and PNGs.
 
-Запуск: python -m rag.ingestion._convert_worker <формат> <лимит памяти> <лимит входа> <метка картинок>
-
-Формат stdout: 4 байта длины заголовка, JSON-заголовок {"markdown": N, "images": [N, ...]},
-затем Markdown в UTF-8 и PNG-картинки подряд. Коды выхода: 0 — готово, 2 — conversion_failed,
-3 — unsupported_format, остальное — сбой исполнителя. Причина отказа — последняя строка stderr.
+The process never creates a local original or image directory. Its parent owns
+the lifetime of the process group and uploads the returned image bytes to S3.
 """
 
 import json
@@ -12,49 +9,59 @@ import os
 import struct
 import sys
 
-EXIT_CODES = {"conversion_failed": 2, "unsupported_format": 3}
-EXIT_RESOURCES = 4
+
+_EXIT_CODES = {"conversion_failed": 2, "unsupported_format": 3, "too_large": 5}
 
 
 def _main() -> None:
-    kind, memory, maximum, marker = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
-    # библиотеки разбора могут печатать в stdout; результат идёт в отдельную копию дескриптора
+    kind, marker = sys.argv[1], sys.argv[4]
+    memory, maximum, markdown_limit, image_count, image_limit, output_limit = (
+        int(sys.argv[index]) for index in (2, 3, 5, 6, 7, 8)
+    )
     output = os.fdopen(os.dup(1), "wb")
-    os.dup2(2, 1)
+    os.dup2(2, 1)  # third-party diagnostics must never corrupt the wire format
     if sys.platform == "linux":
         import resource
-
         resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
 
     from rag.ingestion._parsers import PARSERS, ParseRefused
 
-    images: list[bytes] = []
+    images, image_bytes = [], 0
 
-    def add_image(png: bytes) -> str:
+    def add_image(png):
+        nonlocal image_bytes
+        if len(images) >= image_count or len(png) > image_limit:
+            raise ParseRefused("too_large", "Image limit exceeded")
+        image_bytes += len(png)
+        if image_bytes > output_limit:
+            raise ParseRefused("too_large", "Parser output limit exceeded")
         images.append(png)
         return marker.format(len(images) - 1)
 
     try:
         data = sys.stdin.buffer.read(maximum + 1)
         if len(data) > maximum:
-            raise ParseRefused("conversion_failed", "вход больше лимита исполнителя")
+            raise ParseRefused("too_large", "Input limit exceeded")
         markdown = PARSERS[kind].parse(data, add_image).encode("utf-8")
-    except ParseRefused as refusal:
-        print(refusal.reason, file=sys.stderr, flush=True)
-        sys.exit(EXIT_CODES[refusal.code])
+        if len(markdown) > markdown_limit:
+            raise ParseRefused("too_large", "Markdown limit exceeded")
+        header = json.dumps({"markdown": len(markdown), "images": [len(image) for image in images]}).encode()
+        if 4 + len(header) + len(markdown) + image_bytes > output_limit:
+            raise ParseRefused("too_large", "Parser output limit exceeded")
+    except ParseRefused as error:
+        sys.exit(_EXIT_CODES[error.code])
+    except ImportError:
+        sys.exit(6)  # missing deployment dependency is not a malformed document
     except MemoryError:
-        print("превышен лимит памяти разбора", file=sys.stderr, flush=True)
-        sys.exit(EXIT_RESOURCES)
-    except Exception as error:  # noqa: BLE001 - повреждённый файл роняет парсер любым исключением
-        # текст исключения может содержать фрагменты документа, в диагностику идёт только тип
-        print(f"парсер не разобрал документ: {type(error).__name__}", file=sys.stderr, flush=True)
-        sys.exit(EXIT_CODES["conversion_failed"])
+        sys.exit(4)
+    except Exception:
+        sys.exit(2)  # do not emit an exception that might contain document text
 
-    header = json.dumps({"markdown": len(markdown), "images": [len(image) for image in images]}).encode()
-    output.write(struct.pack(">I", len(header)) + header + markdown)
-    for image in images:
-        output.write(image)
-    output.flush()
+    with output:
+        output.write(struct.pack(">I", len(header)) + header + markdown)
+        for image in images:
+            output.write(image)
+        output.flush()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """DOCX -> Markdown: внутренняя часть Document Converter.
 
-Читает разметку Word напрямую (ZIP + XML стандартной библиотекой), без моделей и без docling:
+Читает разметку Word напрямую (ZIP + XML стандартной библиотекой), без вызовов моделей:
 заголовки и списки берутся из стилей и нумерации, таблицы, ссылки и картинки — из самого документа.
 Оглавление, колонтитулы, сноски и удалённый в режиме правки текст в Markdown не попадают.
 Внешние картинки по ссылкам не скачиваются.
@@ -33,7 +33,7 @@ ORDERED_RE = re.compile(r"^(\*\*)?(\d+)[.)]\s+")
 BULLET_RE = re.compile(r"^[•▪■□◦·–]\s+")
 URL_RE = re.compile(r"(?i)^(https?://|mailto:)\S+$")
 UNORDERED_FORMATS = {"bullet", "none"}
-VECTOR_SUFFIXES = (".emf", ".wmf")  # Pillow их не растрирует; такая картинка пропускается
+VECTOR_SUFFIXES = (".emf", ".wmf")  # outside the raster-image profile
 SKIPPED = {f"{W}del", f"{W}moveFrom", f"{W}instrText", f"{W}delText", f"{W}pPr", f"{W}rPr"}
 GRAPHICS = {f"{W}drawing", f"{W}pict", f"{W}object"}
 
@@ -308,7 +308,7 @@ class DocxConverter:
             elif kid.tag == f"{W}txbxContent":
                 extra.extend(self._blocks(kid))
             elif kid.tag in (f"{A}blip", f"{V}imagedata"):
-                marker = self._image(kid.get(f"{R}embed") or kid.get(f"{R}id") or "")
+                marker = self._image(kid.get(f"{R}embed") or kid.get(f"{R}id") or kid.get(f"{R}link") or "")
                 if marker:
                     segments.append((marker, False))
                 self._graphics(kid, segments, extra)
@@ -317,11 +317,15 @@ class DocxConverter:
 
     def _image(self, relationship: str) -> str:
         target, external = self._targets.get(relationship, ("", True))
-        if external or not target:
-            return ""  # картинка по внешней ссылке: не скачиваем
+        if not target:
+            raise ParseRefused("conversion_failed", "DOCX image relationship is missing")
+        if external:
+            raise ParseRefused("unsupported_format", "External DOCX images are not fetched")
         name = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("word", target))
-        if name not in self._names or name.lower().endswith(VECTOR_SUFFIXES):
-            return ""
+        if name not in self._names:
+            raise ParseRefused("conversion_failed", "DOCX image part is missing")
+        if name.lower().endswith(VECTOR_SUFFIXES):
+            raise ParseRefused("unsupported_format", "DOCX vector image requires another profile")
         return self._add_image(to_png(self._part(name)))
 
     # --- разбор XML ---------------------------------------------------------------------------

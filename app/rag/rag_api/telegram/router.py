@@ -5,6 +5,7 @@ import logging
 from fastapi import APIRouter, Request, Response
 
 from rag.rag_api.config import WEBHOOK_SECRET
+from rag.rag_api.entrypoints import handle_telegram_update
 
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,8 @@ async def telegram_webhook(request: Request) -> Response:
         "Telegram message | update_id=%s | chat_id=%s | text=%s",
         update_id,
         chat_id,
-        text,
-    )
+        text)
+
+    print(f"Telegram message | update_id={update_id} | chat_id={chat_id} | text={text}")
 
     return Response(status_code=200)

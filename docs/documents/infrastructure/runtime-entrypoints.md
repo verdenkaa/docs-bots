@@ -6,6 +6,8 @@ toc_max_heading_level: 2
 
 Runtime не создаёт клиентов и не запускает сервисы при импорте. Конфигурация читается из окружения в момент явного запуска; секреты не входят в DTO и сообщения диагностики. Прикладные обработчики остаются у владельцев RAG API/Core/Ingestion/Model Gateway.
 
+Слой PostgreSQL использует ORM-модели и отдельную AsyncSession на транзакцию. SQLAlchemy формирует запросы, условия переходов и блокировки; бизнес-модули получают только DTO. [Устройство слоя хранения](./postgresql/index.md#слой-хранения).
+
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `migrate_runtime` {#migrate-runtime}
 
 ~~~python
@@ -55,7 +57,8 @@ async def run_runtime(component: Literal['relay', 'recovery', 'questions', 'resu
 ~~~sh
 python -m rag.runtime migrate
 python -m rag.runtime prepare
-python -m rag.runtime bootstrap-admin 123456789
+python -m rag.runtime set-access @employee_name
+python -m rag.runtime set-access employee_name --disable
 python -m rag.runtime serve relay
 python -m rag.runtime serve recovery
 python -m rag.runtime serve questions
@@ -65,7 +68,19 @@ python -m rag.runtime worker
 python -m rag.runtime pending-writes --limit 100
 ~~~
 
-bootstrap-admin — локальная операция первого запуска; отказывает, если администратор уже существует. Последующие изменения выполняются через Access с текущими правами. pending-writes только показывает истёкшие неизвестные записи, ничего не удаляет. Их сверка выполняется по [операторской процедуре](./qdrant/index.md#сверка-незавершённых-записей), автоматического снятия qdrant_write_pending нет.
+Администратор задаётся ADMIN_LOGIN/ADMIN_PASSWORD, а не записью Telegram в БД; прежняя команда bootstrap-admin удалена. set-access — локальная операция оператора развёртывания с настроенными административными credentials в окружении: нормализует имя и вызывает тот же write_user_access. HTTP-адаптер проверяет пароль до создания Principal; Runtime не принимает Principal из публичной формы. pending-writes только показывает истёкшие неизвестные записи, ничего не удаляет. Их сверка выполняется по [операторской процедуре](./qdrant/index.md#сверка-незавершённых-записей), автоматического снятия qdrant_write_pending нет.
+
+### Обновление со схемы 001_runtime
+
+Перед запуском обновлённого кода остановите процессы приложения и выполните migrate. Миграция 002_username_access сохраняет вопросы, доставки, outbox и историю. Числовой Telegram User ID не позволяет восстановить текущее имя: старый непустой employees архивируется в legacy_employee_access, а новый список username заполняется через set-access/Access. Автоматического допуска по старому ID нет. Исторические rag_requests сохраняют username=NULL; новые принятые вопросы содержат снимок разрешённого username. start_runtime отклоняет старую схему до создания клиентов и потребителей.
+
+У прежних реплик сохраняются message_id, текст и время; исходные author_id/author_role/client_message_id остаются в технических legacy-полях. Прежние операторы обозначаются author_login=legacy-telegram:ID: это историческая метка, а не новый административный логин. При совпадении прежних ключей у разных авторов сохраняются все сообщения; последующим конфликтующим репликам назначаются устойчивые новые client_message_id. Автоматический downgrade этой смены идентичности запрещён; откат требует восстановления оператором.
+
+### Кнопки Support
+
+Внутренний формат callback_data разделяется сборщиком DeliveryPart и адаптером Telegram: d:request_id — offer(dissatisfied), h:request_id — offer(human_request), s:request_id — start, y:case_id — confirm, n:case_id — decline. UUID записывается канонически с дефисами; все варианты укладываются в 64 байта. Пример s:1042 сохраняется. Кодек находится в runtime/postgresql/_callbacks.py; он не заменяет проверку источника Telegram.
+
+Runtime сверяет действие с кнопкой конкретной сохранённой TextPart, квитанцией именно этой части, владельцем, чатом и request/case. При гонке с отправкой возвращает retry_later без ledger; после сохранения квитанции тот же update может примениться. Чужой или устаревший callback сохраняется как ignored. Для текстовой просьбы offer сверка кнопки не нужна. Незавершённый контракт признака заранее подготовленного length_fallback остаётся [открытым](../telegram/module/entrypoints.md); Runtime не определяет variant по тексту и не меняет DTO самовольно.
 
 Команда worker предназначена для Linux-контейнера. Родитель запускает потребителя в отдельной группе процессов, получает короткий бюджет claim, затем срок взятой попытки и бюджеты PostgreSQL/Qdrant/файлов. По монотонному сроку останавливает всю группу через SIGTERM, затем SIGKILL. Новый потребитель запускается только после подтверждения остановки выполняющихся процессов прежней группы. Неизвестный исход Qdrant сохраняется для сверки. Прямой запуск serve ingestion без супервизора запрещён. Модельный адаптер должен соблюдать лимит шага по контракту Model Gateway; общий срок дополнительно контролируется родителем.
 
@@ -73,7 +88,9 @@ recovery восстанавливает все три маршрута, убир
 
 ## Окружение и проверки
 
-Адреса и секреты: PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, REDIS_URL, RABBITMQ_HOST/RABBITMQ_PORT/RABBITMQ_USER/RABBITMQ_PASSWORD, QDRANT_URL, RAG_QDRANT_API_KEY, S3_ENDPOINT_URL/S3_ACCESS_KEY/S3_SECRET_KEY/S3_REGION, TELEGRAM_BOT_TOKEN. WORKER_SPOOL_DIR указывает постоянный рабочий том. Полный набор параметров и безопасные значения по умолчанию — в app/rag/runtime/_config.py. Настройки читаются при явном запуске, локальные .env автоматически не подхватываются.
+Адреса и секреты: PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, REDIS_URL, RABBITMQ_HOST/RABBITMQ_PORT/RABBITMQ_USER/RABBITMQ_PASSWORD, QDRANT_URL, RAG_QDRANT_API_KEY, S3_ENDPOINT_URL/S3_ACCESS_KEY/S3_SECRET_KEY/S3_REGION, TELEGRAM_BOT_TOKEN, ADMIN_LOGIN/ADMIN_PASSWORD. WORKER_SPOOL_DIR указывает постоянный рабочий том. Полный набор параметров и безопасные значения по умолчанию — в app/rag/runtime/_config.py. Настройки читаются при явном запуске из окружения и локального .env текущего каталога; явное окружение имеет приоритет. Реальные секреты не коммитятся.
+
+prepare_telegram_photo использует отдельный завершаемый процесс с Pillow 13.0.0: EXIF-ориентация, белый фон для прозрачности, RGB/JPEG, поля без обрезания, уменьшение размеров и подбор качества. S3-оригинал не меняется. Анимация даёт первый кадр. RAG_PHOTO_MAX_PIXELS (по умолчанию 25 миллионов) ограничивает декодирование, RAG_PHOTO_MEMORY_BYTES (512 MiB) задаёт жёсткий лимит адресного пространства Linux-исполнителя, RAG_PHOTO_TIMEOUT_S (15 секунд) дополнительно ограничен остатком DeliveryAttempt. На процесс Runtime одновременно выполняется одно преобразование; отмена/таймаут останавливает и дожидается исполнителя. На Windows доступны пиксельный лимит, последовательность и остановка процесса; жёсткий лимит памяти применяется в рабочем Linux-контейнере.
 
 Лимиты задаются RAG_IO_TIMEOUT_S, RAG_QUESTION_TIMEOUT_S, RAG_DELIVERY_TIMEOUT_S, RAG_INGESTION_TIMEOUT_S, RAG_MAX_PENDING_REQUESTS, RAG_STARTUP_TIMEOUT_S и RAG_SHUTDOWN_TIMEOUT_S. Для Redis используется RAG_CACHE_TTL_S. RAG_S3_BUCKET по умолчанию rag-images. Поиск RAG_SEARCH_MODE=hybrid использует серверный weighted RRF с BM25; dense явно отключает лексическую ветку.
 

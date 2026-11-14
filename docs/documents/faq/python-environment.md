@@ -21,6 +21,7 @@ sidebar_position: 1.3
 | `redis` | Redis с интерфейсом `redis.asyncio`. Отдельный `aioredis` не нужен. |
 | `qdrant-client` | `AsyncQdrantClient`; версия 1.20.0 согласована с сервером и используемым BM25 API. |
 | `httpx` | Async HTTP: Telegram Bot API и адаптеры модельных API. |
+| `Pillow` | Декодирование и подготовка JPEG-копии для Telegram в отдельном управляемом процессе Runtime. Версия 13.0.0 закрепляет профиль преобразования. |
 
 Для Linux-сервера опция `production` добавляет Gunicorn и `uvicorn-worker`. Это устанавливает зависимости, но не меняет команду bootstrap. Telegram SDK, Celery, модельные фреймворки, парсеры, сторонний логгер и pytest пока не добавляем: HTTP покрывает Bot API, очередью управляют существующие роли, JSON-логи и проверки контрактов уже используют стандартную библиотеку.
 

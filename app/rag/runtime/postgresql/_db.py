@@ -8,12 +8,14 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import text
+from sqlalchemy import func, insert, inspect, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag.contracts import StorageError
 from rag.runtime._state import _get
 from rag.runtime import _watchdog
+from ._models import _CorpusState, _Delivery, _Outbox, _Request, _Revision, _TelegramUpdate
 
 
 def _json(value):
@@ -34,41 +36,56 @@ def _data(value):
     return json.loads(value) if isinstance(value, (str, bytes)) else value
 
 
-async def _question_row(connection, request_id):
-    row = await _one(connection, "SELECT * FROM rag_requests WHERE request_id=:id", id=request_id)
+async def _question_row(session, request_id):
+    row = await _one(session, select(_Request).where(_Request.request_id == request_id))
     if row is None:
         return None
-    await _lock(connection, "user", row["user_id"])
-    return await _one(connection, "SELECT * FROM rag_requests WHERE request_id=:id FOR UPDATE", id=request_id)
+    await _lock(session, "user", row["user_id"])
+    return await _one(
+        session, select(_Request).where(_Request.request_id == request_id).with_for_update()
+    )
 
 
-async def _delivery_row(connection, delivery_id):
-    row = await _one(connection, "SELECT * FROM rag_deliveries WHERE delivery_id=:id", id=delivery_id)
+async def _delivery_row(session, delivery_id):
+    row = await _one(session, select(_Delivery).where(_Delivery.delivery_id == delivery_id))
     if row is None:
         return None
-    await _lock(connection, "user", row["user_id"])
-    await _lock(connection, "chat", row["chat_id"])
-    return await _one(connection, "SELECT * FROM rag_deliveries WHERE delivery_id=:id FOR UPDATE", id=delivery_id)
+    await _lock(session, "user", row["user_id"])
+    await _lock(session, "chat", row["chat_id"])
+    return await _one(
+        session, select(_Delivery).where(_Delivery.delivery_id == delivery_id).with_for_update()
+    )
 
 
-async def _prior_update(connection, update_id):
+async def _prior_update(session, update_id):
     from rag.rag_api.contracts import IntakeResult
-    await _lock(connection, "update", update_id)
-    row = await _one(connection, "SELECT result FROM telegram_updates WHERE update_id=:id", id=update_id)
+
+    await _lock(session, "update", update_id)
+    row = await _one(
+        session, select(_TelegramUpdate.result).where(_TelegramUpdate.update_id == update_id)
+    )
     if row is None:
         return None
     result = _decode(IntakeResult, row["result"])
     if result.kind == "accepted":
-        return IntakeResult(kind="duplicate", request_id=result.request_id, delivery_id=result.delivery_id)
+        return IntakeResult(
+            kind="duplicate", request_id=result.request_id, delivery_id=result.delivery_id
+        )
     return result
 
 
-async def _save_update(connection, update_id, user_id, chat_id, received_at, result, action=None):
-    await _execute(connection, """INSERT INTO telegram_updates
-        (update_id,user_id,chat_id,received_at,result,action)
-        VALUES(:update,:user,:chat,:at,CAST(:result AS jsonb),CAST(:action AS jsonb))""",
-        update=update_id, user=user_id, chat=chat_id, at=received_at, result=_json(result),
-        action=_json(action) if action is not None else None)
+async def _save_update(session, update_id, user_id, chat_id, received_at, result, action=None):
+    await _execute(
+        session,
+        insert(_TelegramUpdate).values(
+            update_id=update_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            received_at=received_at,
+            result=_data(_json(result)),
+            action=action,
+        ),
+    )
 
 
 @asynccontextmanager
@@ -79,79 +96,154 @@ async def _transaction():
             raise StorageError("PostgreSQL is not configured")
         with _watchdog._step(resources.settings.io_timeout_s, "postgresql"):
             async with asyncio.timeout(resources.settings.io_timeout_s):
-                async with resources.engine.begin() as connection:
-                    yield connection
+                async with AsyncSession(
+                    resources.engine, expire_on_commit=False, autoflush=False
+                ) as session:
+                    async with session.begin():
+                        yield session
     except (SQLAlchemyError, OSError, TimeoutError) as exc:
         # A failed COMMIT response does not prove that the COMMIT was rolled back.
         raise StorageError("PostgreSQL operation was not confirmed") from exc
 
 
-async def _execute(connection, sql, **params):
-    return await connection.execute(text(sql), params)
+async def _execute(session, sql, **params):
+    if isinstance(sql, str):
+        raise TypeError("Repositories require SQLAlchemy statements, not SQL strings")
+    statement = sql.execution_options(populate_existing=True, synchronize_session=False)
+    return await session.execute(statement, params)
 
 
-async def _one(connection, sql, **params):
-    return (await _execute(connection, sql, **params)).mappings().first()
+async def _one(session, sql, **params):
+    result = await _execute(session, sql, **params)
+    if _entity_select(sql):
+        entity = result.scalars().first()
+        return _row(entity) if entity is not None else None
+    return result.mappings().first()
 
 
-async def _all(connection, sql, **params):
-    return (await _execute(connection, sql, **params)).mappings().all()
+async def _all(session, sql, **params):
+    result = await _execute(session, sql, **params)
+    if _entity_select(sql):
+        return [_row(entity) for entity in result.scalars().all()]
+    return result.mappings().all()
 
 
-async def _lock(connection, namespace, value):
+def _entity_select(statement):
+    descriptions = getattr(statement, "column_descriptions", [])
+    return (
+        len(descriptions) == 1
+        and descriptions[0].get("entity") is not None
+        and descriptions[0]["expr"] is descriptions[0]["entity"]
+    )
+
+
+def _row(entity):
+    return {
+        column.key: getattr(entity, column.key) for column in inspect(entity).mapper.column_attrs
+    }
+
+
+async def _lock(session, namespace, value):
     digest = hashlib.sha256(f"{namespace}:{value}".encode()).digest()[:8]
     key = int.from_bytes(digest, "big", signed=True)
-    await _execute(connection, "SELECT pg_advisory_xact_lock(:key)", key=key)
+    await _execute(session, select(func.pg_advisory_xact_lock(key)))
 
 
-async def _now(connection):
-    return (await _execute(connection, "SELECT clock_timestamp()")).scalar_one()
+async def _now(session):
+    return (await _execute(session, select(func.clock_timestamp()))).scalar_one()
 
 
-async def _corpus(connection):
-    return await _one(connection, "SELECT * FROM corpus_state WHERE singleton_id=1 FOR UPDATE")
+async def _corpus(session):
+    return await _one(
+        session, select(_CorpusState).where(_CorpusState.singleton_id == 1).with_for_update()
+    )
 
 
-async def _outbox(connection, route, identifier, available_at=None):
-    field = {"rag.questions": "request_id", "rag.results": "delivery_id", "ingestion.jobs": "revision_id"}[route]
-    await _execute(connection, f"""INSERT INTO outbox(message_id,route,{field},available_at)
-        VALUES (:message_id,:route,:identifier,:available_at)""",
-        message_id=uuid4(), route=route, identifier=identifier,
-        available_at=available_at or datetime.now(UTC))
+async def _outbox(session, route, identifier, available_at=None):
+    field = {
+        "rag.questions": "request_id",
+        "rag.results": "delivery_id",
+        "ingestion.jobs": "revision_id",
+    }[route]
+    await _execute(
+        session,
+        insert(_Outbox).values(
+            message_id=uuid4(),
+            route=route,
+            available_at=available_at or datetime.now(UTC),
+            **{field: identifier},
+        ),
+    )
 
 
-async def _delivery(connection, *, user_id, chat_id, purpose, request_id=None,
-                    case_id=None, content=None, terminal=False, key=None):
+async def _delivery(
+    session,
+    *,
+    user_id,
+    chat_id,
+    purpose,
+    request_id=None,
+    case_id=None,
+    content=None,
+    terminal=False,
+    key=None,
+):
     # Callers serialize by employee/chat before allocating an ordering ID.
-    await _lock(connection, "chat", chat_id)
-    row = await _one(connection, """INSERT INTO rag_deliveries
-        (user_id,chat_id,request_id,case_id,purpose,content,terminal_for_request,dedupe_key)
-        VALUES (:user_id,:chat_id,:request_id,:case_id,:purpose,CAST(:content AS jsonb),:terminal,:key)
-        ON CONFLICT (dedupe_key) DO NOTHING RETURNING delivery_id""",
-        user_id=user_id, chat_id=chat_id, request_id=request_id, case_id=case_id,
-        purpose=purpose, content=_json(content) if content is not None else None,
-        terminal=terminal, key=key)
+    await _lock(session, "chat", chat_id)
+    if key is not None:
+        existing = await _one(
+            session, select(_Delivery.delivery_id).where(_Delivery.dedupe_key == key)
+        )
+        if existing is not None:
+            return existing["delivery_id"]
+    row = await _one(
+        session,
+        insert(_Delivery)
+        .values(
+            user_id=user_id,
+            chat_id=chat_id,
+            request_id=request_id,
+            case_id=case_id,
+            purpose=purpose,
+            content=_data(_json(content)) if content is not None else None,
+            terminal_for_request=terminal,
+            dedupe_key=key,
+        )
+        .returning(_Delivery.delivery_id),
+    )
+    await _outbox(session, "rag.results", row["delivery_id"])
+    return row["delivery_id"]
+
+
+async def _wake_delivery(session, chat_id):
+    row = await _one(
+        session,
+        select(_Delivery.delivery_id)
+        .where(_Delivery.chat_id == chat_id, _Delivery.state.in_(("waiting", "sending")))
+        .order_by(_Delivery.delivery_id)
+        .limit(1),
+    )
     if row:
-        await _outbox(connection, "rag.results", row["delivery_id"])
-        return row["delivery_id"]
-    return (await _one(connection, "SELECT delivery_id FROM rag_deliveries WHERE dedupe_key=:key", key=key))["delivery_id"]
+        await _outbox(session, "rag.results", row["delivery_id"])
 
 
-async def _wake_delivery(connection, chat_id):
-    row = await _one(connection, """SELECT delivery_id FROM rag_deliveries WHERE chat_id=:chat
-        AND state IN ('waiting','sending') ORDER BY delivery_id LIMIT 1""", chat=chat_id)
+async def _wake_ingestion(session, document_id):
+    row = await _one(
+        session,
+        select(_Revision.revision_id)
+        .where(_Revision.document_id == document_id, _Revision.state.in_(("queued", "indexing")))
+        .order_by(_Revision.revision_no)
+        .limit(1),
+    )
     if row:
-        await _outbox(connection, "rag.results", row["delivery_id"])
-
-
-async def _wake_ingestion(connection, document_id):
-    row = await _one(connection, """SELECT revision_id FROM document_revisions
-        WHERE document_id=:document AND state IN ('queued','indexing') ORDER BY revision_no LIMIT 1""",
-        document=document_id)
-    if row:
-        await _outbox(connection, "ingestion.jobs", row["revision_id"])
+        await _outbox(session, "ingestion.jobs", row["revision_id"])
 
 
 def _valid_attempt(row, attempt, state, now):
-    return (row is not None and row["state"] == state and row["attempt_no"] == attempt.attempt_no
-            and row["resume_at"] == attempt.deadline_at and row["resume_at"] > now)
+    return (
+        row is not None
+        and row["state"] == state
+        and row["attempt_no"] == attempt.attempt_no
+        and row["resume_at"] == attempt.deadline_at
+        and row["resume_at"] > now
+    )

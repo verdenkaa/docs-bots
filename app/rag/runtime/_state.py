@@ -13,6 +13,8 @@ class _Resources:
         self.broker = None
         self.channel = None
         self.broker_lock = asyncio.Lock()
+        self.photo_lock = asyncio.Lock()
+        self.photos = set()
 
 
 _current = None

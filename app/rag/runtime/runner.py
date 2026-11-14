@@ -13,7 +13,7 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import TypeAdapter
-from sqlalchemy import text
+from sqlalchemy import func, select
 
 from rag.contracts import StepError
 from rag.model_gateway.contracts import ModelBinding, ModelRole
@@ -27,22 +27,33 @@ from rag.runtime.rabbitmq import _consume
 
 def _implemented(function):
     """Reject the repository's explicit placeholders before consuming saved work."""
-    return not any(isinstance(node, ast.Raise) and isinstance(node.exc, ast.Name)
-                   and node.exc.id == "NotImplementedError" for node in ast.walk(ast.parse(inspect.getsource(function))))
+    return not any(
+        isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Name)
+        and node.exc.id == "NotImplementedError"
+        for node in ast.walk(ast.parse(inspect.getsource(function)))
+    )
 
 
 def _bindings(component, settings):
-    bindings = TypeAdapter(dict[ModelRole, ModelBinding]).validate_json(settings.model_bindings.get_secret_value())
-    required = ({"embedding", "generation", "injection", "ocr"} if component == "questions" else
-                {"embedding", "generation"} if component == "ingestion" else set())
+    bindings = TypeAdapter(dict[ModelRole, ModelBinding]).validate_json(
+        settings.model_bindings.get_secret_value()
+    )
+    required = (
+        {"embedding", "generation", "injection", "ocr"}
+        if component == "questions"
+        else {"embedding", "generation"} if component == "ingestion" else set()
+    )
     if component == "questions" and settings.use_reranker:
         required.add("reranker")
     if not required <= bindings.keys():
         raise StepError("model_bindings_missing", False)
     selected = {role: bindings[role] for role in required}
     embedding = selected.get("embedding")
-    if embedding is not None and (embedding.profile_id != settings.embedding_profile or
-                                 embedding.embedding_dimensions != settings.embedding_dimensions):
+    if embedding is not None and (
+        embedding.profile_id != settings.embedding_profile
+        or embedding.embedding_dimensions != settings.embedding_dimensions
+    ):
         raise StepError("embedding_profile_mismatch", False)
     return selected
 
@@ -50,6 +61,7 @@ def _bindings(component, settings):
 async def _cleanup_batch(limit):
     from rag.runtime.qdrant import delete_revision_points
     from rag.runtime.upload_spool import remove_staged_upload
+
     for item in await cleanup.list_finished_staging(limit):
         await remove_staged_upload(item.staging_ref)
         await cleanup.clear_staging_ref(item.revision_id, item.staging_ref)
@@ -69,14 +81,18 @@ async def _singleton(component):
     # A dedicated live connection owns the session lock, never a pooled transaction.
     engine = _get().engine
     async with engine.connect() as connection:
-        acquired = await connection.scalar(text("SELECT pg_try_advisory_lock(728342, hashtext(:role))"), {"role": component})
+        acquired = await connection.scalar(
+            select(func.pg_try_advisory_lock(728342, func.hashtext(component)))
+        )
         await connection.commit()
         if not acquired:
             raise RuntimeError("A background process for this role is already active")
         try:
             yield connection
         finally:
-            await connection.execute(text("SELECT pg_advisory_unlock(728342, hashtext(:role))"), {"role": component})
+            await connection.execute(
+                select(func.pg_advisory_unlock(728342, func.hashtext(component)))
+            )
             await connection.commit()
 
 
@@ -84,7 +100,7 @@ async def _periodic(component, operation, interval, stop):
     async with _singleton(component) as ownership:
         while not stop.is_set():
             # Detect loss of the singleton lock's connection; never silently reacquire.
-            await ownership.execute(text("SELECT 1"))
+            await ownership.execute(select(1))
             await ownership.commit()
             try:
                 await operation(_get().settings.batch_size)
@@ -96,7 +112,9 @@ async def _periodic(component, operation, interval, stop):
                 pass
 
 
-async def run_runtime(component: Literal['relay', 'recovery', 'questions', 'results', 'maintenance', 'ingestion']) -> None:
+async def run_runtime(
+    component: Literal["relay", "recovery", "questions", "results", "maintenance", "ingestion"],
+) -> None:
     """Run one separately supervised role; SIGTERM drains work and closes resources."""
     if component not in ("relay", "recovery", "questions", "results", "maintenance", "ingestion"):
         raise ValueError("Unknown runtime component")
@@ -105,8 +123,12 @@ async def run_runtime(component: Literal['relay', 'recovery', 'questions', 'resu
     from rag.rag_api.entrypoints import handle_rag_result, run_api_maintenance
     from rag.model_gateway.entrypoints import start_models, close_models
 
-    handlers = {"questions": handle_rag_question, "results": handle_rag_result,
-                "ingestion": handle_ingestion_job, "maintenance": run_api_maintenance}
+    handlers = {
+        "questions": handle_rag_question,
+        "results": handle_rag_result,
+        "ingestion": handle_ingestion_job,
+        "maintenance": run_api_maintenance,
+    }
     handler = handlers.get(component)
     if handler is not None and not _implemented(handler):
         raise StepError("business_handler_not_implemented", False)
@@ -138,7 +160,11 @@ async def run_runtime(component: Literal['relay', 'recovery', 'questions', 'resu
         elif component == "maintenance":
             await _periodic(component, handler, settings.recovery_interval_s, stop)
         else:
-            route = {"questions": "rag.questions", "results": "rag.results", "ingestion": "ingestion.jobs"}[component]
+            route = {
+                "questions": "rag.questions",
+                "results": "rag.results",
+                "ingestion": "ingestion.jobs",
+            }[component]
             if component == "ingestion":
                 await _recover_batch(settings.batch_size)
                 async with _singleton(component):

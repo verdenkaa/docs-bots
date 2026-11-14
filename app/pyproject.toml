@@ -21,9 +21,15 @@ dependencies = [
     "qdrant-client==1.20.0",
     "httpx>=0.28,<1",
     "Pillow==13.0.0",
+    "pdfplumber>=0.11,<0.12",
+    "pypdf>=7,<8",
 ]
 
 [project.optional-dependencies]
+# Document Converter: DOCX и PDF без тегов структуры. Тянет torch и не ставится на Alpine (musl).
+docling = [
+    "docling>=2.150,<3",
+]
 production = [
     "gunicorn>=23,<24; sys_platform != 'win32'",
     "uvicorn-worker>=0.3,<1; sys_platform != 'win32'",

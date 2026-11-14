@@ -65,7 +65,7 @@ async def convert_document(upload: UploadInput, revision_id: UUID) -> Conversion
 
 ### Правила и ошибки
 
-Не пишет оригинал или S3. Окончательный отказ разбора — StepError(unsupported_format/conversion_failed, False), лимит — StepError(too_large, False); Gateway переводит их в UploadRejected. Сбой OCR/VLM остаётся техническим. [Порядок](./converter.md).
+Не пишет оригинал или S3. Окончательный отказ разбора — StepError(unsupported_format/conversion_failed, False), лимит — StepError(too_large, False); Gateway переводит их в UploadRejected. Сбой OCR/VLM остаётся техническим. Пустой вход — StepError(invalid_upload, False); срок или падение исполнителя разбора — StepError(converter_unavailable, True). [Порядок](./converter.md), [форматы и лимиты](./converter.md#реализованный-профиль).
 
 ## <span className="operation-badge operation-badge--sub">SUB</span> `handle_ingestion_job` {#handle-ingestion-job}
 

@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent
 PROJECT = "rag-hackathon"
 # Groups are started in order and stopped in reverse order.
 GROUPS = {
-    "infra": ("postgres", "redis", "rabbitmq", "qdrant"),
+    "infra": ("postgres", "redis", "rabbitmq", "qdrant", "s3"),
     "app": ("core", "worker"),
     "monitoring": ("loki", "alloy", "grafana"),
     "load": ("locust",),
@@ -34,13 +34,14 @@ SCAFFOLD_IMAGES = {
     "core": "localhost/rag-core:scaffold",
     "worker": "localhost/rag-worker:scaffold",
 }
-REQUIRED_HEALTH = {"postgres", "redis", "rabbitmq", "qdrant", "core"}
+REQUIRED_HEALTH = {"postgres", "redis", "rabbitmq", "qdrant", "s3", "core"}
 # Container TCP ports and optional browser paths.
 ENDPOINTS = {
     "postgres": {5432: None},
     "redis": {6379: None},
     "rabbitmq": {5672: None},
     "qdrant": {6333: "/dashboard", 6334: None},
+    "s3": {9000: "/", 9001: "/"},
     "core": {8000: "/health/ready"},
     "loki": {3100: "/ready"},
     "alloy": {12345: "/"},
@@ -51,6 +52,7 @@ PASSWORD_KEYS = {
     "postgres": ("POSTGRES_PASSWORD", "POSTGRES_PASSWORD"),
     "rabbitmq": ("RABBITMQ_PASSWORD", "RABBITMQ_DEFAULT_PASS"),
     "grafana": ("GRAFANA_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD"),
+    "s3": ("S3_SECRET_KEY", "RUSTFS_SECRET_KEY"),
 }
 
 
@@ -686,6 +688,23 @@ def password_lines(passwords):
 def initialize_env(engine, announce=True):
     path = ROOT / ".env"
     if path.exists():
+        # Upgrade an existing stand without replacing any of its credentials.
+        existing = path.read_text(encoding="utf-8-sig")
+        if re.search(r"(?m)^[ \t]*(?:export[ \t]+)?S3_SECRET_KEY[ \t]*=", existing) or os.environ.get("S3_SECRET_KEY"):
+            return
+        volumes = run(
+            [*engine, "volume", "ls", "-q", "--filter", f"label=com.docker.compose.project={PROJECT}",
+             "--filter", "label=com.docker.compose.volume=s3_data"],
+            capture=True, timeout=20,
+        )
+        if volumes.strip():
+            raise ManagerError("S3 data already exists. Restore S3_SECRET_KEY in .env before starting.")
+        with path.open("a", encoding="utf-8") as file:
+            if existing and not existing.endswith("\n"):
+                file.write("\n")
+            file.write(f"S3_SECRET_KEY={secrets.token_urlsafe(32)}\n")
+        if announce:
+            print(f"Added S3_SECRET_KEY to {path}; existing settings were preserved.")
         return
     volumes = run(
         [*engine, "volume", "ls", "-q", "--filter", f"label=com.docker.compose.project={PROJECT}"],
@@ -705,7 +724,7 @@ def initialize_env(engine, announce=True):
         file.write("# Generated on first run. Keep this file private.\n")
         file.write("\n".join(settings) + "\n")
     if announce:
-        print(f"Created {path} with passwords for PostgreSQL, RabbitMQ and Grafana.")
+        print(f"Created {path} with passwords for PostgreSQL, RabbitMQ, Grafana and S3.")
 
 
 def arguments():

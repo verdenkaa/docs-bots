@@ -4,6 +4,10 @@ sidebar_position: 2
 toc_max_heading_level: 2
 ---
 
+:::warning Метки доступа
+Контракты индексации согласованы; словарь закрытых уровней и фильтрацию поиска нужно определить отдельно. Рабочий общий корпус использует employees.
+:::
+
 [Правила DTO и Pydantic](../../faq/dto.md): внутри Python передаём объекты; примеры словарей в таблицах показывают данные для валидации/JSON.
 
 При сбое Qdrant или несовместимой схеме адаптер поднимает `StepError(code, retryable)`. [Схема точки и запуск](./index.md). Эмбеддинги вычисляет [Model Gateway](../../model-gateway/entrypoints.md#embed-texts); этот адаптер получает готовые векторы.
@@ -129,6 +133,8 @@ from dataclasses import dataclass
 
 class ChunkPoint(SearchFragment):
     chunk_no: NonNegativeInt
+    document_version: NonNegativeInt
+    access_level: NonEmptyText
     dense: list[float]
 
 
@@ -236,3 +242,9 @@ async def verify_topic_points(revision_id: UUID, expected_topic_count: int) -> b
 ### Правила и ошибки
 
 Сравнивает точный набор UUIDv5 и соответствие question_no каждому ID, без пропусков/повторов/лишних точек. Количество точек восстановленного снимка не используется как ожидаемое.
+
+## Метаданные версии и доступа
+
+ChunkPoint.document_version — неотрицательный номер публикации документа из ReservedRevision; ChunkPoint.access_level — обязательная метка из DocumentBatch.source. У всех точек редакции номер, имя и метка совпадают. UUID revision_id остаётся фильтром видимости и основой point ID: неопубликованная попытка может иметь тот же числовой номер, что следующая успешная, но другой UUID.
+
+Адаптер сохраняет новые поля в payload. При сборке SearchFragment выбирает только его объявленные поля, не передаёт весь payload через **kwargs при extra=forbid. Действующий интерфейс поиска по-прежнему работает с общим корпусом employees; словарь закрытых уровней и фильтрация требуют отдельного согласования. Наличие access_level в payload само по себе не ограничивает поиск.

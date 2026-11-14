@@ -24,8 +24,9 @@ Gateway — Python-компонент в `worker`. Адаптер проверя
 2. `convert_document(upload, revision_id)` возвращает Markdown и изображения с описаниями. Оригинал существует только в ограниченном буфере текущего вызова.
 3. `put_image(item.ref.image_id, item.content)` сохраняет каждую картинку. После подтверждения Gateway собирает `ConvertedDocument` с Markdown и списком ImageRef, без байтов.
 4. `stage_upload(revision_id, document, upload.source)` устойчиво сохраняет `converted.md` и манифест.
-5. `register_revision(revision_id, upload.document_id, staging_ref, upload.source.filename, image_ids)` атомарно регистрирует редакцию и outbox.
-6. После подтверждённого коммита вернуть AcceptedUpload. Индекс ещё готовится.
+5. `open_staged_upload(staging_ref)` даёт StagedUpload для `prepare_chunks`. Gateway собирает непустой `DocumentBatch(source=upload.source, chunks=chunks)` и устойчиво сохраняет его через `store_document_batch(staging_ref, batch)`. Разбиение относится к подготовке до принятия задания, не к индексатору.
+6. `register_revision(revision_id, upload.document_id, staging_ref, upload.source, image_ids)` атомарно находит/создаёт document_id по имени и регистрирует редакцию и outbox.
+7. После подтверждённого коммита вернуть AcceptedUpload. Номер версии ещё не назначен; индекс готовится Worker.
 
 Название оригинала сохраняем как source_name. URL оригинала не нужен: RAG API строит ссылку на HTML-заглушку документа.
 
@@ -33,13 +34,13 @@ Gateway — Python-компонент в `worker`. Адаптер проверя
 result = await accept_upload(
     UploadInput(
         content=file_stream,
-        source=UploadSource(filename="Руководство.docx"),
+        source=UploadSource(filename="Руководство.docx", access_level="employees"),
         document_id=None,
     )
 )
 ~~~
 
-В очередь идёт только JobRef. Вызывающий сохраняет document_id для обновлений.
+В очередь идёт только JobRef. Повторная загрузка с тем же точным filename обновляет тот же документ; явный document_id должен соответствовать имени. Access_level сохраняется в партии и строке редакции. Переименование этим входом не выполняется.
 
 ## Что делать при сбое приёма
 
@@ -47,7 +48,7 @@ result = await accept_upload(
 | --- | --- |
 | Неподдерживаемый/повреждённый/пустой вход, превышение размера | UploadRejected с явным кодом; задания нет. |
 | Временный сбой конвертера/OCR/VLM/S3 | Техническая ошибка, приём не подтверждён; отправитель повторяет оригинал. |
-| Сбой записи Markdown | Незавершённую запись тома подберёт проверка при запуске. |
+| Сбой записи Markdown или полной партии чанков | Незавершённую запись тома подберёт проверка при запуске. |
 | PostgreSQL подтвердил unknown_document | Отказ; временный Markdown удаляем. |
 | Коммит неизвестен | Оставляем Markdown и картинки, поднимаем StorageError, логируем revision_id. Если коммит состоялся, Worker продолжит. |
 | Ответ о приёме потерян | Сначала выясняем исход по revision_id/job_id. Новый вызов создаёт новую редакцию. Ключ повтора будущего транспорта проектируется вместе с адаптером. |

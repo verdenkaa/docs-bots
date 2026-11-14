@@ -35,7 +35,7 @@ async def accept_upload(upload: UploadInput) -> UploadResult: ...
 
 ### Правила и ошибки
 
-Конвертация/S3/Markdown выполняются до accepted. StepError/StorageError — технический сбой; неизвестный коммит не равен rejected. Новый вызов не обещает дедупликацию внешнего транспорта.
+Конвертация/S3/Markdown, разбиение и устойчивое сохранение DocumentBatch выполняются до accepted. StepError/StorageError — технический сбой; неизвестный коммит не равен rejected. Новый вызов не обещает дедупликацию внешнего транспорта.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `convert_document` {#convert-document}
 
@@ -93,7 +93,7 @@ async def handle_ingestion_job(event: JobRef) -> ConsumeDecision: ...
 
 ### Правила и ошибки
 
-Читает готовый MD и подготовленный набор. Публикует оба индекса. Неизвестная запись Qdrant блокирует повтор/удаление до сверки. [Все исходы](./worker.md#повторы-и-подтверждение-очереди).
+Читает готовую DocumentBatch, определяет опубликованную версию по имени и закрепляет новую через reserve_document_version. Не выполняет разбиение. Повтор использует сохранённую версию и подготовленный набор. Публикует оба индекса. Неизвестная запись Qdrant блокирует повтор/удаление до сверки. [Все исходы](./worker.md#повторы-и-подтверждение-очереди).
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `prepare_chunks` {#prepare-chunks}
 
@@ -101,7 +101,7 @@ async def handle_ingestion_job(event: JobRef) -> ConsumeDecision: ...
 async def prepare_chunks(upload: StagedUpload) -> list[PreparedChunk]: ...
 ~~~
 
-**Кто вызывает.** Worker, если PreparedRevision ещё не сохранён.
+**Кто вызывает.** Gateway после stage_upload/open_staged_upload, до store_document_batch и регистрации задания. Индексатор Worker эту функцию не вызывает.
 
 ### Что принимает
 
@@ -124,4 +124,4 @@ async def prepare_chunks(upload: StagedUpload) -> list[PreparedChunk]: ...
 
 ### Правила и ошибки
 
-Первично режет по разделам, крупные части — с настраиваемым перекрытием. Не разрывает плейсхолдер; неделимый блок сверх бюджета — StepError(chunk_too_large, False). Не выполняет OCR/VLM/конвертацию. Неизвестный ID — ошибка. После сохранения PreparedRevision повтор использует снимок.
+Первично режет по разделам, крупные части — с настраиваемым перекрытием. Не разрывает плейсхолдер; неделимый блок сверх бюджета — StepError(chunk_too_large, False). Не выполняет OCR/VLM/конвертацию. Неизвестный ID — ошибка. Gateway сохраняет полный результат как DocumentBatch до outbox. Повтор индексации использует ту же партию и не выполняет разбиение заново.

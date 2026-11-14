@@ -35,7 +35,7 @@ class DtoValidationTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             TypeAdapter(SendResult).validate_json('{"kind":"sent"}')
         with self.assertRaises(ValidationError):
-            UploadSource(filename="guide.docx", source_url="https://old.example")
+            UploadSource(filename="guide.docx", access_level="employees", source_url="https://old.example")
 
     def test_intake_and_support_actions(self):
         for values in ({"kind": "accepted"}, {"kind": "busy", "request_id": 1}):

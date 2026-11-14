@@ -1,19 +1,20 @@
 """Contracts: docs/documents/ingestion/entrypoints.md.
 
-Каркас модуля: DTO валидируются, прикладные точки входа реализует владелец.
+Индексатор готовой партии. Подготовка чанков принадлежит входной стороне Gateway.
 """
 
 
 from __future__ import annotations
 
 from rag.contracts import ConsumeDecision
+from rag.ingestion._dependencies import _Dependencies
+from rag.ingestion._indexing import _Indexer
+from rag.ingestion._settings import _Settings
 from rag.ingestion.contracts import JobRef, PreparedChunk, StagedUpload
 
 
 async def handle_ingestion_job(event: JobRef) -> ConsumeDecision:
-    """Провести задание через парсинг, эмбеддинг, запись и публикацию редакции.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
+    """Загрузить готовую партию чанков, закрепить версию, записать и опубликовать оба индекса.
 
     Args:
         event: Ссылка на задание, не файл.
@@ -21,11 +22,12 @@ async def handle_ingestion_job(event: JobRef) -> ConsumeDecision:
     Returns:
         Одна строка ConsumeDecision.
     """
-    raise NotImplementedError
+    event = JobRef.model_validate(event.model_dump() if isinstance(event, JobRef) else event)
+    return await _Indexer(_Settings.from_environment(), _Dependencies()).handle(event)
 
 
 async def prepare_chunks(upload: StagedUpload) -> list[PreparedChunk]:
-    """Нарезать готовый Markdown на чанки без разрыва плейсхолдеров.
+    """Подготовить чанки для Gateway до регистрации задания; индексатор разбиение не повторяет.
 
     Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 

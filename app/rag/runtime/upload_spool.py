@@ -13,7 +13,7 @@ from uuid import UUID, uuid5
 from pydantic import Field, model_validator
 
 from rag.dto import DTO, NonEmptyText
-from rag.ingestion.contracts import ConvertedDocument, StagedUpload, UploadSource
+from rag.ingestion.contracts import ConvertedDocument, DocumentBatch, StagedUpload, UploadSource
 from rag.runtime.qdrant import ChunkPoint, TopicPoint
 
 import asyncio
@@ -36,6 +36,10 @@ class PreparedRevision(DTO):
         document_ids = {point.document_id for point in self.points}
         if len(document_ids) != 1:
             raise ValueError('Редакция содержит один document_id')
+        if len({point.document_version for point in self.points}) != 1:
+            raise ValueError('Чанки редакции имеют одну версию документа')
+        if len({point.access_level for point in self.points}) != 1 or len({point.source_name for point in self.points}) != 1:
+            raise ValueError('Чанки редакции имеют общее имя и уровень доступа')
         for number, point in enumerate(self.points):
             if point.revision_id != self.revision_id or point.chunk_no != number or point.chunk_id != uuid5(self.revision_id, str(number)):
                 raise ValueError('Нарушена идентичность или нумерация чанков')
@@ -103,6 +107,25 @@ async def list_staging_candidates(older_than: datetime, limit: int) -> list[str]
     _positive(limit)
     with _watchdog._step(_get().settings.io_timeout_s, "upload_spool"):
         return await asyncio.to_thread(_spool._call,_spool._candidates,older_than,limit)
+
+
+async def store_document_batch(staging_ref: str, batch: DocumentBatch) -> None:
+    """Устойчиво сохранить полное разбиение документа до регистрации задания.
+
+    Заглушка: реализация адаптера остаётся в Runtime.
+    Совпадающий повтор безопасен, замена партии под тем же ключом запрещена.
+    Источник и изображения должны совпадать с манифестом stage_upload.
+    """
+    raise NotImplementedError
+
+
+async def load_document_batch(staging_ref: str) -> DocumentBatch | None:
+    """Прочитать неизменяемую партию чанков; None означает отсутствие chunks.json.
+
+    Заглушка: реализация адаптера остаётся в Runtime.
+    Повреждённая существующая партия даёт StorageError, а не None.
+    """
+    raise NotImplementedError
 
 
 async def load_prepared_revision(staging_ref: str) -> PreparedRevision | None:

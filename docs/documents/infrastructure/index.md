@@ -16,7 +16,7 @@ Runtime конфигурирует [Model Gateway](../model-gateway/index.md) и
 | Компонент | Роль |
 | --- | --- |
 | [Запуск Runtime](./startup.md) | Сервисы, тома, роли процессов и порядок запуска. |
-| [PostgreSQL](./postgresql/index.md) | Девять таблиц: состояние RAG/редакций/outbox, доступ, доставки и поддержка. [Функции](./postgresql/index.md#что-вызывать) для RAG API, RAG Core, Ingestion и Queue Relay. |
+| [PostgreSQL](./postgresql/index.md) | Десять таблиц, включая документы с уникальными именами: состояние RAG/редакций/outbox, доступ, доставки и поддержка. [Функции](./postgresql/index.md#что-вызывать) для RAG API, RAG Core, Ingestion и Queue Relay. |
 | [RabbitMQ](./rabbitmq/index.md) | Три очереди, формат уведомлений и [функции публикации и обработки](./rabbitmq/contracts.md). |
 | [Qdrant](./qdrant/index.md) | Отдельные наборы чанков и примеров темы. [Функции поиска, записи и удаления точек](./qdrant/contracts.md). |
 | [Redis](./redis/index.md) | Кеш готовых ответов и [функции адаптера Exact Cache](./redis/contracts.md). |

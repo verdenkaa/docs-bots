@@ -15,12 +15,13 @@ from uuid import UUID
 from pydantic import AwareDatetime, Field, model_validator
 
 from rag.contracts import ImageContent, ImageRef, SourceLocator
-from rag.dto import DTO, NonEmptyText, PositiveId, _check_image_markers
+from rag.dto import DTO, NonEmptyText, NonNegativeInt, PositiveId, _check_image_markers
 
 
 class UploadSource(DTO):
     """Название документа для источника; оригинал и исходный URL не хранятся."""
     filename: NonEmptyText = Field(description='Название исходного документа для подписи и выбора обработчика; не доверенный путь.')
+    access_level: NonEmptyText = Field(description='Метка доступа всего документа из доверенного адаптера загрузки; не роль отправителя.')
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,8 @@ class ClaimedIngestionJob(DTO):
     attempt: IngestionAttempt = Field(description='Активная попытка, полученная при атомарном взятии работы в PostgreSQL.')
     document_id: UUID = Field(description='Стабильный ID документа, общий для всех его редакций.')
     staging_ref: NonEmptyText = Field(description='Внутренний ключ загрузки в рабочем томе; не пользовательский путь.')
+    document_version: NonNegativeInt | None = Field(default=None, description='Закреплённый номер версии документа с 0; None до резервирования версии Worker.')
+    base_version: NonNegativeInt | None = Field(default=None, description='Опубликованная версия до обновления; None для первой версии либо до резервирования.')
     expected_chunk_count: PositiveId | None = Field(default=None, description='Ожидаемое число чанков; None до начала записи индекса.')
     expected_topic_count: PositiveId | None = Field(default=None, description='Ожидаемое число примеров темы; None до начала записи индекса.')
 
@@ -113,6 +116,11 @@ class ClaimedIngestionJob(DTO):
         """Ожидания двух индексов фиксируются вместе либо ещё отсутствуют."""
         if (self.expected_chunk_count is None) != (self.expected_topic_count is None):
             raise ValueError('Ожидаемые числа чанков и примеров задаются вместе')
+        if self.document_version is None:
+            if self.base_version is not None or self.expected_chunk_count is not None:
+                raise ValueError('Ожидания записи и базовая версия требуют закреплённой версии документа')
+        elif self.document_version != (0 if self.base_version is None else self.base_version + 1):
+            raise ValueError('Первая версия равна 0, следующая равна base_version + 1')
         return self
 
 
@@ -126,4 +134,21 @@ class PreparedChunk(DTO):
     def check_images(self) -> Self:
         """Не допустить потерю или подмену ID изображения при разбиении Markdown."""
         _check_image_markers(self.text, [image.image_id for image in self.images])
+        return self
+
+
+class DocumentBatch(DTO):
+    """Полное разбиение одного документа до embedding; общие метаданные заданы один раз."""
+    source: UploadSource = Field(description='Единое точное имя документа и метка доступа всех чанков партии.')
+    chunks: Annotated[list[PreparedChunk], Field(min_length=1)] = Field(description='Полный упорядоченный массив чанков одного документа, без готовых векторов.')
+
+    @model_validator(mode='after')
+    def check_image_descriptions(self) -> Self:
+        """Не разрешать разным чанкам подменять описание одного изображения."""
+        descriptions: dict[UUID, str] = {}
+        for chunk in self.chunks:
+            for image in chunk.images:
+                if image.image_id in descriptions and descriptions[image.image_id] != image.description:
+                    raise ValueError('Описание одного image_id должно совпадать во всей партии')
+                descriptions[image.image_id] = image.description
         return self

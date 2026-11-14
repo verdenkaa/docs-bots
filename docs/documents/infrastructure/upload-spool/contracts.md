@@ -22,7 +22,7 @@ async def stage_upload(revision_id: UUID, document: ConvertedDocument, source: U
 | --- | --- | --- | --- |
 | revision_id | UUID | Редакция и ключ каталога. | UUID(...) |
 | document | ConvertedDocument | Готовый Markdown и ImageRef без байтов. | ConvertedDocument(...) |
-| source | UploadSource | Название оригинала для манифеста. | UploadSource(filename="Руководство.docx") |
+| source | UploadSource | Название оригинала для манифеста. | UploadSource(filename="Руководство.docx", access_level="employees") |
 
 ### Что отдаёт
 
@@ -139,10 +139,13 @@ class PreparedRevision(DTO):
 
     @model_validator(mode='after')
     def check_points(self) -> Self:
-        """Проверить детерминированные ID и совместимость двух полных наборов."""
         document_ids = {point.document_id for point in self.points}
         if len(document_ids) != 1:
             raise ValueError('Редакция содержит один document_id')
+        if len({point.document_version for point in self.points}) != 1:
+            raise ValueError('Чанки редакции имеют одну версию документа')
+        if len({point.access_level for point in self.points}) != 1 or len({point.source_name for point in self.points}) != 1:
+            raise ValueError('Чанки редакции имеют общее имя и уровень доступа')
         for number, point in enumerate(self.points):
             if point.revision_id != self.revision_id or point.chunk_no != number or point.chunk_id != uuid5(self.revision_id, str(number)):
                 raise ValueError('Нарушена идентичность или нумерация чанков')
@@ -218,3 +221,27 @@ async def store_prepared_revision(staging_ref: str, prepared: PreparedRevision) 
 ### Правила и ошибки
 
 Не изменяет уже сохранённый набор. Совпадающий повтор идемпотентен; различающийся — StepError(prepared_revision_conflict, False). При неизвестном исходе перечитать снимок до любых записей Qdrant. Разрыв атомарной записи не делает частичный набор видимым.
+
+## <span className="operation-badge operation-badge--async">ASYNC</span> `store_document_batch` {#store-document-batch}
+
+Кто вызывает: Gateway после stage_upload и prepare_chunks, до register_revision/outbox.
+
+~~~python
+async def store_document_batch(staging_ref: str, batch: DocumentBatch) -> None:
+    ...
+~~~
+
+Вход — внутренний ключ и полный непустой массив одного документа с общими source.filename/access_level. Адаптер сверяет source с manifest.json и объединение image_id/описаний всех чанков с манифестом. Чанк не может ссылаться на неизвестную картинку, терять её или менять описание. chunks.json становится видимым атомарно только после устойчивой полной записи. Совпадающий повтор безопасен; замена сохранённой партии — StepError(document_batch_conflict, False). Сбой либо неизвестный исход — StorageError; Gateway перечитывает партию перед регистрацией.
+
+## <span className="operation-badge operation-badge--async">ASYNC</span> `load_document_batch` {#load-document-batch}
+
+Кто вызывает: Worker после claim, Gateway при неизвестном сохранении.
+
+~~~python
+async def load_document_batch(staging_ref: str) -> DocumentBatch | None:
+    ...
+~~~
+
+Результат — валидированная DocumentBatch либо None при отсутствии chunks.json. Повреждённый существующий файл или недоступность тома — StorageError, не None. Для принятого задания отсутствие партии является ошибкой материала; Worker не создаёт новую партию из converted.md. Уборка remove_staged_upload удаляет также chunks.json.
+
+При проверке PreparedRevision все точки должны иметь одинаковые document_id, document_version, source_name и access_level. Worker дополнительно сверяет их с ReservedRevision и DocumentBatch; локальный валидатор снимка не может подтвердить чужие метаданные без этих входов.

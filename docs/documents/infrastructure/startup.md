@@ -10,7 +10,7 @@ sidebar_position: 2
 | Сервис | Что запускает | Постоянные данные |
 | --- | --- | --- |
 | `core` | RAG API, RAG Core, потребителя `rag.results` и один активный [Queue Relay](./queue-relay.md) для всех маршрутов. | В подключённых хранилищах. |
-| `worker` | Ingestion Gateway и одного последовательного Ingestion Worker под отдельным [супервизором](../ingestion/worker.md#срок-попытки-и-остановка-процесса). | `worker_spool` для готового Markdown, манифеста и PreparedRevision; оригиналов нет. |
+| `worker` | Ingestion Gateway и одного последовательного Ingestion Worker под отдельным [супервизором](../ingestion/worker.md#срок-попытки-и-остановка-процесса). | `worker_spool` для готового Markdown, манифеста, DocumentBatch и PreparedRevision; оригиналов нет. |
 | `postgres` | Базу состояния и outbox. | `postgres_data` подключаем к каталогу данных выбранного образа PostgreSQL. |
 | `rabbitmq` | Три долговечные очереди с сохраняемыми сообщениями. | `rabbitmq_data` для состояния брокера. |
 | `qdrant` | Коллекции document_chunks и topic_questions. | `qdrant_data` подключаем к `/qdrant/storage`. |

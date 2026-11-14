@@ -1,7 +1,20 @@
 """JSON-события по спецификации docs/documents/faq/logging.md."""
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Literal
+
+_context = ContextVar("rag_event_context", default={})
+
+
+@contextmanager
+def _event_context(**fields):
+    token = _context.set(fields)
+    try:
+        yield
+    finally:
+        _context.reset(token)
 
 
 def emit_event(
@@ -29,6 +42,7 @@ def emit_event(
         "operation": operation,
         "event": event,
         "run_id": run_id,
+        **_context.get(),
         **fields,
     }
     print(json.dumps(record, ensure_ascii=False), flush=True)

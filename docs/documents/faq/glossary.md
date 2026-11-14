@@ -334,6 +334,7 @@ sidebar_position: 1.1
 | **Backend / provider** | Конкретная реализация вызова модели: библиотека локального исполнения либо сетевой API. | [Конфигурация](../model-gateway/contracts.md#binding) |
 | **ModelRole / роль модели** | Назначение binding: embedding, reranker, injection, generation, ocr или vision. | [Конфигурация](../model-gateway/contracts.md#binding) |
 | **ModelBinding / binding** | Конфигурация одного адаптера модели: профиль, способ исполнения, версия, адрес и ограничения. | [Поля](../model-gateway/contracts.md#binding) |
+| **Журнал модельных вызовов / model_calls** | Техническая защита повторного inference в Runtime: один владелец полного модельного входа на request/job и сохранённый результат для retry. Неизвестный исход не перехватывается по истечении TTL. | [Повторы](../model-gateway/providers.md#повторы) |
 | **profile_id / профиль модели** | ID неизменяемого набора модели, версии, preprocessing и параметров. Отличается от поколения корпуса и версии приложения. | [Правила профиля](../model-gateway/contracts.md#binding) |
 | **purpose: query / document** | Роль текста в embedding: поисковый вопрос либо индексируемый чанк. Инструкции могут различаться внутри общего совместимого профиля. | [embed_texts](../model-gateway/entrypoints.md#embed-texts) |
 | **EmbeddingResult** | ID профиля и векторы по порядку входных текстов. | [DTO](../model-gateway/contracts.md#embedding-result) |

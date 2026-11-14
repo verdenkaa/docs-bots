@@ -3,7 +3,7 @@ title: Model Gateway
 sidebar_position: 1
 ---
 
-**[Точки входа](./entrypoints.md)** · **[DTO и ошибки](./contracts.md)** · **[Запуск и ограничения](./lifecycle.md)**
+**[Точки входа](./entrypoints.md)** · **[DTO и ошибки](./contracts.md)** · **[Запуск и ограничения](./lifecycle.md)** · **[Подключение backend и защита повторов](./providers.md)**
 
 ## Граница
 

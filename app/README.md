@@ -1,7 +1,7 @@
 # Каркас RAG-приложения
 
 > [!WARNING]
-> Рабочий каркас для команды. Прикладные точки входа поднимают `NotImplementedError`. Health checks подтверждают запуск процессов каркаса.
+> Бизнес-сценарии ещё содержат `NotImplementedError`. Runtime и Model Gateway реализованы; конкретные модельные backend и веса подключаются отдельно. Health checks каркаса подтверждают запуск процессов.
 
 ## Где начать
 
@@ -17,6 +17,8 @@
 | Runtime | [PostgreSQL](rag/runtime/postgresql), [RabbitMQ](rag/runtime/rabbitmq.py), [Queue Relay](rag/runtime/queue_relay.py), [Qdrant](rag/runtime/qdrant.py), [Redis](rag/runtime/redis.py), [временный том](rag/runtime/upload_spool.py), [S3 · изображения](rag/runtime/s3.py), [Telegram-медиа/источники](rag/runtime/media.py), [данные поддержки](rag/runtime/postgresql/support.py) | [Контракты Runtime](../docs/documents/infrastructure/index.md) |
 
 Модельные вызовы находятся в `rag/model_gateway/`; `runtime/qdrant.py` получает готовые векторы и не загружает модели. Runtime реализует адаптеры хранилищ, миграции и запуск фоновых ролей; прикладные обработчики остальных модулей пока содержат `NotImplementedError`. Bootstrap не вызывает их и не подтверждает готовность моделей. [Команды Runtime, окружение и интеграционные тесты](../docs/documents/infrastructure/runtime-entrypoints.md).
+
+Model Gateway проверяет все шесть ролей, ограничивает очередь и сроки, собирает stream и предоставляет local_process с управляемыми исполнителями. Для выбранных моделей нужно установить SDK и реализовать фабрики LocalModel; [интерфейс, настройки и проверка check-models](../docs/documents/model-gateway/providers.md). Runtime сохраняет результаты модельных шагов в PostgreSQL для защиты от повторного inference при retry/перезапуске. Перед запуском новой версии примените migrate до 003_model_calls. Тестовые backend не подключаются в production.
 
 Контракты синхронизированы с текущей документацией: вопрос (RequestRef) отделён от доставки (DeliveryRef), вход поддерживает текст и изображение, итог различает ответ/эскалацию/уведомление. Ingestion разделён на конвертацию в Gateway и индексацию готового Markdown с PreparedRevision в Worker. Адаптеры Runtime выполняют реальные операции хранилищ и загрузку Telegram-медиа; модельные провайдеры, обработка webhook, отправка Telegram и бизнес-сценарии пока требуют реализации в своих модулях.
 

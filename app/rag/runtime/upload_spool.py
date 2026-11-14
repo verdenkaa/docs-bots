@@ -1,6 +1,6 @@
 """Contracts: docs/documents/infrastructure/upload-spool/contracts.md.
 
-Каркас модуля: DTO валидируются, прикладные точки входа реализует владелец.
+Infrastructure adapters with explicit resource lifecycle and validated boundaries.
 """
 
 
@@ -15,6 +15,11 @@ from pydantic import Field, model_validator
 from rag.dto import DTO, NonEmptyText
 from rag.ingestion.contracts import ConvertedDocument, StagedUpload, UploadSource
 from rag.runtime.qdrant import ChunkPoint, TopicPoint
+
+import asyncio
+from rag.runtime import _spool, _watchdog
+from rag.runtime._state import _get
+from rag.runtime._validation import _positive, _utc
 
 
 class PreparedRevision(DTO):
@@ -46,8 +51,6 @@ class PreparedRevision(DTO):
 async def stage_upload(revision_id: UUID, document: ConvertedDocument, source: UploadSource) -> str:
     """Устойчиво сохранить готовый Markdown и манифест, не оригинал документа.
 
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
-
     Args:
         revision_id: Редакция и ключ каталога.
         document: Готовый Markdown и ImageRef без байтов.
@@ -56,13 +59,12 @@ async def stage_upload(revision_id: UUID, document: ConvertedDocument, source: U
     Returns:
         Одна строка — внутренний ключ загрузки.
     """
-    raise NotImplementedError
+    with _watchdog._step(_get().settings.io_timeout_s, "upload_spool"):
+        return await asyncio.to_thread(_spool._call,_spool._stage,revision_id,document,source)
 
 
 async def open_staged_upload(staging_ref: str) -> StagedUpload | None:
     """Открыть converted.md и манифест временной загрузки.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         staging_ref: Внутренний ключ файла и манифеста во временном томе.
@@ -70,13 +72,12 @@ async def open_staged_upload(staging_ref: str) -> StagedUpload | None:
     Returns:
         Объект Pydantic `StagedUpload` или `None`.
     """
-    raise NotImplementedError
+    with _watchdog._step(_get().settings.io_timeout_s, "upload_spool"):
+        return await asyncio.to_thread(_spool._call,_spool._open_staged,staging_ref)
 
 
 async def remove_staged_upload(staging_ref: str) -> None:
     """Удалить временную загрузку после завершения или согласованной уборки.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         staging_ref: Внутренний ключ файла и манифеста во временном томе.
@@ -84,13 +85,12 @@ async def remove_staged_upload(staging_ref: str) -> None:
     Returns:
         Одно значение Python, `None`.
     """
-    raise NotImplementedError
+    with _watchdog._step(_get().settings.io_timeout_s, "upload_spool"):
+        return await asyncio.to_thread(_spool._call,_spool._remove,staging_ref)
 
 
 async def list_staging_candidates(older_than: datetime, limit: int) -> list[str]:
     """Найти старые загрузки для сверки с PostgreSQL перед приёмом новых.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         older_than: Порог возраста загрузки в UTC.
@@ -99,13 +99,14 @@ async def list_staging_candidates(older_than: datetime, limit: int) -> list[str]
     Returns:
         Список строк, пустой список допустим.
     """
-    raise NotImplementedError
+    _utc(older_than)
+    _positive(limit)
+    with _watchdog._step(_get().settings.io_timeout_s, "upload_spool"):
+        return await asyncio.to_thread(_spool._call,_spool._candidates,older_than,limit)
 
 
 async def load_prepared_revision(staging_ref: str) -> PreparedRevision | None:
     """Прочитать сохранённый набор подготовки без повторной генерации.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         staging_ref: Ключ уже принятого Markdown.
@@ -113,13 +114,12 @@ async def load_prepared_revision(staging_ref: str) -> PreparedRevision | None:
     Returns:
         PreparedRevision либо None.
     """
-    raise NotImplementedError
+    with _watchdog._step(_get().settings.io_timeout_s, "upload_spool"):
+        return await asyncio.to_thread(_spool._call,_spool._prepared,staging_ref)
 
 
 async def store_prepared_revision(staging_ref: str, prepared: PreparedRevision) -> None:
     """Устойчиво закрепить полный неизменяемый набор до первой записи Qdrant.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         staging_ref: Каталог принятой загрузки.
@@ -128,4 +128,5 @@ async def store_prepared_revision(staging_ref: str, prepared: PreparedRevision) 
     Returns:
         None после устойчивого сохранения.
     """
-    raise NotImplementedError
+    with _watchdog._step(_get().settings.io_timeout_s, "upload_spool"):
+        await asyncio.to_thread(_spool._call,_spool._prepared,staging_ref,prepared)

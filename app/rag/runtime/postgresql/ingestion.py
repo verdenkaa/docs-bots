@@ -1,8 +1,7 @@
 """Contracts: docs/documents/infrastructure/postgresql/ingestion.md.
 
-Каркас модуля: DTO валидируются, прикладные точки входа реализует владелец.
+Infrastructure adapters with explicit resource lifecycle and validated boundaries.
 """
-
 
 from __future__ import annotations
 
@@ -15,24 +14,64 @@ from pydantic import Field
 from rag.dto import DTO, PositiveId
 from rag.ingestion.contracts import AcceptedUpload, ClaimedIngestionJob, IngestionAttempt
 
+from datetime import timedelta
+from uuid import uuid4
+from rag.contracts import StepError
+from rag.runtime._state import _get
+from rag.runtime import _watchdog
+from rag.runtime._validation import _positive, _utc, _text, _staging_revision
+from ._db import (
+    _transaction,
+    _one,
+    _all,
+    _execute,
+    _lock,
+    _now,
+    _corpus,
+    _json,
+    _data,
+    _outbox,
+    _valid_attempt,
+    _wake_ingestion,
+)
+
+from sqlalchemy import func, insert, or_, select, union, update
+from ._models import _CorpusState, _Request, _Revision
+
 
 class PendingRevisionWrite(DTO):
     """Истёкшая попытка с неизвестным исходом записи Qdrant для операторской сверки."""
-    revision_id: UUID = Field(description='ID конкретной редакции документа; совпадает с job_id индексации.')
-    attempt_no: PositiveId = Field(description='Номер попытки текущего этапа; защищает от записи результата старой попыткой.')
+
+    revision_id: UUID = Field(
+        description="ID конкретной редакции документа; совпадает с job_id индексации."
+    )
+    attempt_no: PositiveId = Field(
+        description="Номер попытки текущего этапа; защищает от записи результата старой попыткой."
+    )
 
 
 class RevisionManifest(DTO):
     """Ожидаемая полнота редакции при восстановлении индекса из снимка."""
-    revision_id: UUID = Field(description='ID конкретной редакции документа; совпадает с job_id индексации.')
-    expected_chunk_count: PositiveId | None = Field(description='Ожидаемое число чанков; None до начала записи индекса.')
-    expected_topic_count: PositiveId | None = Field(description='Ожидаемое число примеров темы; None до начала записи индекса.')
+
+    revision_id: UUID = Field(
+        description="ID конкретной редакции документа; совпадает с job_id индексации."
+    )
+    expected_chunk_count: PositiveId | None = Field(
+        description="Ожидаемое число чанков; None до начала записи индекса."
+    )
+    expected_topic_count: PositiveId | None = Field(
+        description="Ожидаемое число примеров темы; None до начала записи индекса."
+    )
 
 
-async def register_revision(revision_id: UUID, document_id: UUID | None, staging_ref: str, source_name: str, image_ids: Sequence[UUID]) -> AcceptedUpload | None:
+async def register_revision(
+    revision_id: UUID,
+    document_id: UUID | None,
+    staging_ref: str,
+    source_name: str,
+    image_ids: Sequence[UUID],
+) -> AcceptedUpload | None:
     """Зарегистрировать редакцию и outbox после сохранения временной загрузки.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         revision_id: ID редакции, равный ID задания индексации.
@@ -44,13 +83,55 @@ async def register_revision(revision_id: UUID, document_id: UUID | None, staging
     Returns:
         Объект Pydantic `AcceptedUpload` или `None`.
     """
-    raise NotImplementedError
+    _text(source_name)
+    if _staging_revision(staging_ref) != revision_id:
+        raise ValueError("Staging reference belongs to a different revision")
+    image_ids = list(image_ids)
+    if any(not isinstance(image_id, UUID) for image_id in image_ids) or len(set(image_ids)) != len(
+        image_ids
+    ):
+        raise ValueError("Invalid image identifiers")
+    async with _transaction() as session:
+        await _lock(session, "revision", revision_id)
+        old = await _one(session, select(_Revision).where(_Revision.revision_id == revision_id))
+        if old is not None:
+            if (
+                (document_id is not None and document_id != old["document_id"])
+                or old["staging_ref"] not in (None, staging_ref)
+                or old["source_name"] != source_name
+                or _data(old["image_ids"]) != [str(item) for item in image_ids]
+            ):
+                raise StepError("revision_conflict", False)
+            return AcceptedUpload(
+                kind="accepted", job_id=revision_id, document_id=old["document_id"]
+            )
+        selected_document = document_id or uuid4()
+        await _lock(session, "document", selected_document)
+        previous = await _one(
+            session,
+            select(func.max(_Revision.revision_no).label("number")).where(
+                _Revision.document_id == selected_document
+            ),
+        )
+        if document_id is not None and previous["number"] is None:
+            return None
+        await _execute(
+            session,
+            insert(_Revision).values(
+                revision_id=revision_id,
+                document_id=selected_document,
+                revision_no=(previous["number"] or 0) + 1,
+                staging_ref=staging_ref,
+                source_name=source_name,
+                image_ids=_data(_json([str(item) for item in image_ids])),
+            ),
+        )
+        await _outbox(session, "ingestion.jobs", revision_id)
+        return AcceptedUpload(kind="accepted", job_id=revision_id, document_id=selected_document)
 
 
 async def claim_ingestion_job(job_id: UUID) -> ClaimedIngestionJob | None:
     """Атомарно взять доступное задание и выдать номер и срок попытки.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         job_id: ID из JobRef, равный ID редакции.
@@ -58,13 +139,61 @@ async def claim_ingestion_job(job_id: UUID) -> ClaimedIngestionJob | None:
     Returns:
         Объект Pydantic `ClaimedIngestionJob` или `None`.
     """
-    raise NotImplementedError
+    async with _transaction() as session:
+        await _lock(session, "ingestion-worker", 0)
+        row = await _one(
+            session, select(_Revision).where(_Revision.revision_id == job_id).with_for_update()
+        )
+        now = await _now(session)
+        if row is None or row["state"] not in ("queued", "indexing") or row["qdrant_write_pending"]:
+            return None
+        if row["resume_at"] is not None and row["resume_at"] > now:
+            return None
+        previous = await _one(
+            session,
+            select(_Revision.revision_id)
+            .where(
+                _Revision.document_id == row["document_id"],
+                _Revision.revision_no < row["revision_no"],
+                _Revision.state.in_(("queued", "indexing")),
+            )
+            .limit(1),
+        )
+        active = await _one(
+            session,
+            select(_Revision.revision_id)
+            .where(
+                _Revision.state == "indexing",
+                _Revision.resume_at > now,
+                _Revision.revision_id != job_id,
+            )
+            .limit(1),
+        )
+        if previous is not None or active is not None:
+            return None
+        deadline = now + timedelta(seconds=_get().settings.ingestion_timeout_s)
+        number = row["attempt_no"] + 1
+        await _execute(
+            session,
+            update(_Revision)
+            .where(_Revision.revision_id == job_id)
+            .values(state="indexing", attempt_no=number, resume_at=deadline),
+        )
+        attempt = IngestionAttempt(job_id=job_id, attempt_no=number, deadline_at=deadline)
+        _watchdog._claimed(attempt)
+        return ClaimedIngestionJob(
+            attempt=attempt,
+            document_id=row["document_id"],
+            staging_ref=row["staging_ref"],
+            expected_chunk_count=row["expected_chunk_count"],
+            expected_topic_count=row["expected_topic_count"],
+        )
 
 
-async def begin_revision_write(attempt: IngestionAttempt, expected_chunk_count: int, expected_topic_count: int) -> bool:
+async def begin_revision_write(
+    attempt: IngestionAttempt, expected_chunk_count: int, expected_topic_count: int
+) -> bool:
     """Сохранить манифест и qdrant_write_pending перед первой записью точек.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         attempt: Право текущей попытки начать запись.
@@ -74,13 +203,39 @@ async def begin_revision_write(attempt: IngestionAttempt, expected_chunk_count: 
     Returns:
         Одно логическое значение.
     """
-    raise NotImplementedError
+    _positive(expected_chunk_count)
+    _positive(expected_topic_count)
+    async with _transaction() as session:
+        row = await _one(
+            session,
+            select(_Revision).where(_Revision.revision_id == attempt.job_id).with_for_update(),
+        )
+        if (
+            not _valid_attempt(row, attempt, "indexing", await _now(session))
+            or row["qdrant_write_pending"]
+        ):
+            return False
+        for field, expected, code in (
+            ("expected_chunk_count", expected_chunk_count, "chunk_count_mismatch"),
+            ("expected_topic_count", expected_topic_count, "topic_count_mismatch"),
+        ):
+            if row[field] is not None and row[field] != expected:
+                raise StepError(code, False)
+        await _execute(
+            session,
+            update(_Revision)
+            .where(_Revision.revision_id == attempt.job_id)
+            .values(
+                expected_chunk_count=expected_chunk_count,
+                expected_topic_count=expected_topic_count,
+                qdrant_write_pending=True,
+            ),
+        )
+        return True
 
 
 async def publish_revision(attempt: IngestionAttempt) -> int | None:
     """Атомарно опубликовать проверенную редакцию и увеличить поколение корпуса.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         attempt: Активная попытка из claim_ingestion_job.
@@ -88,13 +243,55 @@ async def publish_revision(attempt: IngestionAttempt) -> int | None:
     Returns:
         Одно целое число или `None`.
     """
-    raise NotImplementedError
+    async with _transaction() as session:
+        item = await _one(
+            session, select(_Revision.document_id).where(_Revision.revision_id == attempt.job_id)
+        )
+        if item is None:
+            return None
+        await _lock(session, "document", item["document_id"])
+        corpus = await _corpus(session)
+        row = await _one(
+            session,
+            select(_Revision).where(_Revision.revision_id == attempt.job_id).with_for_update(),
+        )
+        if (
+            not _valid_attempt(row, attempt, "indexing", await _now(session))
+            or not row["qdrant_write_pending"]
+            or not row["expected_chunk_count"]
+            or not row["expected_topic_count"]
+        ):
+            return None
+        generation = corpus["generation"] + 1
+        await _execute(
+            session,
+            update(_Revision)
+            .where(_Revision.document_id == row["document_id"], _Revision.state == "published")
+            .values(state="retired", visible_until=generation),
+        )
+        await _execute(
+            session,
+            update(_Revision)
+            .where(_Revision.revision_id == attempt.job_id)
+            .values(
+                state="published",
+                visible_from=generation,
+                qdrant_write_pending=False,
+                resume_at=None,
+            ),
+        )
+        await _execute(
+            session,
+            update(_CorpusState)
+            .where(_CorpusState.singleton_id == 1)
+            .values(generation=generation),
+        )
+        await _wake_ingestion(session, row["document_id"])
+        return generation
 
 
 async def schedule_ingestion_retry(attempt: IngestionAttempt, retry_at: datetime) -> bool:
     """Вернуть задание в queued и создать отложенный outbox ingestion.jobs.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         attempt: Активная попытка из claim_ingestion_job.
@@ -103,13 +300,29 @@ async def schedule_ingestion_retry(attempt: IngestionAttempt, retry_at: datetime
     Returns:
         Одно логическое значение.
     """
-    raise NotImplementedError
+    _utc(retry_at)
+    async with _transaction() as session:
+        row = await _one(
+            session,
+            select(_Revision).where(_Revision.revision_id == attempt.job_id).with_for_update(),
+        )
+        if (
+            not _valid_attempt(row, attempt, "indexing", await _now(session))
+            or row["qdrant_write_pending"]
+        ):
+            return False
+        await _execute(
+            session,
+            update(_Revision)
+            .where(_Revision.revision_id == attempt.job_id)
+            .values(state="queued", resume_at=retry_at),
+        )
+        await _outbox(session, "ingestion.jobs", attempt.job_id, retry_at)
+        return True
 
 
 async def fail_ingestion_job(attempt: IngestionAttempt) -> bool:
     """Зафиксировать окончательный сбой индексации действующей попыткой.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         attempt: Вход по контракту владельца.
@@ -117,13 +330,28 @@ async def fail_ingestion_job(attempt: IngestionAttempt) -> bool:
     Returns:
         bool
     """
-    raise NotImplementedError
+    async with _transaction() as session:
+        row = await _one(
+            session,
+            select(_Revision).where(_Revision.revision_id == attempt.job_id).with_for_update(),
+        )
+        if (
+            not _valid_attempt(row, attempt, "indexing", await _now(session))
+            or row["qdrant_write_pending"]
+        ):
+            return False
+        await _execute(
+            session,
+            update(_Revision)
+            .where(_Revision.revision_id == attempt.job_id)
+            .values(state="failed", resume_at=None),
+        )
+        await _wake_ingestion(session, row["document_id"])
+        return True
 
 
 async def list_pending_revision_writes(limit: int) -> list[PendingRevisionWrite]:
     """Выбрать истёкшие записи Qdrant с неизвестным исходом для операторской сверки.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         limit: Положительный предел пачки.
@@ -131,13 +359,25 @@ async def list_pending_revision_writes(limit: int) -> list[PendingRevisionWrite]
     Returns:
         Список объектов Pydantic `PendingRevisionWrite`. Пустой список допустим.
     """
-    raise NotImplementedError
+    _positive(limit)
+    async with _transaction() as session:
+        rows = await _all(
+            session,
+            select(_Revision.revision_id, _Revision.attempt_no)
+            .where(
+                _Revision.state == "indexing",
+                _Revision.qdrant_write_pending.is_(True),
+                _Revision.resume_at <= func.clock_timestamp(),
+            )
+            .order_by(_Revision.revision_id)
+            .limit(limit)
+            .with_for_update(skip_locked=True),
+        )
+        return [PendingRevisionWrite(**row) for row in rows]
 
 
 async def clear_revision_write_pending(revision_id: UUID, attempt_no: int) -> bool:
     """Снять pending-признак после подтверждённой операторской очистки.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         revision_id: Редакция из выборки на сверку.
@@ -146,15 +386,60 @@ async def clear_revision_write_pending(revision_id: UUID, attempt_no: int) -> bo
     Returns:
         Одно логическое значение.
     """
-    raise NotImplementedError
+    _positive(attempt_no)
+    async with _transaction() as session:
+        row = await _one(
+            session, select(_Revision).where(_Revision.revision_id == revision_id).with_for_update()
+        )
+        if (
+            row is None
+            or row["state"] != "indexing"
+            or not row["qdrant_write_pending"]
+            or row["attempt_no"] != attempt_no
+            or row["resume_at"] > await _now(session)
+        ):
+            return False
+        await _execute(
+            session,
+            update(_Revision)
+            .where(_Revision.revision_id == revision_id)
+            .values(qdrant_write_pending=False),
+        )
+        return True
 
 
 async def list_required_revision_manifests() -> list[RevisionManifest]:
     """Прочитать манифесты текущего и закреплённых поколений при восстановлении.
 
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
-
     Returns:
         Список объектов Pydantic `RevisionManifest`. Пустой список означает, что ни одна редакция не нужна поиску.
     """
-    raise NotImplementedError
+    async with _transaction() as session:
+        generations = union(
+            select(_CorpusState.generation),
+            select(_Request.pinned_generation.label("generation")).where(
+                _Request.pinned_generation.is_not(None)
+            ),
+        ).subquery()
+        needed = (
+            select(generations.c.generation)
+            .where(
+                _Revision.visible_from <= generations.c.generation,
+                or_(
+                    _Revision.visible_until.is_(None),
+                    generations.c.generation < _Revision.visible_until,
+                ),
+            )
+            .exists()
+        )
+        rows = await _all(
+            session,
+            select(
+                _Revision.revision_id,
+                _Revision.expected_chunk_count,
+                _Revision.expected_topic_count,
+            )
+            .where(needed)
+            .distinct(),
+        )
+        return [RevisionManifest(**row) for row in rows]

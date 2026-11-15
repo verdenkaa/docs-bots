@@ -244,6 +244,20 @@ services:
       core: {condition: service_healthy}
       worker: {condition: service_healthy}
 
+  telegram-poller:
+    <<: *app
+    profiles: [polling]
+    command: [python, -m, deploy, polling]
+    depends_on:
+      core: {condition: service_healthy}
+      worker: {condition: service_healthy}
+      webhook: {condition: service_completed_successfully}
+    healthcheck:
+      <<: *health
+      interval: 15s
+      start_period: 120s
+      test: [CMD, python, -m, deploy, polling-health]
+
   loki:
     <<: *service
     image: grafana/loki:3.5.8

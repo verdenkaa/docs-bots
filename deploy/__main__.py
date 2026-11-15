@@ -7,9 +7,12 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("validate", "models", "prepare", "webhook", "core", "worker", "health"))
+    parser.add_argument("command", choices=("validate", "models", "prepare", "webhook", "polling", "polling-health", "core", "worker", "health"))
     parser.add_argument("role", nargs="?", choices=("core", "worker"))
     args = parser.parse_args()
+    if args.command == "polling-health":
+        from deploy.polling import healthy
+        return 0 if healthy() else 1
     if args.command == "health":
         from deploy.server import healthy
         return 0 if args.role and healthy(args.role) else 1
@@ -24,8 +27,18 @@ def main():
         from deploy.bootstrap import prepare_storage
         asyncio.run(prepare_storage())
     elif args.command == "webhook":
-        from deploy.webhook import register
-        asyncio.run(register())
+        from rag._configuration import environment_values
+        if environment_values().get('TELEGRAM_UPDATE_MODE', 'webhook') == 'polling':
+            print('Webhook registration skipped: long polling selected', flush=True)
+        else:
+            from deploy.webhook import register
+            asyncio.run(register())
+    elif args.command == "polling":
+        from rag._configuration import environment_values
+        if environment_values().get('TELEGRAM_UPDATE_MODE', 'webhook') != 'polling':
+            raise RuntimeError('Polling service requires TELEGRAM_UPDATE_MODE=polling')
+        from deploy.polling import run
+        asyncio.run(run())
     else:
         from deploy.server import run
         return run(args.command)

@@ -3,13 +3,17 @@
 Telegram HTTP boundary with one final request event and timed steps."""
 import hmac
 import json
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from rag.rag_api import entrypoints
+from rag.rag_api._http import _bounded_body
 from rag.rag_api.config import get_settings
 from rag.rag_api._observability import _operation, _step, _utc_now
 
 
 router = APIRouter(prefix="/telegram", tags=["Telegram"])
+# Updates contain metadata and Telegram file IDs, not uploaded media bytes.
+# Leave ample room for supported updates while bounding memory and JSON work.
+_MAX_UPDATE_BYTES = 1024 * 1024
 
 @router.post("/webhook")
 async def telegram_webhook(request: Request) -> Response:
@@ -32,7 +36,7 @@ async def telegram_webhook(request: Request) -> Response:
                     status, outcome, error = 400, "invalid_update", "invalid_content_type"
                 else:
                     with _step("decode_update", error_code="invalid_json"):
-                        update = json.loads(await request.body())
+                        update = json.loads(await _bounded_body(request, _MAX_UPDATE_BYTES))
                     with _step("validate_update_id") as step:
                         valid = (isinstance(update, dict) and type(update.get("update_id")) is int
                                  and 0 <= update["update_id"] <= 2 ** 63 - 1)
@@ -48,6 +52,9 @@ async def telegram_webhook(request: Request) -> Response:
                         status = {"invalid_update": 400, "retry_later": 503}.get(outcome, 200)
                         if status != 200:
                             error = outcome
+        except HTTPException as exc:
+            status, outcome = exc.status_code, "invalid_update"
+            error = "update_body_too_large" if status == 413 else "invalid_content_length"
         except (json.JSONDecodeError, UnicodeDecodeError):
             status, outcome, error = 400, "invalid_update", "invalid_json"
         except Exception:

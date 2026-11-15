@@ -93,7 +93,11 @@ async def _panel(actor: Principal = Depends(_authenticate)):
     return HTMLResponse('''<!doctype html><html lang="ru"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Поддержка</title>
 <style>body{font:18px/1.6 system-ui;max-width:900px;margin:32px auto;padding:0 16px}pre{white-space:pre-wrap}textarea{width:100%;min-height:100px}button{margin:8px}article{border-bottom:1px solid #ccc;padding:16px 0}</style>
-<h1>Поддержка</h1><p id="status" role="status"></p><section id="tickets"></section>
+<h1>Поддержка</h1><p id="status" role="status"></p>
+<p>В списке показаны последние 100 тикетов, включая закрытые. Более старый тикет можно открыть по известному UUID.</p>
+<form id="ticket-lookup"><label>UUID тикета <input id="case-id" required
+pattern="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"></label><button>Открыть</button></form>
+<section id="selected-ticket"></section><h2>Последние тикеты</h2><section id="tickets"></section>
 <h2>Допуск сотрудника</h2><form id="access"><input id="username" required placeholder="Telegram username">
 <label><input type="checkbox" id="enabled" checked>Разрешён</label><button>Сохранить</button></form>
 <h2>Метрики</h2><form id="metrics"><input id="from" type="date" required><input id="to" type="date" required><button>Показать</button></form><pre id="stats"></pre>
@@ -105,20 +109,28 @@ async function api(path, options={}) {
  return response.json();
 }
 function element(tag, text, parent) { const e=document.createElement(tag); e.textContent=text; parent.append(e); return e; }
-async function load() {
- const root=document.querySelector('#tickets'); root.replaceChildren();
- for (const ticket of await api('/tickets?limit=100')) {
+function renderTicket(ticket, root) {
   const article=element('article','',root); element('h2',ticket.case_id+' · '+ticket.state,article);
   const link=element('a','История и переписка',article); link.href='/tickets/'+ticket.case_id; link.target='_blank'; link.rel='noopener';
-  if(ticket.state==='open') {
+  if(ticket.state!=='closed') {
+   if(ticket.state!=='open') element('p','Состояние тикета доступно по ссылке «История и переписка». Ответить можно только в открытый тикет.',article);
    const form=element('form','',article), text=element('textarea','',form); text.required=true; text.maxLength=4096;
    element('button','Ответить как оператор',form); let pending=null;
    form.onsubmit=async event=>{event.preventDefault(); if(!pending||pending.text!==text.value) pending={client_message_id:crypto.randomUUID(),text:text.value};
     try {await api('/admin/tickets/'+ticket.case_id+'/messages',{method:'POST',body:JSON.stringify(pending)});pending=null;text.value='';status.textContent='Ответ сохранён';}catch(e){status.textContent=e.message;}};
-   const close=element('button','Закрыть тикет',article); close.onclick=async()=>{try{await api('/tickets/'+ticket.case_id+'/close',{method:'POST'});await load();}catch(e){status.textContent=e.message;}};
+   const close=element('button','Закрыть тикет',article); close.onclick=async()=>{try{const closed=await api('/tickets/'+ticket.case_id+'/close',{method:'POST'});article.remove();renderTicket(closed,root);status.textContent='Тикет закрыт';}catch(e){status.textContent=e.message;}};
   }
- }
 }
+async function load() {
+ const tickets=await api('/tickets?limit=100');
+ const root=document.querySelector('#tickets'); root.replaceChildren();
+ for (const ticket of tickets) renderTicket(ticket,root);
+}
+document.querySelector('#ticket-lookup').onsubmit=event=>{event.preventDefault();
+ const id=document.querySelector('#case-id').value.trim().toLowerCase();
+ if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) {status.textContent='Укажите корректный UUID тикета';return;}
+ const root=document.querySelector('#selected-ticket');root.replaceChildren();renderTicket({case_id:id,state:'выбран по UUID'},root);
+};
 document.querySelector('#access').onsubmit=async event=>{event.preventDefault();try{
  await api('/admin/users/'+encodeURIComponent(document.querySelector('#username').value),{method:'PUT',body:JSON.stringify({enabled:document.querySelector('#enabled').checked})});status.textContent='Допуск сохранён';}catch(e){status.textContent=e.message;}};
 document.querySelector('#metrics').onsubmit=async event=>{event.preventDefault();try{

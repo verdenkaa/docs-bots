@@ -133,16 +133,55 @@ class ConverterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(picture.size, IMAGE_SIZE)
 
     @unittest.skipUnless(HAS_PDF_LIBS, "нужны pdfplumber и pypdf")
-    def test_pdf_without_tags_is_explicitly_outside_selected_profile(self) -> None:
+    def test_pdf_without_tags_preserves_text_and_images(self) -> None:
         data = build_sample_pdf(tagged=False)
-        with self.assertRaises(_parsers.ParseRefused) as caught:
-            _parsers.PARSERS["pdf"].parse(data, lambda png: "")
-        self.assertEqual(caught.exception.code, "unsupported_format")
+        images = []
+        def add_image(png):
+            images.append(png)
+            return "IMAGE"
+        markdown = _parsers.PARSERS["pdf"].parse(data, add_image)
+        self.assertIn("Getting started", markdown)
+        self.assertIn("Plain text and bold text in one paragraph.", markdown)
+        self.assertEqual(markdown.count("IMAGE"), 1)
+        self.assertEqual(len(images), 1)
 
     @unittest.skipUnless(HAS_PDF_LIBS, "нужны pdfplumber и pypdf")
-    async def test_pdf_without_tags_is_unsupported(self) -> None:
-        error = await self.refused(build_sample_pdf(tagged=False), "plain.pdf")
-        self.assertEqual((error.code, error.retryable), ("unsupported_format", False))
+    async def test_pdf_without_tags_reaches_ocr_and_vision(self) -> None:
+        result = await converter.convert_document(upload(build_sample_pdf(tagged=False), "plain.pdf"), REVISION)
+        self.assertEqual(len(result.images), 1)
+        self.assertIn(f"](image://{IMAGE_ID})", result.markdown)
+        self.assertIn("Текст на изображении: Save", result.markdown)
+        self.describe.assert_awaited_once()
+        self.recognize.assert_awaited_once()
+
+    @unittest.skipUnless(HAS_PDF_LIBS, "нужны pdfplumber и pypdf")
+    async def test_scanned_pdf_uses_its_image_for_ocr_vision_and_placeholder(self) -> None:
+        data = build_sample_pdf(tagged=False, page_content=b"q 300 0 0 500 50 100 cm /Im1 Do Q")
+        result = await converter.convert_document(upload(data, "scan.pdf"), REVISION)
+        self.assertEqual(len(result.images), 1)
+        self.assertEqual(result.markdown, f"![Кнопка \\[Сохранить\\]. Текст на изображении: Save](image://{IMAGE_ID})\n")
+        self.describe.assert_awaited_once()
+        self.recognize.assert_awaited_once()
+
+    @unittest.skipUnless(HAS_PDF_LIBS, "нужны pdfplumber и pypdf")
+    async def test_repeated_pdf_image_has_two_placeholders_and_one_model_analysis(self) -> None:
+        data = build_sample_pdf(tagged=False, page_content=b"q 20 0 0 20 50 600 cm /Im1 Do Q\nq 20 0 0 20 50 500 cm /Im1 Do Q")
+        result = await converter.convert_document(upload(data, "images.pdf"), REVISION)
+        self.assertEqual([image.ref.image_id for image in result.images],
+                         [uuid5(REVISION, "image:0"), uuid5(REVISION, "image:1")])
+        for image in result.images:
+            self.assertIn(f"](image://{image.ref.image_id})", result.markdown)
+        self.describe.assert_awaited_once()
+        self.recognize.assert_awaited_once()
+
+    @unittest.skipUnless(HAS_PDF_LIBS, "нужны pdfplumber и pypdf")
+    async def test_pdf_image_limit_is_enforced_before_models(self) -> None:
+        self.settings(settings(max_images=1))
+        data = build_sample_pdf(tagged=False, page_content=b"q 20 0 0 20 50 600 cm /Im1 Do Q\nq 20 0 0 20 50 500 cm /Im1 Do Q")
+        error = await self.refused(data, "images.pdf")
+        self.assertEqual((error.code, error.retryable), ("too_large", False))
+        self.describe.assert_not_called()
+        self.recognize.assert_not_called()
 
     @unittest.skipUnless(HAS_PDF_LIBS, "нужны pdfplumber и pypdf")
     async def test_broken_pdf_is_final_failure(self) -> None:
@@ -310,6 +349,14 @@ class ConverterWithModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         (image,) = result.images
         self.assertEqual(image.ref.description, "Fixture image")  # OCR пустой: описание только от VLM
         self.assertIn(f"![Fixture image](image://{IMAGE_ID})", result.markdown)
+        self.assertEqual(sorted(self.calls), [("describe_image", "image/png"), ("recognize_text", "image/png")])
+
+    @unittest.skipUnless(HAS_PDF_LIBS, "нужны pdfplumber и pypdf")
+    async def test_scanned_pdf_image_is_described_by_model_gateway(self) -> None:
+        data = build_sample_pdf(tagged=False, page_content=b"q 300 0 0 500 50 100 cm /Im1 Do Q")
+        result = await converter.convert_document(upload(data, "scan.pdf"), REVISION)
+        self.assertEqual(result.images[0].ref.description, "Fixture image")
+        self.assertEqual(result.markdown, f"![Fixture image](image://{IMAGE_ID})\n")
         self.assertEqual(sorted(self.calls), [("describe_image", "image/png"), ("recognize_text", "image/png")])
 
 

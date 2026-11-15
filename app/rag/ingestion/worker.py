@@ -11,6 +11,7 @@ from rag.ingestion._dependencies import _Dependencies
 from rag.ingestion._indexing import _Indexer
 from rag.ingestion._settings import _Settings
 from rag.ingestion.contracts import JobRef, PreparedChunk, StagedUpload
+from rag.runtime.events import _context, _event_context
 
 
 async def handle_ingestion_job(event: JobRef) -> ConsumeDecision:
@@ -23,7 +24,9 @@ async def handle_ingestion_job(event: JobRef) -> ConsumeDecision:
         Одна строка ConsumeDecision.
     """
     event = JobRef.model_validate(event.model_dump() if isinstance(event, JobRef) else event)
-    return await _Indexer(_Settings.from_environment(), _Dependencies()).handle(event)
+    with _event_context(**{**_context.get(), "job_id": str(event.job_id),
+                          "revision_id": str(event.job_id)}):
+        return await _Indexer(_Settings.from_environment(), _Dependencies()).handle(event)
 
 
 async def prepare_chunks(upload: StagedUpload) -> list[PreparedChunk]:

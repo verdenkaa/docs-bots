@@ -247,6 +247,25 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await handle_ingestion_job(self.event), "ack")
         self.assertEqual(self.deps.state, "published")
 
+    async def test_model_events_keep_job_and_broker_correlation_context(self):
+        from rag.runtime.events import _context, _event_context
+
+        original = self.deps.embed_texts
+
+        async def embedded(*args, **kwargs):
+            self.assertEqual(_context.get()["job_id"], str(self.event.job_id))
+            self.assertEqual(_context.get()["revision_id"], str(self.event.job_id))
+            self.assertEqual(_context.get()["route"], "ingestion.jobs")
+            self.assertEqual(_context.get()["message_id"], "notice-1")
+            return await original(*args, **kwargs)
+
+        with patch("rag.ingestion.worker._Settings.from_environment", return_value=self.settings), \
+             patch("rag.ingestion.worker._Dependencies", return_value=self.deps), \
+             patch.object(self.deps, "embed_texts", new=embedded), \
+             _event_context(route="ingestion.jobs", message_id="notice-1"):
+            self.assertEqual(await handle_ingestion_job(self.event), "ack")
+            self.assertNotIn("job_id", _context.get())
+
     async def test_mutated_model_output_is_revalidated(self):
         response = EmbeddingResult(profile_id="embedding-test", vectors=[[0.1, 0.2]])
         response.vectors[0][0] = float("nan")

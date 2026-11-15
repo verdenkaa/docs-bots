@@ -106,6 +106,7 @@ async def handle_rag_question(event: RequestRef) -> ConsumeDecision:
     started = monotonic()
     decision = "ack"
     status = None
+    result_code = support_reason = processing_elapsed_ms = question_received_at = None
     handler_outcome, error_code = "completed", None
     started_at = _utc_now()
     steps = []
@@ -148,6 +149,14 @@ async def handle_rag_question(event: RequestRef) -> ConsumeDecision:
             handler_outcome = "completed" if committed else "stale_attempt"
             if committed:
                 status = outcome.kind
+                result_code = getattr(outcome, "code", None)
+                support_reason = getattr(outcome, "reason", None)
+                question_received_at = question.received_at.isoformat()
+                # The persisted reception survives queue waits and retries. This
+                # is time to Core commit, independent of this attempt's duration.
+                elapsed = (datetime.now(timezone.utc) - question.received_at).total_seconds() * 1000
+                if elapsed >= 0:
+                    processing_elapsed_ms = round(elapsed, 3)
             if committed and query is not None:
                 await _step("store_answer", exact_cache.store_answer(query, question.corpus_generation, outcome.result))
             return "ack"
@@ -166,5 +175,7 @@ async def handle_rag_question(event: RequestRef) -> ConsumeDecision:
         finally:
             emit_event("rag_core", "handle_rag_question", "finished", run_id,
                 consume_decision=decision, result_status=status,
+                result_code=result_code, support_reason=support_reason,
+                processing_elapsed_ms=processing_elapsed_ms, question_received_at=question_received_at,
                 outcome=handler_outcome, error_code=error_code, started_at=started_at,
                 duration_ms=round((monotonic() - started) * 1000, 3), steps=steps)

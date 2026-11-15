@@ -11,6 +11,7 @@ from rag.rag_api.contracts import AccessDenied, Conflict, NotFound
 
 _current = ContextVar('rag_api_trace', default=None)
 _part_fields = ContextVar('rag_api_part_fields', default={})
+_active_step = ContextVar('rag_api_active_step', default=None)
 
 
 def _utc_now():
@@ -64,11 +65,16 @@ def _operation(name, *, started=False, **fields):
 @contextmanager
 def _step(name, *, error_code='step_failed', **fields):
     trace = _current.get()
+    parent = _active_step.get()
     began = monotonic()
     step = {'name': name, 'offset_ms': round((began - trace.started) * 1000) if trace else 0,
+            'step_depth': parent['step_depth'] + 1 if parent else 0,
             **_part_fields.get(), **fields}
+    if parent is not None:
+        step['parent_step'] = parent['name']
     if trace:
         trace.steps.append(step)
+    token = _active_step.set(step)
     try:
         yield step
         step.setdefault('outcome', 'completed')
@@ -83,6 +89,7 @@ def _step(name, *, error_code='step_failed', **fields):
         raise
     finally:
         step['duration_ms'] = round((monotonic() - began) * 1000)
+        _active_step.reset(token)
 
 
 @contextmanager

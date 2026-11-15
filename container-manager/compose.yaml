@@ -172,6 +172,8 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/datasources.yaml:/etc/grafana/provisioning/datasources/loki.yaml:ro,Z
+      - ./monitoring/dashboards.yaml:/etc/grafana/provisioning/dashboards/rag.yaml:ro,Z
+      - ./monitoring/dashboards:/var/lib/grafana/dashboards/rag:ro,Z
     healthcheck:
       <<: *health
       start_period: 120s

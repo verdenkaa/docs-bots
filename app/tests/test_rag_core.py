@@ -127,10 +127,10 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         events = [json.loads(line) for line in output.getvalue().splitlines()]
         for request_id, question in questions.items():
             own = [event for event in events if event["request_id"] == request_id]
-            self.assertEqual(len(own), 3)
+            self.assertEqual(len([event for event in own if event["operation"] != "step"]), 3)
             started = next(event for event in own if event["event"] == "started")
             self.assertNotIn("attempt_no", started)
-            finished = next(event for event in own if event["component"] == "rag_core" and event["event"] == "finished")
+            finished = next(event for event in own if event["operation"] == "handle_rag_question" and event["event"] == "finished")
             self.assertEqual(started["run_id"], finished["run_id"])
             for event in own:
                 self.assertEqual(event["message_id"], f"message-{request_id}")

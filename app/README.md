@@ -38,6 +38,8 @@ DTO наследуют Pydantic-базу `rag.dto.DTO`; поля читаютс�
 
 Базовый стек: Pydantic/Settings, FastAPI/Uvicorn, SQLAlchemy/asyncpg/Alembic, aio-pika, Redis, Qdrant Client и HTTPX. Базовые парсеры PDF/DOCX входят в окружение; модельные SDK подключаются для выбранных backend отдельно. Gunicorn и uvicorn-worker доступны опцией `production` для Linux. [Установка и обновление зависимостей](../docs/documents/faq/python-environment.md).
 
+Для встроенных EMF/WMF в DOCX нужен Inkscape на Linux и установленные шрифты. Образ приложения включает `inkscape` и `font-dejavu`; при локальном запуске установите Inkscape и DejaVu системным пакетным менеджером. Изображение отрисовывается из памяти в PNG, затем передаётся в OCR/VLM.
+
 ## Запустить локально
 
 Ingestion HTTP запускается отдельно из `app/`: `python -m uvicorn rag.ingestion.application:app --host 127.0.0.1 --port 8001 --no-access-log`. Настройки загрузки — в [корневом `.env.example`](../.env.example); задайте непустой `RAG_INGESTION_TOKEN` в `.env` в корне репозитория. Единственная бизнес-ручка — `POST /admin/ingestion/upload`, [HTTP-контракт и пример запроса](../docs/documents/ingestion/http-upload.md). Приём использует реализованные конвертер, разбиение и Runtime. Сквозная индексация требует отдельно запущенных Queue Relay и Worker, миграций, хранилищ и выбранных модельных провайдеров.

@@ -14,7 +14,7 @@ x-app: &app
     dockerfile: deploy/Dockerfile
   init: true
   env_file: [{path: "${DEPLOY_ENV_FILE:-.env}", required: true}]
-  environment:
+  environment: &app-environment
     RAG_ENV_FILE: /nonexistent/deployment.env
     PGHOST: postgres
     PGPORT: "5432"
@@ -131,6 +131,16 @@ services:
     depends_on:
       validate: {condition: service_completed_successfully}
       postgres: {condition: service_healthy}
+
+  analytics-init:
+    <<: *app
+    restart: "no"
+    command: [python, -m, deploy.monitoring.setup]
+    environment:
+      <<: *app-environment
+      ANALYTICS_PASSWORD: ${GRAFANA_ANALYTICS_PASSWORD:-${GRAFANA_PASSWORD}}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
 
   models-init:
     <<: *app
@@ -290,12 +300,19 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
-    depends_on: [loki]
+      ANALYTICS_DATABASE: ${PGDATABASE:-rag}
+      ANALYTICS_PASSWORD: ${GRAFANA_ANALYTICS_PASSWORD:-${GRAFANA_PASSWORD}}
+    depends_on:
+      loki: {condition: service_started}
+      analytics-init: {condition: service_completed_successfully}
     volumes:
       - grafana_data:/var/lib/grafana
       - ./container-manager/monitoring/datasources.yaml:/etc/grafana/provisioning/datasources/loki.yaml:ro
       - ./container-manager/monitoring/dashboards.yaml:/etc/grafana/provisioning/dashboards/rag.yaml:ro
       - ./container-manager/monitoring/dashboards:/var/lib/grafana/dashboards/rag:ro
+      - ./deploy/monitoring/datasource.yaml:/etc/grafana/provisioning/datasources/business.yaml:ro
+      - ./deploy/monitoring/dashboards.yaml:/etc/grafana/provisioning/dashboards/business.yaml:ro
+      - ./deploy/monitoring/dashboards:/var/lib/grafana/dashboards/business:ro
     healthcheck:
       <<: *health
       start_period: 120s

@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from qdrant_client import AsyncQdrantClient
 from redis.asyncio import Redis
 from sqlalchemy import func, select
@@ -37,6 +38,12 @@ def _engine(settings):
     )
 
 
+def _migration_config():
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).parent / "_migrations"))
+    return config
+
+
 async def migrate_runtime() -> None:
     """Apply versioned migrations once, outside application startup."""
     settings = RuntimeSettings()
@@ -47,10 +54,7 @@ async def migrate_runtime() -> None:
             await connection.execute(CreateSchema(settings.pg_schema, if_not_exists=True))
 
             def upgrade(sync_connection):
-                config = Config()
-                config.set_main_option(
-                    "script_location", str(Path(__file__).parent / "_migrations")
-                )
+                config = _migration_config()
                 config.attributes.update(connection=sync_connection, schema=settings.pg_schema)
                 command.upgrade(config, "head")
 
@@ -74,7 +78,7 @@ async def start_runtime() -> None:
             resources.engine = _engine(settings)
             async with resources.engine.connect() as connection:
                 version = await connection.scalar(select(_SchemaVersion.version_num))
-                if version != "004_ingestion_documents":
+                if version != ScriptDirectory.from_config(_migration_config()).get_current_head():
                     raise RuntimeError(
                         "Runtime schema requires migration; run python -m rag.runtime migrate"
                     )

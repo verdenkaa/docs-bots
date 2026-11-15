@@ -22,7 +22,7 @@
 
 Модельные вызовы находятся в `rag/model_gateway/`; `runtime/qdrant.py` получает готовые векторы и не загружает модели. Runtime реализует адаптеры хранилищ, миграции и запуск фоновых ролей; прикладные обработчики API, Guardrails и части Ingestion пока содержат `NotImplementedError`. Bootstrap не вызывает их и не подтверждает готовность моделей. [Команды Runtime, окружение и интеграционные тесты](../docs/documents/infrastructure/runtime-entrypoints.md).
 
-Model Gateway проверяет все шесть ролей, ограничивает очередь и сроки, собирает stream и предоставляет local_process с управляемыми исполнителями. Для выбранных моделей нужно установить SDK и реализовать фабрики LocalModel; [интерфейс, настройки и проверка check-models](../docs/documents/model-gateway/providers.md). Runtime сохраняет результаты модельных шагов в PostgreSQL для защиты от повторного inference при retry/перезапуске. Перед запуском новой версии примените migrate до 004_ingestion_documents. Тестовые backend не подключаются в production.
+Model Gateway проверяет все шесть ролей, ограничивает очередь и сроки, собирает stream и предоставляет local_process с управляемыми исполнителями. Для выбранных моделей нужно установить SDK и реализовать фабрики LocalModel; [интерфейс, настройки и проверка check-models](../docs/documents/model-gateway/providers.md). Runtime сохраняет результаты модельных шагов в PostgreSQL для защиты от повторного inference при retry/перезапуске. Перед запуском новой версии примените migrate до актуального head Alembic. Тестовые backend не подключаются в production.
 
 Контракты синхронизированы с текущей документацией: вопрос (RequestRef) отделён от доставки (DeliveryRef), вход поддерживает текст и изображение, итог различает ответ/эскалацию/уведомление. Gateway конвертирует документ и сохраняет полную DocumentBatch до регистрации задания; Worker индексирует готовые чанки с сохранением PreparedRevision. `convert_document` реализован для PDF, DOCX и готового Markdown ([профиль](../docs/documents/ingestion/converter.md#реализованный-профиль)); описания картинок он запрашивает у Model Gateway (роли ocr и vision). Адаптеры Runtime выполняют операции хранилищ и загрузку Telegram-медиа. Расширения Runtime для готовых партий и новой модели версий Ingestion реализованы; выбранные модельные провайдеры и остальные бизнес-сценарии подключаются отдельно.
 
@@ -65,7 +65,7 @@ python -m rag worker --port 8001
 
 Обе роли пишут `started` при запуске и `finished` при штатной остановке. Общий [`emit_event`](rag/runtime/events.py) принимает поля из [спецификации логов](../docs/documents/faq/logging.md). При реализации передавайте в него реальные ID, исходы и замеры из обработчиков.
 
-Допуск бота задаётся списком Telegram username в БД; User ID остаётся владельцем вопроса. Админ-панель использует статичные ADMIN_LOGIN/ADMIN_PASSWORD из окружения/.env; реальные секреты не коммитятся. Runtime реализует новый список допуска, публичное чтение/реплики тикета и операторские операции для доверенного Principal; HTTP-аутентификацию выполняет будущий web-адаптер. Callback сверяется с сохранённой кнопкой и квитанцией; гонка с сохранением квитанции требует повтора. prepare_telegram_photo готовит JPEG-копию в отдельном процессе. После обновления со схемы 001_runtime примените миграции и заново заполните список username: [порядок обновления](../docs/documents/infrastructure/runtime-entrypoints.md#обновление-со-схемы-001_runtime).
+Допуск бота задаётся списком Telegram username в БД; User ID остаётся владельцем вопроса. Админ-панель использует статичные ADMIN_LOGIN/ADMIN_PASSWORD из окружения/.env; реальные секреты не коммитятся. Runtime реализует новый список допуска, публичное чтение/реплики тикета и операторские операции для доверенного Principal; HTTP-аутентификацию выполняет будущий web-адаптер. Callback сверяется с сохранённой кнопкой и квитанцией; гонка с сохранением квитанции требует повтора. prepare_telegram_photo готовит JPEG-копию в отдельном процессе. Для новой БД примените миграции и заполните список username: [создание и применение миграций](../docs/documents/infrastructure/runtime-entrypoints.md#создание-миграций).
 
 Партия `DocumentBatch` содержит полное разбиение одного документа и общие `UploadSource.filename/access_level`. Gateway сохраняет её через `store_document_batch` до регистрации задания. Worker читает `load_document_batch`, вызывает `read_document_version` и `reserve_document_version`, затем готовит оба индекса. Первая версия документа — 0, повтор задания сохраняет назначенный номер. RabbitMQ по-прежнему передаёт только JobRef. Новые операции Runtime остаются контрактными заглушками.
 
@@ -125,3 +125,19 @@ Searcher реализован через существующие Model Gateway 
 не означает готовность всего бота.
 
 Проверки: `python -m unittest discover -s tests -p test_searcher.py -v`.
+
+## Создание миграций
+
+Схема описана в `rag/runtime/postgresql/_models.py`, включая индексы и ограничения.
+Из `app/` с настроенной БД разработки выполните `python -m rag.runtime migrate`,
+затем измените модели и выполните:
+
+```text
+python -m alembic revision --autogenerate -m "describe schema change"
+python -m rag.runtime migrate
+python -m alembic check
+```
+
+Проверьте созданный файл перед применением. Alembic использует те же
+PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, `RAG_PG_SCHEMA` и локальный `.env`,
+что и Runtime. Начальная ревизия — `001_initial`; старая неиспользованная история удалена.

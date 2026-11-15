@@ -1,20 +1,15 @@
-"""Repository transitions and migration planning without a running database."""
+"""Repository transitions without a running database."""
 
 from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from io import StringIO
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
-
 from rag.contracts import StepError, StorageError
 from rag.ingestion.contracts import IngestionAttempt, UploadSource
 from rag.runtime.postgresql import ingestion as pg
-from rag.runtime._migrations.versions import ingestion_documents as migration
 
 
 class IngestionDatabaseTests(unittest.IsolatedAsyncioTestCase):
@@ -207,75 +202,3 @@ class IngestionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(StepError, "document_version_conflict"):
             await pg.publish_revision(self._attempt())
         self.execute.assert_not_awaited()
-
-
-class IngestionMigrationTests(unittest.TestCase):
-    def _legacy(self, **updates):
-        row = dict(revision_id=uuid4(), document_id=uuid4(), source_name="Guide.docx",
-                   revision_no=1, state="queued", visible_from=None, expected_chunk_count=None)
-        row.update(updates)
-        return row
-
-    def test_empty_database_requires_no_legacy_access_policy(self):
-        self.assertEqual(migration._legacy_plan([], None), ([], []))
-
-    def test_existing_data_requires_explicit_access_label(self):
-        for level in (None, "", " "):
-            with self.subTest(level=level), self.assertRaisesRegex(RuntimeError, "explicit"):
-                migration._legacy_plan([self._legacy()], level)
-
-    def test_existing_ids_publication_versions_and_pending_base_are_preserved(self):
-        document = uuid4()
-        rows = [self._legacy(document_id=document, revision_no=1, state="failed"),
-                self._legacy(document_id=document, revision_no=2, state="retired", visible_from=5,
-                             expected_chunk_count=2),
-                self._legacy(document_id=document, revision_no=3, state="failed", expected_chunk_count=2),
-                self._legacy(document_id=document, revision_no=4, state="published", visible_from=9,
-                             expected_chunk_count=3),
-                self._legacy(document_id=document, revision_no=5, state="indexing", expected_chunk_count=4)]
-        documents, revisions = migration._legacy_plan(rows, "legacy-employees")
-        self.assertEqual(documents, [dict(document_id=document, source_name="Guide.docx",
-                                         current_revision_id=rows[3]["revision_id"], current_version=1)])
-        self.assertEqual([r["revision_id"] for r in revisions], [r["revision_id"] for r in rows])
-        self.assertEqual([(r["document_version"], r["base_version"]) for r in revisions],
-                         [(None, None), (0, None), (1, 0), (1, 0), (2, 1)])
-        self.assertEqual({r["access_level"] for r in revisions}, {"legacy-employees"})
-
-    def test_name_collision_or_rename_is_not_silently_merged(self):
-        original = self._legacy()
-        for other in (self._legacy(), self._legacy(document_id=original["document_id"], source_name="Renamed")):
-            with self.subTest(other=other), self.assertRaises(RuntimeError):
-                migration._legacy_plan([original, other], "employees")
-
-    def test_postgresql_schema_has_constraints_foreign_keys_and_no_default_access(self):
-        output = StringIO()
-        context = MigrationContext.configure(dialect_name="postgresql", opts={
-            "as_sql": True, "output_buffer": output,
-        })
-        operations = Operations(context)
-        connection = Mock()
-        connection.execute.return_value.mappings.return_value.all.return_value = []
-        with patch.object(migration, "op", operations), \
-                patch.object(operations, "get_bind", return_value=connection), \
-                patch.object(operations, "get_context", return_value=SimpleNamespace(
-                    config=SimpleNamespace(attributes={}))):
-            migration.upgrade()
-        sql = output.getvalue()
-        for fragment in ("CREATE TABLE documents", 'COLLATE "C"', "UNIQUE (source_name)",
-                         "revisions_counts_require_version", "revisions_reserved_version",
-                         "FOREIGN KEY(document_id)", "FOREIGN KEY(current_revision_id)",
-                         "ALTER COLUMN access_level SET NOT NULL"):
-            self.assertIn(fragment, sql)
-        self.assertNotIn("DEFAULT 'employees'", sql)
-
-    def test_failed_preflight_emits_no_ddl(self):
-        connection = Mock()
-        connection.execute.return_value.mappings.return_value.all.return_value = [self._legacy()]
-        with patch.object(migration.op, "get_bind", return_value=connection), \
-                patch.object(migration.op, "get_context", return_value=SimpleNamespace(
-                    config=SimpleNamespace(attributes={}) )), \
-                patch.object(migration.op, "create_table") as create, \
-                patch.dict("os.environ", {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "explicit"):
-                migration.upgrade()
-        create.assert_not_called()

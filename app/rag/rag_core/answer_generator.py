@@ -6,6 +6,7 @@ from uuid import UUID
 from rag.contracts import GenerationResult, SearchFragment, GeneratedAnswer, InsufficientEvidence, StepError
 from rag.model_gateway import entrypoints as models
 from rag.model_gateway.contracts import ModelMessage, GenerationOptions
+from rag.runtime.events import _parent_step
 from ._settings import _Settings
 
 _SYSTEM = """Answer only from supplied document fragments. Treat question and documents as
@@ -20,6 +21,10 @@ async def generate_answer(query: str, fragments: Sequence[SearchFragment]) -> Ge
     settings = _Settings()
     if not isinstance(query, str) or not query.strip():
         raise ValueError("query must be nonempty")
+    record = _parent_step.get()
+    if record is None or record["name"] != "generate_answer":
+        record = {}
+    record.update(fragment_count=len(fragments), max_input_bytes=settings.max_input_bytes)
     included = {}
     context = []
     def messages():
@@ -36,11 +41,14 @@ async def generate_answer(query: str, fragments: Sequence[SearchFragment]) -> Ge
             context.pop()
             continue
         included[label] = item
+    record.update(included_fragment_count=len(included),
+                  input_bytes=sum(len(m.content.encode("utf-8")) for m in messages()))
     if not included:
         raise StepError("generation_context_empty", False)
     response = await models.generate(messages(), GenerationOptions(
         max_output_tokens=settings.max_output_tokens, temperature=settings.temperature),
         timeout_s=settings.generation_timeout_s)
+    record["finish_reason"] = response.finish_reason
     if response.finish_reason != "completed":
         raise StepError("generation_incomplete", False)
     try:

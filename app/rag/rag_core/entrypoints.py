@@ -33,11 +33,21 @@ def _step_outcome(name, result):
     return getattr(result, "kind", "completed")
 
 
-async def _step(name, operation):
-    with _span(name) as record:
-        result = await operation
+async def _step(name, operation, **fields):
+    with _span(name, **fields) as record:
+        try:
+            result = await operation
+        except StepError as exc:
+            record["retryable"] = exc.retryable
+            raise
         if record["outcome"] == "completed":
             record["outcome"] = _step_outcome(name, result)
+        if name == "load_revision_ids":
+            record["revision_count"] = len(result)
+        elif name == "search":
+            record["fragment_count"] = len(result)
+        elif name == "check_question" and result.kind == "detector_unavailable":
+            record.update(error_code="detector_unavailable", retryable=result.retryable)
         return result
 
 _NOTICES = {
@@ -97,7 +107,10 @@ async def _pipeline(question, settings):
     generated = await _step("generate_answer", answer_generator.generate_answer(query, fragments))
     if generated.kind == "insufficient_evidence":
         return SupportOutcome(kind="support", reason="no_evidence"), None
-    return AnsweredOutcome(kind="answered", result=_result(generated, fragments)), query
+    with _span("build_result") as record:
+        result = _result(generated, fragments)
+        record.update(source_count=len(result.sources), image_count=len(result.images))
+    return AnsweredOutcome(kind="answered", result=result), query
 
 async def handle_rag_question(event: RequestRef) -> ConsumeDecision:
     """Process a pinned question, persist one outcome and ACK only durable transitions."""
@@ -106,6 +119,7 @@ async def handle_rag_question(event: RequestRef) -> ConsumeDecision:
     started = monotonic()
     decision = "ack"
     status = None
+    result_reason = retryable = None
     handler_outcome, error_code = "completed", None
     started_at = _utc_now()
     steps = []
@@ -120,7 +134,9 @@ async def handle_rag_question(event: RequestRef) -> ConsumeDecision:
                 handler_outcome = "not_claimed"
                 return "ack"
             attempt = question.attempt
-            contexts.enter_context(_event_context(**{**_context.get(), "attempt_no": attempt.attempt_no}))
+            contexts.enter_context(_event_context(**{**_context.get(),
+                "attempt_no": attempt.attempt_no, "corpus_generation": question.corpus_generation,
+                "input_kind": question.input.kind, "prepared_text_reused": question.prepared_text is not None}))
             remaining = (attempt.deadline_at - datetime.now(timezone.utc)).total_seconds()
             try:
                 if attempt.attempt_no > settings.max_attempts:
@@ -133,38 +149,51 @@ async def handle_rag_question(event: RequestRef) -> ConsumeDecision:
             except (StepError, TimeoutError) as exc:
                 retryable = isinstance(exc, TimeoutError) or exc.retryable
                 error_code = getattr(exc, "code", "question_timeout")
+                # asyncio.timeout cancels the active await before raising TimeoutError.
+                # Keep the owning pipeline step distinguishable from external cancellation.
+                if isinstance(exc, TimeoutError) and steps and steps[-1]["outcome"] in ("cancelled", "failed"):
+                    steps[-1].update(outcome="failed", error_code=error_code, retryable=True)
                 emit_event("rag_core", "question_step", "finished", run_id,
-                    error_code=getattr(exc, "code", "question_timeout"), retryable=retryable)
+                    outcome="failed", error_code=error_code, retryable=retryable)
                 if retryable and attempt.attempt_no < settings.max_attempts:
+                    retry_at = datetime.now(timezone.utc) + timedelta(seconds=settings.retry_delay_s)
                     scheduled = await _step("schedule_question_retry", storage.schedule_question_retry(attempt,
-                        datetime.now(timezone.utc) + timedelta(seconds=settings.retry_delay_s)))
+                        retry_at), available_at=retry_at.isoformat().replace("+00:00", "Z"))
                     handler_outcome = "retry_scheduled" if scheduled else "stale_attempt"
                     return "ack"
                 outcome, query = _notice("technical_error"), None
             if outcome is None:
                 handler_outcome = "stale_attempt"
                 return "ack"
-            committed = await _step("complete_question", storage.complete_question(attempt, outcome))
+            reason = getattr(outcome, "code", getattr(outcome, "reason", None))
+            committed = await _step("complete_question", storage.complete_question(attempt, outcome),
+                **{key: value for key, value in {"outcome_kind": outcome.kind, "outcome_reason": reason}.items()
+                   if value is not None})
             handler_outcome = "completed" if committed else "stale_attempt"
             if committed:
                 status = outcome.kind
+                result_reason = reason
             if committed and query is not None:
                 await _step("store_answer", exact_cache.store_answer(query, question.corpus_generation, outcome.result))
             return "ack"
         except StorageError:
             handler_outcome, error_code = "failed", "StorageError"
+            retryable = True
             decision = "retry_broker"
             return decision
         except asyncio.CancelledError:
             decision = None
+            retryable = None
             handler_outcome, error_code = "cancelled", "cancelled"
             raise
         except Exception as exc:
             decision = None  # The broker adapter decides after the exception escapes.
+            retryable = exc.retryable if isinstance(exc, StepError) else None
             handler_outcome, error_code = "failed", getattr(exc, "code", type(exc).__name__)
             raise
         finally:
             emit_event("rag_core", "handle_rag_question", "finished", run_id,
                 consume_decision=decision, result_status=status,
+                result_reason=result_reason, retryable=retryable,
                 outcome=handler_outcome, error_code=error_code, started_at=started_at,
                 duration_ms=round((monotonic() - started) * 1000, 3), steps=steps)

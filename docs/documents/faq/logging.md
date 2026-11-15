@@ -32,6 +32,8 @@ sidebar_position: 3.5
 | `started_at`, `received_at`, `finished_at`, `duration_ms` | Моменты в UTC, включая время получения уведомления, когда оно доступно. Длительность внутри процесса измеряем монотонными часами. |
 | `outcome`, `error_code` | Исход этапа и стабильный технический код ошибки при наличии. |
 | `result_status`, `consume_decision` | Для Core — тип сохранённого результата по ветке пайплайна и решение для входящего уведомления. |
+| `result_reason`, `retryable` | Для Core — код сохранённого notice (`blocked`, `invalid_input`, `no_text`, `technical_error`) либо причина support (`out_of_scope`, `no_evidence`); `retryable` — допускает ли техническая ошибка повтор. Исчерпание попыток видно по `attempt_no` и отсутствию шага планирования повтора. |
+| `corpus_generation`, `input_kind`, `prepared_text_reused` | После успешного claim Core добавляет закреплённое поколение, тип входа (`text`/`image`) и признак использования ранее сохранённого текста; отсутствие OCR на повторе становится явным. |
 | `available_at`, `publish_started_at` | Для Relay — время готовности записи outbox и начало вызова брокера в UTC. |
 | `steps[]` | В порядке начала вызовов. Для каждого — `name`, `offset_ms` от начала обработчика, `duration_ms`, `outcome`, при ошибке `error_code`. Повторные вызовы получают отдельные элементы. Для доставки записываем delivery_id, purpose, part_no, Telegram message_id и вариант Sent.variant. Для `sendMessage` добавляем `delivery_variant` со значением `answer` или `length_fallback`. |
 
@@ -52,6 +54,31 @@ Core различает `cache_hit`/`cache_miss`, `fragments_found`/`no_fragment
 обработчик не вернул решение. При исключении адаптер RabbitMQ записывает
 `handler_failed` и `consume_decision=retry_broker` с ключами того же сообщения.
 При отмене подтверждение не отправляется. Неизвестные поля и `None` опускаются.
+
+В `load_revision_ids` и `search` добавляются `revision_count` и `fragment_count`.
+В `generate_answer` видны число входных и включённых фрагментов
+(`fragment_count`, `included_fragment_count`), бюджет `max_input_bytes`, фактический
+`input_bytes` и полученный `finish_reason`. Проверка и сборка источников Core
+записывается отдельным шагом `build_result` с `source_count` и `image_count`;
+ошибка ссылок относится к этому шагу. В `complete_question` поля `outcome_kind`
+и `outcome_reason` описывают переданный на сохранение исход. Верхнеуровневые
+`result_status` и `result_reason` появляются только при подтверждённом коммите.
+В `schedule_question_retry.available_at` записывается назначенное время повтора.
+
+Кеш добавляет вложенные шаги `read_cached_answer`,
+`delete_cached_answer_if_unchanged` и `write_cached_answer_if_not_older`.
+У чтения `cache_reason` различает отсутствие записи, старое/новое поколение,
+совпадение поколения и отсутствие источников; при найденной записи доступен
+`cached_generation`. Условная запись различает `stored` и
+`skipped_newer_generation`. При сбое родительский шаг имеет `outcome=unavailable`
+и код `cache_unavailable` либо `cache_timeout`; уже сохранённый ответ остаётся
+успешным. Отдельное событие недоступности кеша получает уникальный `run_id`
+и наследует ключи запроса из контекста.
+
+Истечение срока попытки отмечается на прерванном шаге Core как
+`failed` / `question_timeout`; внешняя отмена остаётся `cancelled`.
+Вложенный модельный вызов при отмене ожидания может иметь `cancelled`:
+причину прекращения всего этапа показывает родительский шаг Core.
 
 ~~~json
 {

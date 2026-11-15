@@ -4,7 +4,7 @@ from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 from uuid import uuid4
 
 from rag.contracts import StepError, StorageError
@@ -181,6 +181,35 @@ class IngestionDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(StepError, "document_version_missing"):
             await pg.begin_revision_write(self._attempt(), 1, 1)
         self.execute.assert_not_awaited()
+
+    async def test_pending_release_revokes_only_the_owning_attempt_lease(self):
+        self.one.return_value = self._indexing_row(qdrant_write_pending=True)
+        self.assertTrue(await pg._release_pending_attempt(self._attempt()))
+        self.execute.assert_awaited_once()
+        self.assertEqual(self.execute.await_args.args[1].compile().params,
+                         {"resume_at": self.now, "revision_id_1": self.revision})
+        self.lock.assert_awaited_once_with(ANY, "ingestion-worker", 0)
+        self.outbox.assert_not_awaited()
+
+    async def test_pending_release_rejects_stale_expired_and_nonpending_attempts(self):
+        rows = (
+            None,
+            self._indexing_row(),
+            self._row(state="indexing", qdrant_write_pending=True, attempt_no=2,
+                      resume_at=self._attempt().deadline_at),
+            self._row(state="indexing", qdrant_write_pending=True, attempt_no=1,
+                      resume_at=self.now),
+            self._row(state="indexing", qdrant_write_pending=True, attempt_no=1,
+                      resume_at=self._attempt().deadline_at + timedelta(seconds=1)),
+            self._row(state="published", qdrant_write_pending=True, attempt_no=1,
+                      resume_at=self._attempt().deadline_at),
+        )
+        for row in rows:
+            with self.subTest(row=row):
+                self.one.return_value = row
+                self.assertFalse(await pg._release_pending_attempt(self._attempt()))
+        self.execute.assert_not_awaited()
+        self.outbox.assert_not_awaited()
 
     async def test_publish_updates_document_and_corpus_in_same_transaction(self):
         self.stack.enter_context(patch.object(pg, "_corpus", new=AsyncMock(return_value={"generation": 7})))

@@ -131,9 +131,26 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.deps.errors["write_chunks"] = StepError("qdrant_unavailable", True)
         self.assertEqual(await self._run(), "ack")
         self.assertTrue(self.deps.pending)
+        self.assertTrue(self.deps.attempt_released)
+        self.assertEqual(self.deps.calls[-1], "release_pending")
         for name in ("write_topics", "publish", "retry", "fail", "delete_points"):
             self.assertNotIn(name, self.deps.calls)
         self.assertEqual(self.deps.events[-1]["outcome"], "reconciliation_required")
+
+    async def test_unknown_pending_release_commit_does_not_acknowledge_work(self):
+        self.deps.errors["write_chunks"] = StepError("qdrant_unavailable", True)
+        self.deps.errors["release_pending"] = StorageError("unknown commit")
+        self.assertEqual(await self._run(), "retry_broker")
+        self.assertTrue(self.deps.pending)
+        for name in ("retry", "fail", "publish", "delete_points"):
+            self.assertNotIn(name, self.deps.calls)
+
+    async def test_stale_pending_release_does_not_claim_reconciliation_success(self):
+        self.deps.errors["write_chunks"] = StepError("qdrant_unavailable", True)
+        with patch.object(self.deps, "_release_pending_attempt", new=AsyncMock(return_value=False)):
+            self.assertEqual(await self._run(), "ack")
+        self.assertTrue(self.deps.pending)
+        self.assertEqual(self.deps.events[-1]["outcome"], "attempt_lost")
 
     async def test_incomplete_index_cannot_be_published(self):
         with patch.object(self.deps, "verify_topic_points", new=AsyncMock(return_value=False)):

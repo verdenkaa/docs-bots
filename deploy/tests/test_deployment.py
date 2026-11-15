@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,12 @@ def settings():
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_proxy_check_does_not_start_services_when_imported(self):
+        with patch.object(subprocess, "run", side_effect=AssertionError("Unexpected process on import")), \
+                patch.object(subprocess, "Popen", side_effect=AssertionError("Unexpected process on import")):
+            namespace = runpy.run_path(str(ROOT / "deploy/tests/check_proxy_image.py"))
+        self.assertTrue(callable(namespace["main"]))
+
     def test_public_host_rejects_private_addresses_and_config_injection(self):
         for host in ("", "127.0.0.1", "10.0.0.1", "::1", "example.test", "example.org;return 200", "https://example.org"):
             with self.subTest(host=host), self.assertRaises(ValueError):

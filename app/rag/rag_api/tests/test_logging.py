@@ -14,14 +14,15 @@ import httpx
 from rag.contracts import DeliveryAttempt, DeliveryRef, RagResult, StorageError
 from rag.rag_api import application, entrypoints, intake, support
 from rag.rag_api.contracts import ClaimedDelivery, IntakeResult, Sent, SupportCase, TextPart
-from rag.rag_api._observability import _operation
+from rag.rag_api._observability import _operation, _step, _active_step
 from rag.rag_api.delivery import sender
 from rag.rag_api.telegram import adapter
 from rag.runtime.events import _event_context
 
 
 def _records(output):
-    return [json.loads(line) for line in output.getvalue().splitlines()]
+    return [record for line in output.getvalue().splitlines()
+            if (record := json.loads(line))['operation'] != 'step']
 
 
 class LoggingTests(unittest.IsolatedAsyncioTestCase):
@@ -58,6 +59,11 @@ class LoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((record['operation'], record['outcome'], record['request_id']), ('handle_telegram_update', 'accepted', 10))
         self.assertEqual(record['http_status'], 200)
         self.assertEqual(record['route'], '/telegram/webhook')
+        projected = [json.loads(line) for line in self.output.getvalue().splitlines()
+                     if json.loads(line)['operation'] == 'step']
+        self.assertEqual(len(projected), len(record['steps']))
+        self.assertTrue(all(step['run_id'] == record['run_id'] and step['request_id'] == 10
+                            and step['parent_operation'] == 'handle_telegram_update' for step in projected))
         self.assertEqual([s['name'] for s in record['steps']], ['validate_webhook_secret', 'validate_content_type',
             'decode_update', 'validate_update_id', 'parse_update', 'register_question'])
         for secret in ('private-question', '123:secret', 'webhook-secret'):
@@ -135,6 +141,22 @@ class LoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps[1]['message_id'], 77)
         self.assertNotIn('123:secret', self.output.getvalue())
         self.assertNotIn('private-answer', self.output.getvalue())
+
+    async def test_nested_delivery_spans_keep_hierarchy_without_changing_steps_list(self):
+        with _operation('handle_rag_result', delivery_id=20):
+            with _step('send_part'):
+                with _step('telegram_rate_limit'):
+                    pass
+                with _step('sendMessage'):
+                    pass
+            with _step('complete_delivery'):
+                pass
+        record = _records(self.output)[0]
+        self.assertEqual([step['name'] for step in record['steps']],
+                         ['send_part', 'telegram_rate_limit', 'sendMessage', 'complete_delivery'])
+        self.assertEqual([step['step_depth'] for step in record['steps']], [0, 1, 1, 0])
+        self.assertEqual(record['steps'][2]['parent_step'], 'send_part')
+        self.assertIsNone(_active_step.get())
 
     async def test_parallel_updates_keep_independent_steps_and_ids(self):
         async def register(key, *args):

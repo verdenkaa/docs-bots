@@ -122,6 +122,7 @@ async def _consume(route, handler, stop):
         run_id = str(uuid4())
         try:
             try:
+                handler_failed = False
                 UUID(message.message_id or "")
                 if message.content_type != "application/json":
                     raise ValueError("Expected JSON")
@@ -139,13 +140,15 @@ async def _consume(route, handler, stop):
                     raise ValueError("Invalid ConsumeDecision")
             except Exception:
                 # Handler state is unknown; do not expose exception text or body.
-                emit_event("rabbitmq","consume","finished",run_id,route=route,
-                    message_id=message.message_id, received_at=received_at,
-                    **event.model_dump(mode="json"), outcome="handler_failed", consume_decision="retry_broker")
+                handler_failed = True
                 decision = "retry_broker"
             finally:
                 if route == "ingestion.jobs":
                     _watchdog._end()
+            emit_event("rabbitmq", "consume", "finished", run_id, route=route,
+                message_id=message.message_id, received_at=received_at,
+                **event.model_dump(mode="json"), outcome="handler_failed" if handler_failed else "handled",
+                consume_decision=decision, broker_redelivered=getattr(message, "redelivered", None))
             if decision == "ack":
                 await message.ack()
             else:

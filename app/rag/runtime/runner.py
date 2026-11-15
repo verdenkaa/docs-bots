@@ -76,7 +76,10 @@ async def _cleanup_batch(limit):
 
 async def _recover_batch(limit):
     for route in ("rag.questions", "rag.results", "ingestion.jobs"):
-        await outbox.recover_pending_work(route, limit)
+        recovered = await outbox.recover_pending_work(route, limit)
+        if recovered:
+            emit_event("runtime", "recover_pending_work", "finished", str(uuid4()),
+                       route=route, outcome="recovered", recovered_count=recovered)
     await _cleanup_batch(limit)
 
 

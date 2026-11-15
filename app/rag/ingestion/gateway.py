@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from time import monotonic
 from collections.abc import AsyncIterable
 from uuid import UUID, uuid4
 
@@ -20,7 +21,7 @@ from rag.ingestion.contracts import (
 )
 from rag.ingestion.converter import convert_document
 from rag.ingestion.worker import prepare_chunks
-from rag.runtime.events import _event_context, emit_event
+from rag.runtime.events import _context, _event_context, _span, _trace_context, emit_event
 from rag.runtime._uploads import _protect_upload
 from rag.runtime.postgresql.ingestion import register_revision
 from rag.runtime.s3 import put_image
@@ -81,77 +82,99 @@ async def accept_upload(upload: UploadInput) -> UploadResult:
     stream = _BoundedStream(upload.content, settings.max_upload_bytes)
     bounded = UploadInput(content=stream, source=source, document_id=upload.document_id)
     revision_id = uuid4()
+    started = monotonic()
+    steps = []
+
+    async def measured(name, function, *args):
+        with _span(name):
+            return await function(*args)
+
     emit_event("ingestion_gateway", "accept_upload", "started", str(revision_id),
                job_id=str(revision_id))
     outcome = "technical_error"
+    error_code = None
     registration_started = False
     try:
-        async with asyncio.timeout(settings.upload_timeout_s), _protect_upload(revision_id):
-            try:
-                with _event_context(job_id=str(revision_id)):
-                    converted = await convert_document(bounded, revision_id)
-            except StepError as exc:
-                if not exc.retryable and exc.code in {
-                    "invalid_upload", "too_large", "unsupported_format", "conversion_failed",
-                }:
-                    outcome = exc.code
-                    return UploadRejected(kind="rejected", code=exc.code)
-                raise
-            if not stream.finished:
-                raise StepError("converter_incomplete_input", False)
-            converted = ConversionResult.model_validate(converted.model_dump(warnings=False))
-            for image in converted.images:
-                await put_image(image.ref.image_id, image.content)
-            document = ConvertedDocument(
-                markdown=converted.markdown, images=[image.ref for image in converted.images],
-            )
-            staging_ref = await stage_upload(revision_id, document, source)
-            if staging_ref != f"uploads/{revision_id}":
-                raise StorageError("Staged revision identity mismatch")
-            staged = await open_staged_upload(staging_ref)
-            if staged is None:
-                raise StorageError("Staged upload is unavailable")
-            if staged.source != source or staged.images != document.images:
-                raise StorageError("Staged upload metadata mismatch")
-            try:
-                chunks = TypeAdapter(list[PreparedChunk]).validate_python([
-                    chunk.model_dump() for chunk in await prepare_chunks(staged)])
-            except StepError as exc:
-                if exc.code != "chunk_too_large" or exc.retryable:
+        with _trace_context(started, steps), _event_context(**{
+            **_context.get(), "job_id": str(revision_id),
+        }):
+            async with asyncio.timeout(settings.upload_timeout_s), _protect_upload(revision_id):
+                try:
+                    converted = await measured("convert_document", convert_document, bounded, revision_id)
+                except StepError as exc:
+                    if not exc.retryable and exc.code in {
+                        "invalid_upload", "too_large", "unsupported_format", "conversion_failed",
+                    }:
+                        outcome = exc.code
+                        return UploadRejected(kind="rejected", code=exc.code)
                     raise
-                await remove_staged_upload(staging_ref)
-                outcome = "conversion_failed"
-                return UploadRejected(kind="rejected", code="conversion_failed")
-            if not chunks:
-                outcome = "conversion_failed"
-                return UploadRejected(kind="rejected", code="conversion_failed")
-            batch = DocumentBatch(source=source, chunks=chunks)
-            try:
-                await store_document_batch(staging_ref, batch)
-            except (StorageError, TimeoutError):
-                restored = await load_document_batch(staging_ref)
-                if restored is None or DocumentBatch.model_validate_json(restored.model_dump_json()) != batch:
-                    raise StorageError("Document batch storage was not confirmed") from None
-            registration_started = True
-            accepted = await register_revision(
-                revision_id, upload.document_id, staging_ref, source,
-                [image.image_id for image in document.images],
-            )
-            if accepted is None:
-                await remove_staged_upload(staging_ref)
-                outcome = "unknown_document"
-                return UploadRejected(kind="rejected", code="unknown_document")
-            accepted = AcceptedUpload.model_validate_json(accepted.model_dump_json())
-            if (accepted.job_id != revision_id or (upload.document_id is not None
-                    and accepted.document_id != upload.document_id)):
-                raise StorageError("Registered revision identity mismatch")
-            outcome = "accepted"
-            return accepted
+                if not stream.finished:
+                    raise StepError("converter_incomplete_input", False)
+                converted = ConversionResult.model_validate(converted.model_dump(warnings=False))
+                for image in converted.images:
+                    await measured("put_image", put_image, image.ref.image_id, image.content)
+                document = ConvertedDocument(
+                    markdown=converted.markdown, images=[image.ref for image in converted.images],
+                )
+                staging_ref = await measured("stage_upload", stage_upload, revision_id, document, source)
+                if staging_ref != f"uploads/{revision_id}":
+                    raise StorageError("Staged revision identity mismatch")
+                staged = await measured("open_staged_upload", open_staged_upload, staging_ref)
+                if staged is None:
+                    raise StorageError("Staged upload is unavailable")
+                if staged.source != source or staged.images != document.images:
+                    raise StorageError("Staged upload metadata mismatch")
+                try:
+                    chunks = TypeAdapter(list[PreparedChunk]).validate_python([
+                        chunk.model_dump() for chunk in await measured("prepare_chunks", prepare_chunks, staged)])
+                except StepError as exc:
+                    if exc.code != "chunk_too_large" or exc.retryable:
+                        raise
+                    await measured("remove_staged_upload", remove_staged_upload, staging_ref)
+                    outcome = "conversion_failed"
+                    return UploadRejected(kind="rejected", code="conversion_failed")
+                if not chunks:
+                    outcome = "conversion_failed"
+                    return UploadRejected(kind="rejected", code="conversion_failed")
+                batch = DocumentBatch(source=source, chunks=chunks)
+                try:
+                    await measured("store_document_batch", store_document_batch, staging_ref, batch)
+                except (StorageError, TimeoutError):
+                    restored = await measured("confirm_document_batch", load_document_batch, staging_ref)
+                    if restored is None or DocumentBatch.model_validate_json(restored.model_dump_json()) != batch:
+                        raise StorageError("Document batch storage was not confirmed") from None
+                registration_started = True
+                accepted = await measured("register_revision", register_revision,
+                    revision_id, upload.document_id, staging_ref, source,
+                    [image.image_id for image in document.images],
+                )
+                if accepted is None:
+                    await measured("remove_staged_upload", remove_staged_upload, staging_ref)
+                    outcome = "unknown_document"
+                    return UploadRejected(kind="rejected", code="unknown_document")
+                accepted = AcceptedUpload.model_validate_json(accepted.model_dump_json())
+                if (accepted.job_id != revision_id or (upload.document_id is not None
+                        and accepted.document_id != upload.document_id)):
+                    raise StorageError("Registered revision identity mismatch")
+                outcome = "accepted"
+                return accepted
     except TimeoutError:
         if registration_started:
+            error_code = "storage_unconfirmed"
             raise StorageError("Upload registration outcome is unknown") from None
+        error_code = "upload_timeout"
         raise StepError("upload_timeout", True) from None
+    except StepError as error:
+        error_code = error.code
+        raise
+    except StorageError:
+        error_code = "storage_unconfirmed"
+        raise
+    except asyncio.CancelledError:
+        outcome, error_code = "cancelled", "cancelled"
+        raise
     finally:
         # No exception messages, filenames, content or credentials enter this event.
         emit_event("ingestion_gateway", "accept_upload", "finished", str(revision_id),
-                   job_id=str(revision_id), outcome=outcome)
+                   job_id=str(revision_id), outcome=outcome, error_code=error_code, steps=steps,
+                   duration_ms=round((monotonic() - started) * 1000, 3))

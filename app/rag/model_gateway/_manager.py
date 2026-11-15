@@ -308,11 +308,16 @@ async def _job(state, role, operation, payload, deadline, manager, timing, key):
             if remaining <= 0:
                 raise StepError("model_timeout", True)
             invoked = True
-            result = await state.adapter.invoke(operation, payload, timeout_s=remaining)
-            if isinstance(result, GenerationStream):
-                if operation != "generate":
-                    raise StepError("model_invalid_response", False)
-                result = await _collect(result, settings.max_message_bytes)
+            try:
+                result = await state.adapter.invoke(operation, payload, timeout_s=remaining)
+                if isinstance(result, GenerationStream):
+                    if operation != "generate":
+                        raise StepError("model_invalid_response", False)
+                    result = await _collect(result, settings.max_message_bytes)
+            finally:
+                # Validation and durable result storage are Gateway overhead,
+                # not provider inference. Include failed/cancelled invocations.
+                timing["inference_finished"] = monotonic()
             result = _result(
                 role, state.binding, payload, result, settings.max_message_bytes
             )
@@ -451,12 +456,14 @@ async def _invoke(role, operation, raw, timeout_s, record):
             if flight.waiters == 0 and not flight.job.done():
                 flight.job.cancel()
         inference = max(started, timing.get("inference_started", end))
+        inference_end = min(end, max(inference, timing.get("inference_finished", end)))
         fields = dict(
             model_role=role,
             outcome=outcome,
             error_code=code,
             wait_ms=round((inference - started) * 1000),
-            inference_ms=round((end - inference) * 1000),
+            inference_ms=round((inference_end - inference) * 1000),
+            postprocess_ms=round((end - inference_end) * 1000),
             duration_ms=round((end - started) * 1000),
         )
         fields["reused"] = joined or timing.get("reused", False)

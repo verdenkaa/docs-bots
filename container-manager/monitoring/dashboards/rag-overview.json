@@ -1,0 +1,1442 @@
+{
+  "uid": "rag-overview",
+  "title": "RAG Overview",
+  "description": "Уникальные принятые вопросы и зафиксированные результаты Core. Цель 20 секунд: приём → коммит Core, без доставки Telegram.",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "tags": [
+    "rag",
+    "loki"
+  ],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "1h",
+      "6h",
+      "24h",
+      "7d"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "service",
+        "type": "custom",
+        "query": "core,worker",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "component",
+        "label": "component",
+        "type": "custom",
+        "query": "rag_api,rag_core,exact_cache,model_gateway,ingestion_gateway,ingestion_worker,queue_relay,rabbitmq,runtime",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "operation",
+        "label": "operation",
+        "type": "custom",
+        "query": "handle_telegram_update,handle_rag_question,handle_rag_result,run_api_maintenance,support_action,support_batch,http,startup,accept_upload,convert_document,handle_ingestion_job,publish_notice,consume,recover_pending_work,question_step,bootstrap,get_answer,store_answer,embed_texts,rerank,classify_injection,generate,recognize_text,describe_image,start_models,close_models",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "route",
+        "label": "route",
+        "type": "custom",
+        "query": "rag.questions,rag.results,ingestion.jobs,/telegram/webhook",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "request_id",
+        "label": "request_id (логи)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": []
+      },
+      {
+        "name": "delivery_id",
+        "label": "delivery_id (логи)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": []
+      },
+      {
+        "name": "job_id",
+        "label": "job_id (логи)",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Вопросы и результаты · выбранный диапазон",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "title": "Принятые вопросы",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "description": "Уникальные request_id. Только accepted при приёме либо result_status после подтверждённого коммита Core. Ретраи и stale/not_claimed исключены. Support — сохранённое намерение, не подтверждение создания тикета.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_api%5C%22%20%7C%20operation%3D%5C%22handle_telegram_update%5C%22%20%7C%20outcome%3D%5C%22accepted%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_api\" | operation=\"handle_telegram_update\" | outcome=\"accepted\" | request_id!=\"\"[$__range])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Обработаны без технического итога",
+      "type": "stat",
+      "gridPos": {
+        "x": 4,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "description": "Уникальные request_id. Только accepted при приёме либо result_status после подтверждённого коммита Core. Ретраи и stale/not_claimed исключены. Support — сохранённое намерение, не подтверждение создания тикета.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%20%7C%20result_status%3D~%5C%22answered%7Csupport%5C%22%20or%20%28result_status%3D%5C%22notice%5C%22%20and%20result_code%21%3D%5C%22%5C%22%20and%20result_code%21%3D%5C%22technical_error%5C%22%29%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | result_status=~\"answered|support\" or (result_status=\"notice\" and result_code!=\"\" and result_code!=\"technical_error\") | request_id!=\"\"[$__range])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Ответы по документации",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "description": "Уникальные request_id. Только accepted при приёме либо result_status после подтверждённого коммита Core. Ретраи и stale/not_claimed исключены. Support — сохранённое намерение, не подтверждение создания тикета.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%20%7C%20result_status%3D%5C%22answered%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | result_status=\"answered\" | request_id!=\"\"[$__range])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Автоэскалации: намерения Support",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "description": "Уникальные request_id. Только accepted при приёме либо result_status после подтверждённого коммита Core. Ретраи и stale/not_claimed исключены. Support — сохранённое намерение, не подтверждение создания тикета.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%20%7C%20result_status%3D%5C%22support%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | result_status=\"support\" | request_id!=\"\"[$__range])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Вопросы: технический итог",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "description": "Уникальные request_id. Только accepted при приёме либо result_status после подтверждённого коммита Core. Ретраи и stale/not_claimed исключены. Support — сохранённое намерение, не подтверждение создания тикета.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%20%7C%20result_code%3D%5C%22technical_error%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | result_code=\"technical_error\" | request_id!=\"\"[$__range])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Доля ответов по документации",
+      "type": "gauge",
+      "gridPos": {
+        "x": 20,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "description": "Answered / все зафиксированные результаты Core за диапазон. Это когорта завершений, не доля от входящих за тот же период.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "Нет данных",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ],
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * ((count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | result_status=\"answered\" | request_id!=\"\"[$__range])))) or (0 * (count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | request_id!=\"\"[$__range])))))) / (count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | request_id!=\"\"[$__range]))))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "row",
+      "title": "Время приём → коммит Core · очередь и ретраи включены",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 9,
+      "title": "p50 обработки вопроса",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 6,
+        "h": 5
+      },
+      "description": "processing_elapsed_ms: от persisted received_at до завершения коммита. Межпроцессные UTC часы должны быть синхронизированы; Telegram после коммита не включён.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Нет данных",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 20000
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "quantile_over_time(0.5, {service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | processing_elapsed_ms!=\"\" | unwrap processing_elapsed_ms | __error__=\"\"[$__range]) by ()",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "p95 обработки вопроса",
+      "type": "stat",
+      "gridPos": {
+        "x": 6,
+        "y": 7,
+        "w": 6,
+        "h": 5
+      },
+      "description": "processing_elapsed_ms: от persisted received_at до завершения коммита. Межпроцессные UTC часы должны быть синхронизированы; Telegram после коммита не включён.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Нет данных",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 20000
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "quantile_over_time(0.95, {service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | processing_elapsed_ms!=\"\" | unwrap processing_elapsed_ms | __error__=\"\"[$__range]) by ()",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "p99 обработки вопроса",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 7,
+        "w": 6,
+        "h": 5
+      },
+      "description": "processing_elapsed_ms: от persisted received_at до завершения коммита. Межпроцессные UTC часы должны быть синхронизированы; Telegram после коммита не включён.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Нет данных",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 20000
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "quantile_over_time(0.99, {service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | processing_elapsed_ms!=\"\" | unwrap processing_elapsed_ms | __error__=\"\"[$__range]) by ()",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "В пределах 20 секунд",
+      "type": "gauge",
+      "gridPos": {
+        "x": 18,
+        "y": 7,
+        "w": 6,
+        "h": 5
+      },
+      "description": "Доля зафиксированных результатов с processing_elapsed_ms ≤ 20000. Включает все бизнес-исходы. При отсутствии замеров — Нет данных; целевой порог доли 95% — настройка отображения, не утверждённый SLA.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "Нет данных",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 90
+              },
+              {
+                "color": "green",
+                "value": 95
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ],
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * ((count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | processing_elapsed_ms!=\"\" | processing_elapsed_ms<=20000 | request_id!=\"\"[$__range])))) or (0 * (count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | processing_elapsed_ms!=\"\" | request_id!=\"\"[$__range])))))) / (count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | processing_elapsed_ms!=\"\" | request_id!=\"\"[$__range]))))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "row",
+      "title": "Динамика · число за интервал графика",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 14,
+      "title": "Поступление и завершение вопросов",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "description": "Две независимые когорты по времени события. Вопрос может поступить раньше выбранного диапазона и завершиться внутри него.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_api\" | operation=\"handle_telegram_update\" | outcome=\"accepted\" | request_id!=\"\"[$__interval])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "range",
+          "editorMode": "code",
+          "legendFormat": "Приняты",
+          "interval": "1m"
+        },
+        {
+          "refId": "B",
+          "expr": "count(sum by (request_id)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | request_id!=\"\"[$__interval])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "range",
+          "editorMode": "code",
+          "legendFormat": "Завершены Core",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Исходы вопросов",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count by (result_status)(sum by (request_id,result_status)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | request_id!=\"\"[$__interval])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "range",
+          "editorMode": "code",
+          "legendFormat": "{{result_status}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Время обработки: p50 / p95 / p99",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "description": "Перцентили отдельных вызовов, включая повторные попытки. Пропуски означают отсутствие наблюдений.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Нет данных",
+          "decimals": 1,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "quantile_over_time(0.5, {service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | processing_elapsed_ms!=\"\" | unwrap processing_elapsed_ms | __error__=\"\"[$__interval]) by ()",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "range",
+          "editorMode": "code",
+          "legendFormat": "p50 ",
+          "interval": "1m"
+        },
+        {
+          "refId": "B",
+          "expr": "quantile_over_time(0.95, {service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | processing_elapsed_ms!=\"\" | unwrap processing_elapsed_ms | __error__=\"\"[$__interval]) by ()",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "range",
+          "editorMode": "code",
+          "legendFormat": "p95 ",
+          "interval": "1m"
+        },
+        {
+          "refId": "C",
+          "expr": "quantile_over_time(0.99, {service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | processing_elapsed_ms!=\"\" | unwrap processing_elapsed_ms | __error__=\"\"[$__interval]) by ()",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "range",
+          "editorMode": "code",
+          "legendFormat": "p99 ",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "Распределение зафиксированных исходов",
+      "type": "piechart",
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20component%3D%5C%22rag_core%5C%22%20%7C%20operation%3D%5C%22handle_rag_question%5C%22%20%7C%20result_status%21%3D%5C%22%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count by (result_status)(sum by (request_id,result_status)(count_over_time({service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | component=\"rag_core\" | operation=\"handle_rag_question\" | result_status!=\"\" | request_id!=\"\"[$__range])))",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "instant",
+          "editorMode": "code",
+          "legendFormat": "{{result_status}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "Границы показателей",
+      "type": "text",
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 24,
+        "h": 4
+      },
+      "description": "",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Активные обработки из started − finished не вычисляются: падения процесса и границы диапазона делают такую оценку недостоверной. Логи не транзакционны с БД: при падении после коммита событие может отсутствовать. «Нет данных» означает отсутствие наблюдений, а не исправность системы."
+      }
+    },
+    {
+      "id": 19,
+      "type": "row",
+      "title": "Диагностика и корреляция",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 20,
+      "title": "Ошибки и проблемные операции",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 34,
+        "w": 24,
+        "h": 9
+      },
+      "description": "Исходные JSON-поля. Технические инциденты/попытки, не число уникальных вопросов. Клик по полю открывает эти логи в Explore.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20event%3D%5C%22finished%5C%22%20%7C%20operation%21%3D%5C%22step%5C%22%20%7C%20error_code%21%3D%5C%22%5C%22%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Time",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "Line",
+            "format": "json",
+            "replace": true,
+            "keepTime": true
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "steps": true,
+              "schema_version": true,
+              "operation_filter": true
+            },
+            "indexByName": {
+              "Time": 0,
+              "component": 1,
+              "operation": 2,
+              "step_name": 3,
+              "outcome": 4,
+              "error_code": 5,
+              "request_id": 6,
+              "delivery_id": 7,
+              "job_id": 8,
+              "attempt_no": 9,
+              "duration_ms": 10,
+              "run_id": 11
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | event=\"finished\" | operation!=\"step\" | error_code!=\"\"",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "range",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "title": "Путь request_id / delivery_id / job_id",
+      "type": "logs",
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 24,
+        "h": 10
+      },
+      "description": "Введите хотя бы один ID. Для полного пути сбросьте компонент, операцию и маршрут на All. rag.results содержит delivery_id: найдите его в доставке по request_id и добавьте в фильтр. Пустые ID не выбирают все логи.",
+      "datasource": {
+        "type": "loki",
+        "uid": "rag-loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Открыть соответствующие логи",
+              "url": "/explore?orgId=1&left={%22datasource%22:%22rag-loki%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22{service%3D~%5C%22${service:regex}%5C%22%2Cservice%21%3D%5C%22%5C%22}%20%7C%20json%20%7C%20__error__%3D%5C%22%5C%22%20%7C%20component%3D~%5C%22${component:regex}%5C%22%20%7C%20route%3D~%5C%22${route:regex}%5C%22%20%7C%20label_format%20operation_filter%3D%60{{if%20eq%20.operation%20%5C%22step%5C%22}}{{.parent_operation}}{{else}}{{.operation}}{{end}}%60%20%7C%20operation_filter%3D~%5C%22${operation:regex}%5C%22%20%7C%20%28request_id%21%3D%5C%22%5C%22%20and%20request_id%3D~%5C%22%5E%28${request_id:regex}%29$%5C%22%29%20or%20%28delivery_id%21%3D%5C%22%5C%22%20and%20delivery_id%3D~%5C%22%5E%28${delivery_id:regex}%29$%5C%22%29%20or%20%28job_id%21%3D%5C%22%5C%22%20and%20job_id%3D~%5C%22%5E%28${job_id:regex}%29$%5C%22%29%22%2C%22queryType%22:%22range%22%2C%22datasource%22:{%22type%22:%22loki%22%2C%22uid%22:%22rag-loki%22}}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{service=~\"${service:regex}\",service!=\"\"} | json | __error__=\"\" | component=~\"${component:regex}\" | route=~\"${route:regex}\" | label_format operation_filter=`{{if eq .operation \"step\"}}{{.parent_operation}}{{else}}{{.operation}}{{end}}` | operation_filter=~\"${operation:regex}\" | (request_id!=\"\" and request_id=~\"^(${request_id:regex})$\") or (delivery_id!=\"\" and delivery_id=~\"^(${delivery_id:regex})$\") or (job_id!=\"\" and job_id=~\"^(${job_id:regex})$\")",
+          "datasource": {
+            "type": "loki",
+            "uid": "rag-loki"
+          },
+          "queryType": "range",
+          "editorMode": "code",
+          "legendFormat": "{{outcome}}",
+          "interval": "1m"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "type": "dashboards",
+      "title": "RAG dashboards",
+      "tags": [
+        "rag"
+      ],
+      "asDropdown": true,
+      "includeVars": true,
+      "keepTime": true
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 """Provider-independent behavior, including cancellation and duplicate work."""
 
 import asyncio
+import json
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -159,6 +160,24 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (await describe_image(image, timeout_s=1)).description, "Fixture image"
         )
+
+    async def test_inference_latency_excludes_durable_result_storage(self):
+        await self.start("embedding")
+        coordinator = _manager._get_control().manager.coordinator
+        original = coordinator.complete
+        async def complete(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            return await original(*args, **kwargs)
+
+        with patch.object(coordinator, "complete", side_effect=complete):
+            await embed_texts(["timed-input"], "query", timeout_s=1)
+        records = [json.loads(line) for line in self.output.getvalue().splitlines()]
+        record = next(record for record in reversed(records)
+                      if record["operation"] == "embed_texts" and record["event"] == "finished")
+        self.assertGreaterEqual(record["postprocess_ms"], 45)
+        self.assertLess(record["inference_ms"], record["postprocess_ms"])
+        self.assertAlmostEqual(record["duration_ms"], record["wait_ms"] +
+                               record["inference_ms"] + record["postprocess_ms"], delta=2)
 
     async def test_idempotent_and_concurrent_start_and_close(self):
         bindings = {"embedding": self.binding("embedding")}

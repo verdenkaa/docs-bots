@@ -118,6 +118,36 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             await gateway.accept_upload(self._input())
         self.assertFalse(active)
         self.remove_staged_upload.assert_not_awaited()
+        finished = self.events.call_args.kwargs
+        self.assertEqual(finished["error_code"], "storage_unconfirmed")
+        registration = next(step for step in finished["steps"] if step["name"] == "register_revision")
+        self.assertEqual(registration["outcome"], "failed")
+
+    async def test_stage_timings_are_measured_without_content(self):
+        from rag.runtime.events import _context, _event_context
+
+        async def prepare(staged):
+            self.assertEqual(_context.get()["job_id"], str(self.revision))
+            self.assertEqual(_context.get()["route"], "http.upload")
+            return [PreparedChunk(text=self.markdown, locator=None, images=[self.image])]
+
+        self.prepare_chunks.side_effect = prepare
+        with _event_context(route="http.upload"):
+            await gateway.accept_upload(self._input())
+        finished = self.events.call_args.kwargs
+        self.assertGreaterEqual(finished["duration_ms"], 0)
+        steps = finished["steps"]
+        self.assertEqual([step["name"] for step in steps], [
+            "convert_document", "put_image", "stage_upload", "open_staged_upload",
+            "prepare_chunks", "store_document_batch", "register_revision",
+        ])
+        for step in steps:
+            self.assertEqual(step["outcome"], "completed")
+            self.assertGreaterEqual(step["duration_ms"], 0)
+            self.assertLessEqual(step["offset_ms"] + step["duration_ms"],
+                                 finished["duration_ms"] + 0.01)
+        self.assertNotIn(self.markdown, str(finished))
+        self.assertNotIn(self.source.filename, str(finished))
 
     async def test_converter_business_rejection_and_model_failure_are_distinct(self):
         self.convert_document.side_effect = StepError("unsupported_format", False)
@@ -141,6 +171,11 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.register_revision.assert_not_awaited()
         self.store_document_batch.assert_not_awaited()
         self.remove_staged_upload.assert_awaited_once_with(f'uploads/{self.revision}')
+        finished = self.events.call_args.kwargs
+        self.assertEqual(finished["outcome"], "conversion_failed")
+        steps = {step["name"]: step for step in finished["steps"]}
+        self.assertEqual(steps["prepare_chunks"]["error_code"], "chunk_too_large")
+        self.assertEqual(steps["remove_staged_upload"]["outcome"], "completed")
         self.prepare_chunks.side_effect = StepError("chunk_too_large", True)
         with self.assertRaises(StepError):
             await gateway.accept_upload(self._input())

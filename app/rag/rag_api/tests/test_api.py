@@ -82,9 +82,17 @@ class ApiTests(_HttpCase):
                 self.assertEqual(result.status_code, {'invalid_update': 400, 'retry_later': 503}.get(kind, 200))
                 self.assertEqual(result.content, b'')
                 handle.assert_awaited_once_with(_update())
-                records = [json.loads(line) for line in self.output.getvalue().splitlines()]
+                events = [json.loads(line) for line in self.output.getvalue().splitlines()]
+                records = [event for event in events if event['operation'] != 'step']
                 self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]['operation'], 'handle_telegram_update')
+                self.assertEqual(records[0]['event'], 'finished')
                 self.assertEqual(records[0]['outcome'], kind)
+                projected = [event for event in events if event['operation'] == 'step']
+                self.assertEqual(len(projected), len(records[0]['steps']))
+                self.assertTrue(all(event['run_id'] == records[0]['run_id'] and
+                                    event['parent_operation'] == records[0]['operation']
+                                    for event in projected))
                 self.assertNotIn('Вопрос', self.output.getvalue())
 
     async def test_webhook_secret_and_json_structure(self):

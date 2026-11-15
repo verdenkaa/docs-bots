@@ -1,7 +1,7 @@
 """Behavioral checks against docs/documents/faq/logging.md."""
 import asyncio
 from contextlib import redirect_stdout
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from io import StringIO
 import json
 from time import monotonic
@@ -58,6 +58,27 @@ class CoreLoggingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final["result_status"], "answered")
         self.assertEqual([s["outcome"] for s in final["steps"]],
                          ["claimed", "loaded", "allowed", "cache_hit", "committed"])
+
+    async def test_committed_elapsed_includes_prior_wait_and_retry(self):
+        self.fixture.q.received_at = datetime.now(timezone.utc) - timedelta(seconds=25)
+        self.fixture.q.attempt.attempt_no = 2
+        final = await self.capture()
+        self.assertGreaterEqual(final["processing_elapsed_ms"], 25000)
+        self.assertGreater(final["processing_elapsed_ms"], final["duration_ms"])
+        self.assertEqual(final["question_received_at"], self.fixture.q.received_at.isoformat())
+
+    async def test_notice_and_support_reasons_require_committed_result(self):
+        self.fixture.search.return_value = []
+        final = await self.capture()
+        self.assertEqual((final["result_status"], final["support_reason"]), ("support", "no_evidence"))
+        self.assertNotIn("result_code", final)
+        self.fixture.q.attempt.attempt_no = 1000
+        final = await self.capture()
+        self.assertEqual((final["result_status"], final["result_code"]), ("notice", "technical_error"))
+        self.fixture.complete.return_value = False
+        final = await self.capture()
+        for field in ("result_status", "result_code", "support_reason", "processing_elapsed_ms"):
+            self.assertNotIn(field, final)
 
     async def test_empty_search_and_stale_commit(self):
         self.fixture.search.return_value = []

@@ -5,7 +5,7 @@
 > Бизнес-сценарии ещё содержат `NotImplementedError`. HTTP-адаптер и последовательность приёма Ingestion Gateway реализованы; конвертер, разбиение и расширения Runtime для DocumentBatch и версий реализованы по согласованным контрактам. Базовые адаптеры Runtime, Model Gateway и RAG Core реализованы; конкретные модельные backend и веса подключаются отдельно. Health checks каркаса подтверждают запуск процессов.
 
 
-Для локальной проверки есть [адаптер Ollama и небольшой текстовый профиль](../docs/documents/model-gateway/ollama.md); OCR/vision можно добавить явно. После скачивания моделей: `python -m rag.model_gateway.ollama_setup --smoke`. Основной .env и существующий поисковый индекс команда не меняет.
+Для локальной проверки есть [адаптер Ollama и небольшой текстовый профиль](../docs/documents/model-gateway/ollama.md); OCR/vision можно добавить явно. Детектор prompt injection — отдельный [сервис на ONNX Runtime](../docs/documents/model-gateway/injection-detector.md) в `injection_detector/` (в образ приложения не входит) с адаптером `rag/model_gateway/injection_detector.py`. После скачивания моделей: `python -m rag.model_gateway.ollama_setup --smoke`. Основной .env и существующий поисковый индекс команда не меняет.
 
 ## Где начать
 

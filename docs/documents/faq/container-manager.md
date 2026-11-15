@@ -4,7 +4,7 @@ sidebar_position: 3
 ---
 
 :::warning Инфраструктурный стенд
-Существующие образы `core` и `worker` запускают каркас, а не сквозной RAG. Локальные модели не скачиваются и серверы инференса не поднимаются; модельные API также ещё не подключены. Их выбор и запуск описаны в [Model Gateway](../model-gateway/lifecycle.md). Locust пока проверяет только доступность HTTP через `/health/ready`. Перед командным запуском проверьте связку Alloy с выбранным движком.
+Существующие образы `core` и `worker` запускают каркас, а не сквозной RAG. Из моделей в стенд входит только [сервис детектора инъекций](../model-gateway/injection-detector.md); остальные локальные модели не скачиваются и серверы инференса не поднимаются, модельные API также ещё не подключены. Их выбор и запуск описаны в [Model Gateway](../model-gateway/lifecycle.md). Locust пока проверяет только доступность HTTP через `/health/ready`. Перед командным запуском проверьте связку Alloy с выбранным движком.
 :::
 
 ## Что запускают сценарии
@@ -14,6 +14,7 @@ sidebar_position: 3
 | Группа | Сервисы Compose |
 | --- | --- |
 | Infrastructure | `postgres` (PostgreSQL), `redis` (Exact Cache), `rabbitmq` (очереди), `qdrant` ([чанки, векторы и BM25](../infrastructure/qdrant/index.md)), `s3` (RustFS, объектное хранилище) |
+| Models | `detector` ([детектор prompt injection](../model-gateway/injection-detector.md), ONNX Runtime) |
 | Application | `core` (RAG API и RAG Core), `worker` (Ingestion Gateway и Ingestion Worker) |
 | Observability | `alloy` (сбор логов), `loki` (хранение), `grafana` (поиск и просмотр) |
 | Load Testing | `locust` (веб-интерфейс запуска нагрузки) |
@@ -21,8 +22,8 @@ sidebar_position: 3
 | Команда менеджера | Контейнеры | Когда использовать |
 | --- | --- | --- |
 | `up infra` | Infrastructure · 5 | Python запускается из IDE на хосте. Для доступа к базам и S3 добавьте `--local` перед командой. |
-| `up app` | Infrastructure + Application · 7 | Запускает указанные образы приложения или собирает недостающие образы каркаса. |
-| `up full` | Все группы · 11 | Диагностика с Grafana и Locust. Нагрузку запускают вручную в веб-интерфейсе. |
+| `up app` | Infrastructure + Models + Application · 8 | Запускает указанные образы приложения или собирает недостающие образы каркаса. Первая сборка `detector` скачивает 1,2 ГБ весов. |
+| `up full` | Все группы · 12 | Диагностика с Grafana и Locust. Нагрузку запускают вручную в веб-интерфейсе. |
 
 Повтор команды сохраняет работающие контейнеры. Например, `up full` после `up app` добавит четыре контейнера. Обратный переход остановит их. `monitor on/off` переключает только Grafana, Loki и Alloy, `load on/off` — только Locust. Для `load on` нужен готовый `core`.
 
@@ -98,13 +99,13 @@ podman top rag-hackathon-rabbitmq-1 -eo pid,rss,comm
 
 ### Как подключить или обновить приложение
 
-С пустыми `CORE_IMAGE` и `WORKER_IMAGE` менеджер при `up app` или `up full` автоматически собирает недостающие образы из `app/Dockerfile` через `compose.scaffold.yaml`. Чтобы подключить готовый образ, укажите его тег или digest для соответствующей роли в `.env`. На продовом стенде укажите оба тега или digest образов релиза.
+С пустыми `CORE_IMAGE` и `WORKER_IMAGE` менеджер при `up app` или `up full` автоматически собирает недостающие образы из `app/Dockerfile` через `compose.scaffold.yaml`. Так же собирается образ `detector` из `app/injection_detector/Dockerfile`, пока не задан `DETECTOR_IMAGE`; он запускается до приложения, потому что `core` при старте проверяет роли моделей. Чтобы подключить готовый образ, укажите его тег или digest для соответствующей роли в `.env`. На продовом стенде укажите оба тега или digest образов релиза.
 
 Core слушает `0.0.0.0:8000` и отвечает на `/health/ready`. Worker пишет временные загрузки в `WORKER_SPOOL_DIR`. Его образ должен давать процессу право записи в этот каталог и включать healthcheck. Общие настройки приложения можно передать через `app.env`. У каркаса в Grafana Explore стартовые события можно найти запросом `{service=~"core|worker"} | json | operation="bootstrap" | mode="scaffold"`.
 
 Для Telegram впишите выданный `@BotFather` токен в `TELEGRAM_BOT_TOKEN` в файле корневом `.env`. Compose передаёт эту переменную контейнеру `core`, где её читает RAG API. Менеджер генерирует пароли инфраструктуры, а токен добавляется вручную. Для запуска `up infra` токен не нужен. Если `core` уже создан, после правки токена выполните `update local`, чтобы Compose применил новые настройки. [Инструкция Telegram](https://core.telegram.org/bots/tutorial#obtain-your-bot-token)
 
-После изменения кода каркаса выполните `update local`, чтобы пересобрать его. Для своих образов `update local` применяет уже собранные локальные теги, а `update registry` загружает указанные образы из реестра. Менеджер обновляет `core` и `worker` и проверяет их состояние. Для продового стенда сначала сверяйтесь с [порядком обновления и миграций](./production-update.md). Не запускайте CI/CD и менеджер одновременно для одного Compose-проекта.
+После изменения кода каркаса выполните `update local`, чтобы пересобрать его. Для своих образов `update local` применяет уже собранные локальные теги, а `update registry` загружает указанные образы из реестра. Менеджер обновляет `detector`, `core` и `worker` и проверяет их состояние. Для продового стенда сначала сверяйтесь с [порядком обновления и миграций](./production-update.md). Не запускайте CI/CD и менеджер одновременно для одного Compose-проекта.
 
 ## Как добавить контейнер или группу
 
@@ -123,7 +124,7 @@ Core слушает `0.0.0.0:8000` и отвечает на `/health/ready`. Wor
 | № | Команда в терминале | Что делает |
 | --- | --- | --- |
 | 1 | `up infra` | Запускает PostgreSQL, Redis, RabbitMQ, Qdrant и S3. Останавливает приложение и диагностику, если они запущены. |
-| 2 | `up app` | Запускает инфраструктуру, `core` и `worker`. Останавливает диагностику. |
+| 2 | `up app` | Запускает инфраструктуру, `detector`, `core` и `worker`. Останавливает диагностику. |
 | 3 | `up full` | Запускает все группы и проверяет доставку логов в Loki. |
 | 4 | `monitor on` | Запускает Loki, Alloy и Grafana. |
 | 5 | `monitor off` | Останавливает группу мониторинга. |
@@ -170,6 +171,7 @@ ssh -N -L 3300:127.0.0.1:3300 -L 8089:127.0.0.1:8089 user@SERVER
 c() { docker compose --env-file ../.env -p rag-hackathon -f compose.yaml --profile '*' "$@"; }
 c config -q
 c up -d --no-recreate postgres redis rabbitmq qdrant s3
+c up -d --no-recreate detector
 c up -d --no-recreate core worker
 c up -d --no-recreate loki alloy grafana
 c up -d --no-recreate locust

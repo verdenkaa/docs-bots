@@ -118,6 +118,19 @@ services:
         - -ec
         - curl -fsS --max-time 2 http://127.0.0.1:9000/health/ready && curl -fsS --max-time 2 http://127.0.0.1:9001/rustfs/console/health
 
+  # Детектор prompt injection: ONNX Runtime недоступен на Alpine, поэтому модель живёт в отдельном образе.
+  # Веса входят в образ; core обращается по http://detector:8080 через Model Gateway.
+  detector:
+    <<: *service
+    profiles: [app]
+    image: ${DETECTOR_IMAGE:-localhost/rag-detector:scaffold}
+    environment:
+      DETECTOR_THREADS: ${DETECTOR_THREADS:-0}
+    healthcheck:
+      <<: *health
+      start_period: 60s
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8080/health/ready', timeout=3).close()"]
+
   core:
     <<: *app
     image: ${CORE_IMAGE:-localhost/rag-core:scaffold}

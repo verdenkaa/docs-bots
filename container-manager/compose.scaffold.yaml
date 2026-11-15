@@ -1,4 +1,7 @@
 services:
+  detector:
+    build:
+      context: ../app/injection_detector
   core:
     build:
       context: ../app

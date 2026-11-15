@@ -1,7 +1,9 @@
 # Каркас RAG-приложения
 
 > [!WARNING]
+
 > Бизнес-сценарии ещё содержат `NotImplementedError`. HTTP-адаптер и последовательность приёма Ingestion Gateway реализованы; конвертер, разбиение и расширения Runtime для DocumentBatch и версий реализованы по согласованным контрактам. Базовые адаптеры Runtime, Model Gateway и RAG Core реализованы; конкретные модельные backend и веса подключаются отдельно. Health checks каркаса подтверждают запуск процессов.
+
 
 Для локальной проверки есть [адаптер Ollama и небольшой текстовый профиль](../docs/documents/model-gateway/ollama.md); OCR/vision можно добавить явно. После скачивания моделей: `python -m rag.model_gateway.ollama_setup --smoke`. Основной .env и существующий поисковый индекс команда не меняет.
 
@@ -18,7 +20,7 @@
 | Model Gateway | [`start_models`, `close_models`, `embed_texts`, `rerank`, `classify_injection`, `generate`, `recognize_text`, `describe_image`](rag/model_gateway/entrypoints.py), [DTO](rag/model_gateway/contracts.py) | [Точки входа](../docs/documents/model-gateway/entrypoints.md) |
 | Runtime | [PostgreSQL](rag/runtime/postgresql), [RabbitMQ](rag/runtime/rabbitmq.py), [Queue Relay](rag/runtime/queue_relay.py), [Qdrant](rag/runtime/qdrant.py), [Redis](rag/runtime/redis.py), [временный том](rag/runtime/upload_spool.py), [S3 · изображения](rag/runtime/s3.py), [Telegram-медиа/источники](rag/runtime/media.py), [данные поддержки](rag/runtime/postgresql/support.py) | [Контракты Runtime](../docs/documents/infrastructure/index.md) |
 
-Модельные вызовы находятся в `rag/model_gateway/`; `runtime/qdrant.py` получает готовые векторы и не загружает модели. Runtime реализует адаптеры хранилищ, миграции и запуск фоновых ролей; прикладные обработчики API, Guardrails, Searcher и Ingestion пока содержат `NotImplementedError`. Bootstrap не вызывает их и не подтверждает готовность моделей. [Команды Runtime, окружение и интеграционные тесты](../docs/documents/infrastructure/runtime-entrypoints.md).
+Модельные вызовы находятся в `rag/model_gateway/`; `runtime/qdrant.py` получает готовые векторы и не загружает модели. Runtime реализует адаптеры хранилищ, миграции и запуск фоновых ролей; прикладные обработчики API, Guardrails и части Ingestion пока содержат `NotImplementedError`. Bootstrap не вызывает их и не подтверждает готовность моделей. [Команды Runtime, окружение и интеграционные тесты](../docs/documents/infrastructure/runtime-entrypoints.md).
 
 Model Gateway проверяет все шесть ролей, ограничивает очередь и сроки, собирает stream и предоставляет local_process с управляемыми исполнителями. Для выбранных моделей нужно установить SDK и реализовать фабрики LocalModel; [интерфейс, настройки и проверка check-models](../docs/documents/model-gateway/providers.md). Runtime сохраняет результаты модельных шагов в PostgreSQL для защиты от повторного inference при retry/перезапуске. Перед запуском новой версии примените migrate до 004_ingestion_documents. Тестовые backend не подключаются в production.
 
@@ -65,4 +67,61 @@ python -m rag worker --port 8001
 
 Допуск бота задаётся списком Telegram username в БД; User ID остаётся владельцем вопроса. Админ-панель использует статичные ADMIN_LOGIN/ADMIN_PASSWORD из окружения/.env; реальные секреты не коммитятся. Runtime реализует новый список допуска, публичное чтение/реплики тикета и операторские операции для доверенного Principal; HTTP-аутентификацию выполняет будущий web-адаптер. Callback сверяется с сохранённой кнопкой и квитанцией; гонка с сохранением квитанции требует повтора. prepare_telegram_photo готовит JPEG-копию в отдельном процессе. После обновления со схемы 001_runtime примените миграции и заново заполните список username: [порядок обновления](../docs/documents/infrastructure/runtime-entrypoints.md#обновление-со-схемы-001_runtime).
 
-Партия `DocumentBatch` содержит полное разбиение одного документа и общие `UploadSource.filename/access_level`. Gateway сохраняет её через `store_document_batch` до регистрации задания. Worker читает `load_document_batch`, вызывает `read_document_version` и `reserve_document_version`, затем готовит оба индекса. Первая версия документа — 0, повтор задания сохраняет назначенный номер. RabbitMQ по-прежнему передаёт только JobRef. Операции хранения партии и резервирования версии реализованы в Runtime по прежним контрактам; публикация обновляет текущую версию документа атомарно с поколением корпуса.
+Партия `DocumentBatch` содержит полное разбиение одного документа и общие `UploadSource.filename/access_level`. Gateway сохраняет её через `store_document_batch` до регистрации задания. Worker читает `load_document_batch`, вызывает `read_document_version` и `reserve_document_version`, затем готовит оба индекса. Первая версия документа — 0, повтор задания сохраняет назначенный номер. RabbitMQ по-прежнему передаёт только JobRef. Новые операции Runtime остаются контрактными заглушками.
+
+## Реализация RAG Core
+
+RAG Core, Exact Cache и Answer Generator реализуют поток из документации. Вопрос
+обрабатывается в пределах срока попытки; OCR сохраняется до проверки, временные
+ошибки планируют устойчивый повтор, готовый ответ попадает в кеш после коммита.
+Searcher реализован через существующие Model Gateway и Qdrant; Guardrails пока
+остаётся заглушкой и требует реализации для сквозного production-запуска.
+Роль `questions` проверяет готовность этих шагов до открытия ресурсов; при наличии заглушек
+запуск завершается с `business_handler_not_implemented`.
+
+Политика Core читается из окружения при вызове (префикс `RAG_CORE_`):
+
+| Переменная | По умолчанию | Назначение |
+| --- | --- | --- |
+| `CACHE_TIMEOUT_S` | 0.25 | Общий бюджет чтения/удаления либо записи кеша |
+| `OCR_TIMEOUT_S` | 30 | Бюджет OCR, дополнительно ограниченный сроком попытки |
+| `GENERATION_TIMEOUT_S` | 60 | Бюджет вызова генерации |
+| `MAX_INPUT_BYTES` | 12000 | Бюджет UTF-8 содержимого системного и пользовательского сообщений |
+| `MAX_OUTPUT_TOKENS` | 1024 | Бюджет выхода модели |
+| `TEMPERATURE` | 0 | Температура генерации |
+| `MAX_ATTEMPTS` | 3 | Максимум попыток при временной ошибке |
+| `RETRY_DELAY_S` | 5 | Задержка устойчивого повтора |
+
+Бюджет входа — консервативная оценка по байтам, а не токенизатор модели.
+При выборе провайдера задайте его с запасом на шаблон чата и выходные токены;
+для локального профиля Ollama с контекстом 2048 нужен меньший бюджет.
+Фрагменты включаются целиком в порядке поиска; не помещающиеся пропускаются.
+Если не помещается ни один, сохраняется технический исход. Модель получает
+вопрос и документы отдельным user-сообщением, возвращает JSON с метками S1, S2;
+неизвестные источники, изображения и несовпадающие плейсхолдеры отклоняются.
+
+Поведенческие проверки: `python -m unittest discover -s tests -p test_rag_core.py -v`.
+
+## Реализация Searcher
+
+`search` проверяет вход, получает embedding вопроса и сверяет профиль и размерность
+с индексом Runtime. Затем вызывает `find_chunks` по переданным редакциям. При
+включённом reranker вызывает `rerank`, сопоставляет оценки по `candidate_index`
+и сохраняет исходный порядок при равных оценках. Отбор возвращает `SearchFragment`
+с исходными метаданными и изображениями. Пустой набор редакций не требует Runtime,
+моделей или Qdrant. Ошибки зависимостей сохраняют код и признак повтора.
+
+Лимиты, бюджеты и порог задаются в Runtime через `RAG_SEARCH_CANDIDATE_LIMIT`,
+`RAG_SEARCH_TOP_K`, `RAG_EMBEDDING_TIMEOUT_S`, `RAG_RERANK_TIMEOUT_S` и
+`RAG_SEARCH_SCORE_THRESHOLD`; reranker включается `RAG_USE_RERANKER=true`.
+Значения по умолчанию и шкала порога — в [конвейере поиска](../docs/documents/retrieval/pipeline.md#настройки-searcher).
+
+Зависимости `embed_texts`, `find_chunks`, `rerank` и загрузка редакций Core через
+`load_revision_ids` реализованы. Поток `questions` пока блокирует заглушка
+`check_question` в Guardrails. Приём и доставка API также требуют реализации.
+Автоматическую загрузку корпуса блокируют `accept_upload`, `prepare_chunks`,
+`store_document_batch`, `load_document_batch`, `read_document_version` и
+`reserve_document_version`: эти операции остаются заглушками. Наличие Searcher
+не означает готовность всего бота.
+
+Проверки: `python -m unittest discover -s tests -p test_searcher.py -v`.

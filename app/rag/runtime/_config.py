@@ -57,6 +57,11 @@ class RuntimeSettings(BaseSettings):
     embedding_dimensions: int = Field(default=1024, gt=0)
     preparation_profile: str = "ingestion-v1"
     search_mode: str = "hybrid"
+    search_candidate_limit: int = Field(default=10, gt=0)
+    search_top_k: int = Field(default=3, gt=0)
+    search_score_threshold: float | None = None
+    embedding_timeout_s: float = Field(default=5, gt=0)
+    rerank_timeout_s: float = Field(default=5, gt=0)
     dense_weight: float = Field(default=1, gt=0)
     lexical_weight: float = Field(default=1, gt=0)
     priority_lexical_weight: float = Field(default=2, gt=0)
@@ -134,6 +139,8 @@ class RuntimeSettings(BaseSettings):
 
     @model_validator(mode="after")
     def _search_profile(self):
+        if self.search_top_k > self.search_candidate_limit:
+            raise ValueError("Search top_k must not exceed the candidate limit")
         if self.priority_lexical_weight <= max(self.dense_weight, self.lexical_weight):
             raise ValueError(
                 "Priority lexical weight must exceed the dense and regular lexical weights"

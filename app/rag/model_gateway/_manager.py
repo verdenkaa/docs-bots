@@ -17,7 +17,7 @@ from rag.model_gateway._validation import _bindings, _error, _input, _result, _t
 from rag.model_gateway.providers import GenerationStream, ModelAdapter
 from rag.model_gateway._coordination import _MemoryCoordinator
 from rag.model_gateway._wire import _encode
-from rag.runtime.events import emit_event, _event_context
+from rag.runtime.events import emit_event, _event_context, _span
 from rag.runtime._watchdog import _step
 
 
@@ -340,6 +340,11 @@ def _finished(state, key, flight, job):
 
 
 async def _call(role, operation, raw, timeout_s):
+    with _span(operation, model_role=role) as record:
+        return await _invoke(role, operation, raw, timeout_s, record)
+
+
+async def _invoke(role, operation, raw, timeout_s, record):
     started, run_id = monotonic(), str(uuid4())
     timing, job, state, flight, attached = {}, None, None, None, False
     outcome, code, usage, joined = "failed", None, None, False
@@ -449,4 +454,5 @@ async def _call(role, operation, raw, timeout_s):
             )
         if usage is not None:
             fields.update(usage.model_dump())
+        record.update({key: value for key, value in fields.items() if value is not None})
         emit_event("model_gateway", operation, "finished", run_id, **fields)

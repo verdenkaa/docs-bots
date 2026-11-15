@@ -1,7 +1,7 @@
 # Каркас RAG-приложения
 
 > [!WARNING]
-> Бизнес-сценарии ещё содержат `NotImplementedError`. Runtime, Model Gateway и RAG Core реализованы; конкретные модельные backend и веса подключаются отдельно. Health checks каркаса подтверждают запуск процессов.
+> Бизнес-сценарии ещё содержат `NotImplementedError`. Runtime, Model Gateway, RAG Core и Searcher реализованы; конкретные модельные backend и веса подключаются отдельно. Health checks каркаса подтверждают запуск процессов.
 
 Для локальной проверки есть [адаптер Ollama и небольшой текстовый профиль](../docs/documents/model-gateway/ollama.md); OCR/vision можно добавить явно. После скачивания моделей: `python -m rag.model_gateway.ollama_setup --smoke`. Основной .env и существующий поисковый индекс команда не меняет.
 
@@ -18,7 +18,7 @@
 | Model Gateway | [`start_models`, `close_models`, `embed_texts`, `rerank`, `classify_injection`, `generate`, `recognize_text`, `describe_image`](rag/model_gateway/entrypoints.py), [DTO](rag/model_gateway/contracts.py) | [Точки входа](../docs/documents/model-gateway/entrypoints.md) |
 | Runtime | [PostgreSQL](rag/runtime/postgresql), [RabbitMQ](rag/runtime/rabbitmq.py), [Queue Relay](rag/runtime/queue_relay.py), [Qdrant](rag/runtime/qdrant.py), [Redis](rag/runtime/redis.py), [временный том](rag/runtime/upload_spool.py), [S3 · изображения](rag/runtime/s3.py), [Telegram-медиа/источники](rag/runtime/media.py), [данные поддержки](rag/runtime/postgresql/support.py) | [Контракты Runtime](../docs/documents/infrastructure/index.md) |
 
-Модельные вызовы находятся в `rag/model_gateway/`; `runtime/qdrant.py` получает готовые векторы и не загружает модели. Runtime реализует адаптеры хранилищ, миграции и запуск фоновых ролей; прикладные обработчики API, Guardrails, Searcher и Ingestion пока содержат `NotImplementedError`. Bootstrap не вызывает их и не подтверждает готовность моделей. [Команды Runtime, окружение и интеграционные тесты](../docs/documents/infrastructure/runtime-entrypoints.md).
+Модельные вызовы находятся в `rag/model_gateway/`; `runtime/qdrant.py` получает готовые векторы и не загружает модели. Runtime реализует адаптеры хранилищ, миграции и запуск фоновых ролей; прикладные обработчики API, Guardrails и части Ingestion пока содержат `NotImplementedError`. Bootstrap не вызывает их и не подтверждает готовность моделей. [Команды Runtime, окружение и интеграционные тесты](../docs/documents/infrastructure/runtime-entrypoints.md).
 
 Model Gateway проверяет все шесть ролей, ограничивает очередь и сроки, собирает stream и предоставляет local_process с управляемыми исполнителями. Для выбранных моделей нужно установить SDK и реализовать фабрики LocalModel; [интерфейс, настройки и проверка check-models](../docs/documents/model-gateway/providers.md). Runtime сохраняет результаты модельных шагов в PostgreSQL для защиты от повторного inference при retry/перезапуске. Перед запуском новой версии примените migrate до 003_model_calls. Тестовые backend не подключаются в production.
 
@@ -70,9 +70,9 @@ python -m rag worker --port 8001
 RAG Core, Exact Cache и Answer Generator реализуют поток из документации. Вопрос
 обрабатывается в пределах срока попытки; OCR сохраняется до проверки, временные
 ошибки планируют устойчивый повтор, готовый ответ попадает в кеш после коммита.
-Guardrails и Searcher подключаются через существующие точки входа и пока остаются
-заглушками: для сквозного production-запуска их нужно реализовать отдельно.
-Роль `questions` проверяет их готовность до открытия ресурсов; при наличии заглушек
+Searcher реализован через существующие Model Gateway и Qdrant; Guardrails пока
+остаётся заглушкой и требует реализации для сквозного production-запуска.
+Роль `questions` проверяет готовность этих шагов до открытия ресурсов; при наличии заглушек
 запуск завершается с `business_handler_not_implemented`.
 
 Политика Core читается из окружения при вызове (префикс `RAG_CORE_`):
@@ -97,3 +97,27 @@ Guardrails и Searcher подключаются через существующ�
 неизвестные источники, изображения и несовпадающие плейсхолдеры отклоняются.
 
 Поведенческие проверки: `python -m unittest discover -s tests -p test_rag_core.py -v`.
+
+## Реализация Searcher
+
+`search` проверяет вход, получает embedding вопроса и сверяет профиль и размерность
+с индексом Runtime. Затем вызывает `find_chunks` по переданным редакциям. При
+включённом reranker вызывает `rerank`, сопоставляет оценки по `candidate_index`
+и сохраняет исходный порядок при равных оценках. Отбор возвращает `SearchFragment`
+с исходными метаданными и изображениями. Пустой набор редакций не требует Runtime,
+моделей или Qdrant. Ошибки зависимостей сохраняют код и признак повтора.
+
+Лимиты, бюджеты и порог задаются в Runtime через `RAG_SEARCH_CANDIDATE_LIMIT`,
+`RAG_SEARCH_TOP_K`, `RAG_EMBEDDING_TIMEOUT_S`, `RAG_RERANK_TIMEOUT_S` и
+`RAG_SEARCH_SCORE_THRESHOLD`; reranker включается `RAG_USE_RERANKER=true`.
+Значения по умолчанию и шкала порога — в [конвейере поиска](../docs/documents/retrieval/pipeline.md#настройки-searcher).
+
+Зависимости `embed_texts`, `find_chunks`, `rerank` и загрузка редакций Core через
+`load_revision_ids` реализованы. Поток `questions` пока блокирует заглушка
+`check_question` в Guardrails. Приём и доставка API также требуют реализации.
+Автоматическую загрузку корпуса блокируют `accept_upload`, `prepare_chunks`,
+`store_document_batch`, `load_document_batch`, `read_document_version` и
+`reserve_document_version`: эти операции остаются заглушками. Наличие Searcher
+не означает готовность всего бота.
+
+Проверки: `python -m unittest discover -s tests -p test_searcher.py -v`.

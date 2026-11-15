@@ -15,19 +15,50 @@ _INVISIBLE = dict.fromkeys(map(ord, "­​‌‍⁠﻿"))
 _TOKEN_RE = re.compile(r"[^\W_]+")
 # слово-повтор: одна буква от четырёх раз («аааа») или две чередующиеся от шести («ахахах»);
 # «ок», «мама», «СССР» и короткие коды под это не попадают
-_REPEAT_RE = re.compile(r"(.)\1{3,}|(.)(.)(?:\2\3){2,}\2?", re.IGNORECASE)
+_REPEAT_RE = re.compile(r"(.)\1{3,}|(.)(.)(?:\2\3){2,}\2?")
+# буква от четырёх раз подряд внутри слова: «нууууу», «пфффф»
+_RUN_RE = re.compile(r"(.)\1{3,}")
+# смех из двух букв от четырёх знаков («хаха», «ахах», «hehe») и группа из 2–4 букв от трёх раз («абвабвабв»)
+_LAUGH_RE = re.compile(r"[ах]{4,}|[хе]{4,}|[хи]{4,}|[хы]{4,}|[ah]{4,}|[eh]{4,}|[hi]{4,}|(.{2,4})\1{2,}")
+# невозможное в русском слове место для «ы», «ъ», «ь»: в начале слова или после гласной, «ъ», «ь».
+# «ы» стоит в среднем ряду клавиатуры, поэтому случайный набор почти всегда даёт «оы», «аы» или «ы» в начале
+_BAD_YERY_RE = re.compile(r"^[ыъь]|[аеёиоуыэюяъь][ыъь]")
+_PLAIN_WORD_RE = re.compile(r"[a-zа-яё]+")  # правила о гласных верны только для кириллицы и латиницы
+_VOWELS = frozenset("аеёиоуыэюяaeiouy")
+_KEY_ROWS = ("йцукенгшщзхъ", "фывапролджэ", "ячсмитьбю", "qwertyuiop", "asdfghjkl", "zxcvbnm")
+_KEY_WALKS = _KEY_ROWS + tuple(row[::-1] for row in _KEY_ROWS)
+
+
+def _is_nonsense_word(token: str) -> bool:
+    """Слово — явный мусор: повтор, смех либо клавиатурный набор. Короткие слова и коды мусором не считаются.
+
+    Правила и пороги длины проверены на частотных словарях и размеченных примерах:
+    docs/documents/guardrails/detector.md, раздел о фильтре бессмыслицы.
+    """
+    if not token.isalpha():
+        return False  # цифры внутри — код, версия или идентификатор
+    word = token.lower()
+    if _REPEAT_RE.fullmatch(word) or _RUN_RE.search(word) or _LAUGH_RE.fullmatch(word):
+        return True
+    # четыре и более соседних клавиш одного ряда подряд: «фыва», «asdf», «йцукен»; «Смит» — единственное слово
+    if len(word) >= 4 and word != "смит" and any(word in walk for walk in _KEY_WALKS):
+        return True
+    if not _PLAIN_WORD_RE.fullmatch(word):
+        return False
+    # от шести букв без единой гласной: «sdfjkh», «впрткнгш»; https, tmpfs и НДФЛ короче
+    if len(word) >= 6 and _VOWELS.isdisjoint(word):
+        return True
+    return len(word) >= 3 and _BAD_YERY_RE.search(word) is not None
 
 
 def _is_nonsense(text: str) -> bool:
-    """Явная бессмыслица: нет ни одной буквы или цифры либо каждое слово — повтор одной-двух букв.
+    """Явная бессмыслица: нет ни одной буквы или цифры либо каждое слово — мусор (_is_nonsense_word).
 
-    Осмысленные короткие вводы (AUTH-17, короткий URL, «БО», «!> 200») бессмыслицей не считаются:
-    в них есть слово, где больше двух разных символов, либо цифры.
+    Осмысленные короткие вводы (AUTH-17, короткий URL, «БО», «!> 200») бессмыслицей не считаются.
+    Одно обычное слово или число в сообщении оставляет его спорным, и оно идёт дальше.
     """
     tokens = _TOKEN_RE.findall(text)
-    if not tokens:
-        return True
-    return all(token.isalpha() and _REPEAT_RE.fullmatch(token) for token in tokens)
+    return all(_is_nonsense_word(token) for token in tokens)
 
 
 def _normalize(text: str) -> str:

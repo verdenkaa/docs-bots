@@ -19,11 +19,19 @@ BENIGN = InjectionResult(profile_id="injection", label="benign", score=None)
 
 class ChecksTests(unittest.TestCase):
     def test_nonsense_is_only_explicit_garbage(self) -> None:
-        for text in ("аааа", "ааааааа ббббб", "...", "?!", "🙂", "ababab", "Ахахаха"):
+        for text in ("аааа", "ааааааа ббббб", "...", "?!", "🙂", "ababab", "Ахахаха",
+                     "хаха", "ахах", "hehe", "нууууу", "пфффф", "абвабвабв",  # смех, растянутая буква, повтор группы
+                     "фыва", "ASDF", "йцукен", "lkjhgf", "qwertyuiop",  # соседние клавиши одного ряда
+                     "sdfjkhsdkjfh", "впрткнгш",  # от шести букв без гласных
+                     "ываолдфыжв", "лоыварлоыва", "ьтимс", "ыыы"):  # «ы», «ь» там, где в слове их не бывает
             with self.subTest(text=text):
                 self.assertTrue(_is_nonsense(text))
         for text in ("AUTH-17", "https://bo.bars.group", "БО", "ок", "!> 200", "1000", "Где фильтр?", "aaaa bo",
-                     "мама", "СССР", "abab"):
+                     "мама", "СССР", "abab", "ООО", "Смит", "про", "СМИ", "ха", "эх",
+                     "https", "tmpfs", "НДФЛ", "ндфл", "Мкртчян", "strengths", "шрифт", "взгляд",  # мало гласных
+                     "продажа", "права", "вода", "pretty", "report",  # слова из одного ряда клавиатуры
+                     "как сбрсить прль", "kak sbrosit parol", "rfr yfqnb abkmnh", "фыва что это",
+                     "объём", "выезд", "новые", "אבגדהוז", "文档在哪里"):
             with self.subTest(text=text):
                 self.assertFalse(_is_nonsense(text))
 

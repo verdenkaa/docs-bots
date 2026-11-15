@@ -4,6 +4,10 @@ sidebar_position: 2
 toc_max_heading_level: 2
 ---
 
+:::warning Готовность приёма
+HTTP-адаптер, конвертация, разбиение и Runtime реализованы по существующим контрактам. Для запуска нужны миграция 004, хранилища и настроенные профили моделей; качество ответов настоящих OCR/VLM проверяется отдельно.
+:::
+
 **[Контракт accept_upload](./entrypoints.md#accept-upload)** · **[Конвертер](./converter.md)**
 
 ## Подключение
@@ -12,11 +16,11 @@ Gateway — Python-компонент в `worker`. Адаптер проверя
 
 | Возможный адаптер | Что делает |
 | --- | --- |
-| Административный HTTP | Проверяет доступ, переводит файл в поток; при выборе потребует отдельного HTTP-контракта. |
+| [Административный HTTP](./http-upload.md) | `POST /admin/ingestion/upload`: Bearer-токен из env/.env, поток PDF/DOCX, метаданные в query. |
 | CLI / пакетная загрузка | Открывает файл, передаёт поток и метаданные. |
 | Интеграция с системой документов | Передаёт файл и известный document_id при замене. |
 
-Для первого среза команда испытает и HTTP, и CLI/пакетную загрузку; окончательный транспорт выбирается по результатам. Общий Python-контракт остаётся единым.
+Для текущего среза выбран HTTP. CLI и интеграция с тикет-системой остаются возможными расширениями. Общий Python-контракт остаётся единым; ручки чтения статуса задания нет.
 
 ## Надёжный приём
 
@@ -24,7 +28,7 @@ Gateway — Python-компонент в `worker`. Адаптер проверя
 2. `convert_document(upload, revision_id)` возвращает Markdown и изображения с описаниями. Оригинал существует только в ограниченном буфере текущего вызова.
 3. `put_image(item.ref.image_id, item.content)` сохраняет каждую картинку. После подтверждения Gateway собирает `ConvertedDocument` с Markdown и списком ImageRef, без байтов.
 4. `stage_upload(revision_id, document, upload.source)` устойчиво сохраняет `converted.md` и манифест.
-5. `open_staged_upload(staging_ref)` даёт StagedUpload для `prepare_chunks`. Gateway собирает непустой `DocumentBatch(source=upload.source, chunks=chunks)` и устойчиво сохраняет его через `store_document_batch(staging_ref, batch)`. Разбиение относится к подготовке до принятия задания, не к индексатору.
+5. `open_staged_upload(staging_ref)` даёт StagedUpload для `prepare_chunks`. Gateway собирает непустой `DocumentBatch(source=upload.source, chunks=chunks)` и устойчиво сохраняет его через `store_document_batch(staging_ref, batch)`. При неизвестном исходе записи перечитывает партию и регистрирует задание только при полном совпадении. Разбиение относится к подготовке до принятия задания, не к индексатору.
 6. `register_revision(revision_id, upload.document_id, staging_ref, upload.source, image_ids)` атомарно находит/создаёт document_id по имени и регистрирует редакцию и outbox.
 7. После подтверждённого коммита вернуть AcceptedUpload. Номер версии ещё не назначен; индекс готовится Worker.
 

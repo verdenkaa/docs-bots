@@ -7,6 +7,8 @@ from collections.abc import AsyncIterable
 from pathlib import Path
 from typing import get_origin, get_type_hints
 
+from fastapi import FastAPI, Request, Response
+from httpx import AsyncClient
 from pydantic import TypeAdapter, ValidationError
 
 from contract_examples import (
@@ -149,6 +151,9 @@ class ContractTests(unittest.TestCase):
                          ("chunk_count_mismatch", False, "chunk_count_mismatch"))
 
     def test_all_models_and_annotations_resolve(self):
+        from fastapi import FastAPI, Request, Response
+        from httpx import AsyncClient
+
         app = Path(__file__).parents[1]
         for file in (app / "rag").rglob("*.py"):
             module = importlib.import_module(".".join(file.relative_to(app).with_suffix("").parts))
@@ -159,16 +164,11 @@ class ContractTests(unittest.TestCase):
                     value.model_json_schema()
                 if inspect.isfunction(value):
                     for annotation in get_type_hints(value, include_extras=True).values():
-                        if annotation is UploadInput or get_origin(annotation) is AsyncIterable:
+                        # HTTP transport objects, like upload streams, are not JSON DTO.
+                        if (annotation in (UploadInput, FastAPI, Request, Response, AsyncClient)
+                                or get_origin(annotation) is AsyncIterable):
                             continue
-                        # HTTP framework objects are in-process resources, not JSON DTO.
-                        from fastapi import FastAPI, Request, Response
-                        from httpx import AsyncClient
-                        from pydantic import ConfigDict
-                        if annotation in (FastAPI, Request, Response, AsyncClient):
-                            TypeAdapter(annotation, config=ConfigDict(arbitrary_types_allowed=True))
-                        else:
-                            TypeAdapter(annotation)
+                        TypeAdapter(annotation)
 
 
 if __name__ == "__main__":

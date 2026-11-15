@@ -7,9 +7,9 @@ from uuid import uuid4, uuid5
 from pydantic import ValidationError
 
 from contract_examples import DOCUMENT, IMAGE, MARKDOWN, NOW, REVISION, returned, validate_call_arguments
-from rag.contracts import ImageRef
+from rag.contracts import ImageContent, ImageRef
 from rag.ingestion.contracts import (
-    AcceptedUpload, ClaimedIngestionJob, ConvertedDocument,
+    AcceptedUpload, ClaimedIngestionJob, ConversionResult, ConvertedDocument, ConvertedImage,
     DocumentBatch, IngestionAttempt, JobRef, PreparedChunk, StagedUpload, UploadInput, UploadSource,
 )
 from rag.ingestion.converter import convert_document
@@ -47,8 +47,12 @@ class IngestionContractTests(unittest.TestCase):
                              document_id=None)
         validate_call_arguments(accept_upload, upload)
         validate_call_arguments(convert_document, upload, REVISION)
-        # The raw adapter has confirmed S3 writes; conversion returns no bytes.
-        ready = returned(convert_document, ConvertedDocument(markdown=MARKDOWN, images=[IMAGE]))
+        from rag.runtime.s3 import put_image
+        converted = returned(convert_document, ConversionResult(markdown=MARKDOWN, images=[
+            ConvertedImage(ref=IMAGE, content=ImageContent(data=b"png", mime_type="image/png"))]))
+        for image in converted.images:
+            validate_call_arguments(put_image, image.ref.image_id, image.content)
+        ready = ConvertedDocument(markdown=converted.markdown, images=[image.ref for image in converted.images])
         validate_call_arguments(stage_upload, REVISION, ready, upload.source)
         staging_ref = returned(stage_upload, f"uploads/{REVISION}")
         # Gateway формирует и сохраняет полную партию до регистрации/outbox.

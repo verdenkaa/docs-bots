@@ -112,20 +112,20 @@ async def list_staging_candidates(older_than: datetime, limit: int) -> list[str]
 async def store_document_batch(staging_ref: str, batch: DocumentBatch) -> None:
     """Устойчиво сохранить полное разбиение документа до регистрации задания.
 
-    Заглушка: реализация адаптера остаётся в Runtime.
     Совпадающий повтор безопасен, замена партии под тем же ключом запрещена.
     Источник и изображения должны совпадать с манифестом stage_upload.
     """
-    raise NotImplementedError
+    with _watchdog._step(_get().settings.io_timeout_s, "upload_spool"):
+        await asyncio.to_thread(_spool._call, _spool._batch, staging_ref, batch)
 
 
 async def load_document_batch(staging_ref: str) -> DocumentBatch | None:
     """Прочитать неизменяемую партию чанков; None означает отсутствие chunks.json.
 
-    Заглушка: реализация адаптера остаётся в Runtime.
     Повреждённая существующая партия даёт StorageError, а не None.
     """
-    raise NotImplementedError
+    with _watchdog._step(_get().settings.io_timeout_s, "upload_spool"):
+        return await asyncio.to_thread(_spool._call, _spool._batch, staging_ref)
 
 
 async def load_prepared_revision(staging_ref: str) -> PreparedRevision | None:

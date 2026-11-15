@@ -98,7 +98,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "RAG_S3_BUCKET": "runtime-" + token,
                 "RAG_EMBEDDING_PROFILE": "runtime-test-v1",
                 "RAG_EMBEDDING_DIMENSIONS": "3",
-                "RAG_IO_TIMEOUT_S": "10",
+                "RAG_IO_TIMEOUT_S": os.environ.get("RAG_IO_TIMEOUT_S", "10"),
                 "RAG_BATCH_SIZE": "1",
                 "RAG_BROKER_RETRY_S": "0.01",
                 "ADMIN_LOGIN": "runtime_admin",
@@ -198,6 +198,9 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             UploadSource(filename="Guide", access_level="employees"), []
         )
         job = await ingestion.claim_ingestion_job(revision)
+        current = await ingestion.read_document_version("Guide")
+        reserved = await ingestion.reserve_document_version(
+            job.attempt, None if current is None else current.document_version)
         self.assertTrue(await ingestion.begin_revision_write(job.attempt, 1, 1))
         point = qdrant.ChunkPoint(
             chunk_id=uuid5(revision, "0"),
@@ -206,7 +209,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             source_name="Guide",
             text="Инструкция AUTH-17 установка",
             chunk_no=0,
-            document_version=0,
+            document_version=reserved.document_version,
             access_level="employees",
             dense=[1.0, 0.0, 0.0],
         )
@@ -221,6 +224,58 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await qdrant.write_topic_points(revision, [topic])
         generation = await ingestion.publish_revision(job.attempt)
         return accepted, point, topic, generation
+
+    async def test_ingestion_from_docx_to_two_published_versions(self):
+        from sample_docx import build_sample_docx
+        from rag.ingestion import gateway, worker
+        from rag.ingestion.contracts import JobRef, UploadInput
+        from rag.model_gateway.contracts import EmbeddingResult, ImageDescription, ModelGenerationResult, OcrResult
+
+        environment = {
+            "INGESTION_EMBEDDING_PROFILE": "runtime-test-v1",
+            "INGESTION_GENERATION_PROFILE": "fixture",
+            "INGESTION_PREPARATION_PROFILE": "ingestion-v1",
+            "INGESTION_EMBEDDING_DIMENSIONS": "3",
+            "INGESTION_EMBEDDING_INPUT_CHARACTERS": "4000",
+            "INGESTION_TOPIC_INPUT_CHARACTERS": "8000",
+            "INGESTION_GENERATION_MAX_OUTPUT_TOKENS": "128",
+        }
+        async def embed(texts, purpose, **options):
+            return EmbeddingResult(profile_id="runtime-test-v1", vectors=[[1.0, 0.0, 0.0] for _ in texts])
+        async def stream():
+            yield build_sample_docx()
+
+        with patch.dict(os.environ, environment), \
+                patch("rag.model_gateway.entrypoints.embed_texts", new=AsyncMock(side_effect=embed)), \
+                patch("rag.model_gateway.entrypoints.generate", new=AsyncMock(return_value=ModelGenerationResult(
+                    profile_id="fixture", text='{"questions":["How to save?"]}', finish_reason="completed", usage=None))), \
+                patch("rag.model_gateway.entrypoints.describe_image", new=AsyncMock(return_value=ImageDescription(
+                    profile_id="vision", description="Save button"))), \
+                patch("rag.model_gateway.entrypoints.recognize_text", new=AsyncMock(return_value=OcrResult(
+                    profile_id="ocr", text="Save"))):
+            first = await gateway.accept_upload(UploadInput(content=stream(),
+                source=UploadSource(filename="upload.docx", access_level="employees"), document_id=None))
+            self.assertEqual(first.kind, "accepted")
+            ref = f"uploads/{first.job_id}"
+            batch = await upload_spool.load_document_batch(ref)
+            self.assertIsNotNone(batch)
+            for image in [image for chunk in batch.chunks for image in chunk.images]:
+                self.assertEqual((await s3.get_image(image.image_id)).mime_type, "image/png")
+            self.assertEqual(await worker.handle_ingestion_job(JobRef(job_id=first.job_id)), "ack")
+            version = await ingestion.read_document_version("upload.docx")
+            self.assertEqual((version.document_id, version.document_version), (first.document_id, 0))
+            self.assertTrue(await qdrant.verify_revision_points(first.job_id, len(batch.chunks)))
+            self.assertTrue(await qdrant.verify_topic_points(first.job_id, 1))
+            self.assertEqual(await worker.handle_ingestion_job(JobRef(job_id=first.job_id)), "ack")
+            second = await gateway.accept_upload(UploadInput(content=stream(),
+                source=UploadSource(filename="upload.docx", access_level="employees"), document_id=None))
+            self.assertEqual(second.document_id, first.document_id)
+            self.assertEqual(await worker.handle_ingestion_job(JobRef(job_id=second.job_id)), "ack")
+            self.assertEqual((await ingestion.read_document_version("upload.docx")).document_version, 1)
+            async with _transaction() as connection:
+                row = await _one(connection,
+                    "SELECT current_revision_id FROM documents WHERE document_id=:id", id=first.document_id)
+            self.assertEqual(row["current_revision_id"], second.job_id)
 
     async def test_atomic_admission_duplicates_and_revocation(self):
         results = await asyncio.gather(*(self.question() for _ in range(10)))
@@ -332,6 +387,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             UploadSource(filename="Guide", access_level="employees"), [],
         )
         job = await ingestion.claim_ingestion_job(revision)
+        await ingestion.reserve_document_version(job.attempt, None)
         await ingestion.begin_revision_write(job.attempt, 1, 1)
         self.assertFalse(await ingestion.schedule_ingestion_retry(job.attempt, now()))
         self.assertFalse(await ingestion.fail_ingestion_job(job.attempt))

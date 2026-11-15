@@ -16,9 +16,12 @@ class ConverterSettings(BaseSettings):
         hide_input_in_errors=True,
         env_file=".env",
         env_file_encoding="utf-8",
+        protected_namespaces=("settings_",),
     )
 
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
+    max_markdown_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
+    max_parser_output_bytes: int = Field(default=128 * 1024 * 1024, gt=0)
     max_images: int = Field(default=500, gt=0)
     max_image_bytes: int = Field(default=20 * 1024 * 1024, gt=0)  # не больше RAG_MAX_IMAGE_BYTES у Runtime
     max_description_chars: int = Field(default=2000, gt=0)

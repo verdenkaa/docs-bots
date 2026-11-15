@@ -16,7 +16,7 @@ from sample_pdf import IMAGE_SIZE, LINK_URI, build_sample_pdf
 
 from rag.contracts import ImageContent, StepError
 from rag.ingestion import _conversion, _document_parser, _parsers, converter
-from rag.ingestion._conversion import _ConversionSettings
+from rag.ingestion._config import ConverterSettings
 from rag.ingestion.contracts import UploadInput, UploadSource
 from rag.model_gateway.contracts import ImageDescription, OcrResult
 from rag.runtime import _state, s3
@@ -28,32 +28,8 @@ IMAGE_ID = uuid5(REVISION, "image:0")
 
 
 def settings(**overrides):
-    return _ConversionSettings(converter_callable="rag.ingestion._document_parser:_convert_to_markdown",
-                               ocr_profile="ocr", vision_profile="vision", parse_timeout_s=5,
-                               **overrides)
+    return ConverterSettings(_env_file=None, **overrides)
 
-
-def storage(test):
-    """A private S3 port: upload completes before the converter can read an image."""
-    test.images = {}
-    previous = _state._current
-    _state._set(SimpleNamespace(settings=SimpleNamespace(s3_bucket="rag-images")))
-    test.addCleanup(_state._set, previous)
-
-    async def put(image_id, image):
-        image = ImageContent.model_validate(image.model_dump())
-        if image_id in test.images and test.images[image_id] != image:
-            raise StepError("image_conflict", False)
-        test.images[image_id] = image
-
-    async def get(image_id):
-        return test.images[image_id]
-
-    for name, operation in (("put_image", put), ("get_image", get)):
-        patcher = mock.patch.object(s3, name, side_effect=operation)
-        port = patcher.start()
-        setattr(test, name, port)
-        test.addCleanup(patcher.stop)
 
 EXPECTED_MARKDOWN = f"""\
 ## 1 Getting started
@@ -75,7 +51,7 @@ See [the docs]({LINK_URI})
 
 > Important note
 
-Press ![Кнопка \\[Сохранить\\]. Распознанный текст: Save](image://{IMAGE_ID}) to save.
+Press ![Кнопка \\[Сохранить\\]. Текст на изображении: Save](image://{IMAGE_ID}) to save.
 
 Type - kind{HARD_BREAK}Model - model of item
 """
@@ -103,7 +79,7 @@ See [the docs]({LINK_URI})
 
 > Important note
 
-Press ![Кнопка \\[Сохранить\\]. Распознанный текст: Save](image://{IMAGE_ID}) to save.
+Press ![Кнопка \\[Сохранить\\]. Текст на изображении: Save](image://{IMAGE_ID}) to save.
 
 Type - kind{HARD_BREAK}Model - model of item
 """
@@ -122,17 +98,16 @@ class ConverterTests(unittest.IsolatedAsyncioTestCase):
         self.describe = mock.AsyncMock(return_value=ImageDescription(profile_id="vision", description="Кнопка [Сохранить]."))
         self.recognize = mock.AsyncMock(return_value=OcrResult(profile_id="ocr", text="Save"))
         for name, fake in (("describe_image", self.describe), ("recognize_text", self.recognize)):
-            patcher = mock.patch.object(_conversion.models, name, fake)
+            patcher = mock.patch.object(converter.model_gateway, name, fake)
             patcher.start()
             self.addCleanup(patcher.stop)
         self.settings(settings())
-        storage(self)
         stdout = contextlib.redirect_stdout(io.StringIO())  # события логов
         stdout.__enter__()
         self.addCleanup(stdout.__exit__, None, None, None)
 
-    def settings(self, value: _ConversionSettings) -> None:
-        patcher = mock.patch.object(_ConversionSettings, "from_environment", return_value=value)
+    def settings(self, value: ConverterSettings) -> None:
+        patcher = mock.patch.object(converter, "converter_settings", return_value=value)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -151,10 +126,10 @@ class ConverterTests(unittest.IsolatedAsyncioTestCase):
         # перенос строки; оглавления и колонтитула нет; описание картинки — VLM + OCR, экранировано
         self.assertEqual(result.markdown, EXPECTED_MARKDOWN)
         (image,) = result.images
-        self.assertEqual(image.image_id, IMAGE_ID)
-        self.assertEqual(image.description, "Кнопка [Сохранить]. Распознанный текст: Save")
-        self.assertEqual(self.images[image.image_id].mime_type, "image/png")
-        with Image.open(io.BytesIO(self.images[image.image_id].data)) as picture:
+        self.assertEqual(image.ref.image_id, IMAGE_ID)
+        self.assertEqual(image.ref.description, "Кнопка [Сохранить]. Текст на изображении: Save")
+        self.assertEqual(image.content.mime_type, "image/png")
+        with Image.open(io.BytesIO(image.content.data)) as picture:
             self.assertEqual(picture.size, IMAGE_SIZE)
 
     @unittest.skipUnless(HAS_PDF_LIBS, "нужны pdfplumber и pypdf")
@@ -183,9 +158,9 @@ class ConverterTests(unittest.IsolatedAsyncioTestCase):
         # внутри пункта; ссылка, таблица с оператором фильтра и объединённой ячейкой, рамка, картинка в предложении
         self.assertEqual(result.markdown, EXPECTED_DOCX_MARKDOWN)
         (image,) = result.images
-        self.assertEqual(image.image_id, IMAGE_ID)
-        self.assertEqual(self.images[image.image_id].mime_type, "image/png")
-        with Image.open(io.BytesIO(self.images[image.image_id].data)) as picture:
+        self.assertEqual(image.ref.image_id, IMAGE_ID)
+        self.assertEqual(image.content.mime_type, "image/png")
+        with Image.open(io.BytesIO(image.content.data)) as picture:
             self.assertEqual(picture.size, IMAGE_SIZE)
 
     async def test_docx_format_is_detected_by_content_not_name(self) -> None:
@@ -223,12 +198,13 @@ class ConverterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.markdown, text)
         self.assertEqual(result.images, [])
         self.describe.assert_not_called()
-        self.put_image.assert_not_called()
 
-    async def test_markdown_external_image_is_not_silently_accepted(self) -> None:
-        error = await self.refused(b"![image](https://example.test/image.png)", "doc.md")
-        self.assertEqual((error.code, error.retryable), ("conversion_failed", False))
-        self.put_image.assert_not_called()
+    async def test_markdown_external_image_stays_text_without_network_access(self):
+        text = "![image](https://example.test/image.png)\n"
+        result = await converter.convert_document(upload(text.encode(), "doc.md"), REVISION)
+        self.assertEqual(result.markdown, text)
+        self.assertEqual(result.images, [])
+        self.describe.assert_not_called()
 
     async def test_refusals(self) -> None:
         cases = [
@@ -249,17 +225,16 @@ class ConverterTests(unittest.IsolatedAsyncioTestCase):
         error = await self.refused(b"# long markdown", "doc.md")
         self.assertEqual((error.code, error.retryable), ("too_large", False))
 
-    async def test_repeated_image_reference_is_uploaded_and_described_once(self) -> None:
+    async def test_repeated_image_reference_is_described_once(self) -> None:
         from sample_docx import _png
         png = _png()
         marker = "@@IMG-test-{}@@"
         markdown = f"{marker.format(0)} и {marker.format(0)}"
-        with mock.patch.object(_document_parser.secrets, "token_hex", return_value="test"), \
+        with mock.patch.object(converter.secrets, "token_hex", return_value="test"), \
                 mock.patch.object(_document_parser, "_run_worker", return_value=(markdown, [png])):
             result = await converter.convert_document(upload(b"# original", "doc.md"), REVISION)
         self.assertEqual(self.describe.await_count, 1)
-        self.put_image.assert_awaited_once()
-        self.assertEqual([image.image_id for image in result.images], [IMAGE_ID])
+        self.assertEqual([image.ref.image_id for image in result.images], [IMAGE_ID])
         self.assertEqual(result.markdown.count(f"](image://{IMAGE_ID})"), 2)
 
     async def test_model_failure_stays_technical(self) -> None:
@@ -312,10 +287,9 @@ class ConverterWithModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         stdout = contextlib.redirect_stdout(io.StringIO())  # события логов
         stdout.__enter__()
         self.addCleanup(stdout.__exit__, None, None, None)
-        patcher = mock.patch.object(_ConversionSettings, "from_environment", return_value=settings())
+        patcher = mock.patch.object(converter, "converter_settings", return_value=settings())
         patcher.start()
         self.addCleanup(patcher.stop)
-        storage(self)
 
         name = "converter_fixture"
         register_provider(name, Adapter)
@@ -334,7 +308,7 @@ class ConverterWithModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         result = await converter.convert_document(upload(build_sample_docx(), "doc.docx"), REVISION)
 
         (image,) = result.images
-        self.assertEqual(image.description, "Fixture image")  # OCR пустой: описание только от VLM
+        self.assertEqual(image.ref.description, "Fixture image")  # OCR пустой: описание только от VLM
         self.assertIn(f"![Fixture image](image://{IMAGE_ID})", result.markdown)
         self.assertEqual(sorted(self.calls), [("describe_image", "image/png"), ("recognize_text", "image/png")])
 

@@ -180,22 +180,60 @@ async def register_revision(
 async def read_document_version(source_name: str) -> DocumentVersion | None:
     """Прочитать опубликованную версию по точному имени документа.
 
-    Заглушка: реализация адаптера остаётся в Runtime.
     None означает отсутствие опубликованной версии, включая ещё не опубликованный документ.
     Сбой чтения поднимает StorageError и не означает первую версию.
     """
-    raise NotImplementedError
+    _text(source_name)
+    async with _transaction() as session:
+        row = await _one(session, select(_Document).where(_Document.source_name == source_name))
+        if row is None or row["current_version"] is None:
+            return None
+        return DocumentVersion(document_id=row["document_id"], document_version=row["current_version"])
 
 
 async def reserve_document_version(attempt: IngestionAttempt, expected_version: int | None) -> ReservedRevision | None:
     """Идемпотентно закрепить новую версию за заданием до подготовки векторов.
 
-    Заглушка: реализация адаптера остаётся в Runtime.
     Под блокировкой документа сверяет опубликованную базу с expected_version.
     При конфликте базы — StepError(document_version_conflict, True), при утрате права — None.
     Повтор той же редакции возвращает прежнюю версию; неизвестный коммит — StorageError.
     """
-    raise NotImplementedError
+    attempt = IngestionAttempt.model_validate_json(attempt.model_dump_json())
+    if expected_version is not None and (type(expected_version) is not int or expected_version < 0):
+        raise ValueError("Expected a nonnegative document version")
+    async with _transaction() as session:
+        item = await _one(session, select(_Revision.document_id).where(
+            _Revision.revision_id == attempt.job_id))
+        if item is None:
+            return None
+        await _lock(session, "document", item["document_id"])
+        document = await _one(session, select(_Document).where(
+            _Document.document_id == item["document_id"]).with_for_update())
+        row = await _one(session, select(_Revision).where(
+            _Revision.revision_id == attempt.job_id).with_for_update())
+        if (not _valid_attempt(row, attempt, "indexing", await _now(session))
+                or row["qdrant_write_pending"]):
+            return None
+        previous = await _one(session, select(_Revision.revision_id).where(
+            _Revision.document_id == row["document_id"],
+            _Revision.revision_no < row["revision_no"],
+            _Revision.state.in_(("queued", "indexing"))).limit(1))
+        if previous is not None:
+            return None
+        if document is None:
+            raise StorageError("Document registry is missing")
+        if row["document_version"] is not None:
+            if row["base_version"] != expected_version:
+                raise StepError("document_version_conflict", False)
+            return ReservedRevision(revision_id=attempt.job_id, document_id=row["document_id"],
+                                    document_version=row["document_version"], base_version=row["base_version"])
+        if document["current_version"] != expected_version:
+            raise StepError("document_version_conflict", True)
+        version = 0 if expected_version is None else expected_version + 1
+        await _execute(session, update(_Revision).where(_Revision.revision_id == attempt.job_id).values(
+            document_version=version, base_version=expected_version))
+        return ReservedRevision(revision_id=attempt.job_id, document_id=row["document_id"],
+                                document_version=version, base_version=expected_version)
 
 
 async def claim_ingestion_job(job_id: UUID) -> ClaimedIngestionJob | None:
@@ -291,6 +329,8 @@ async def begin_revision_write(
             or row["qdrant_write_pending"]
         ):
             return False
+        if row["document_version"] is None:
+            raise StepError("document_version_missing", False)
         for field, expected, code in (
             ("expected_chunk_count", expected_chunk_count, "chunk_count_mismatch"),
             ("expected_topic_count", expected_topic_count, "topic_count_mismatch"),
@@ -336,8 +376,15 @@ async def publish_revision(attempt: IngestionAttempt) -> int | None:
             or not row["qdrant_write_pending"]
             or not row["expected_chunk_count"]
             or not row["expected_topic_count"]
+            or row["document_version"] is None
         ):
             return None
+        document = await _one(session, select(_Document).where(
+            _Document.document_id == row["document_id"]).with_for_update())
+        if document is None:
+            raise StorageError("Document registry is missing")
+        if document["current_version"] != row["base_version"]:
+            raise StepError("document_version_conflict", False)
         generation = corpus["generation"] + 1
         await _execute(
             session,
@@ -362,6 +409,9 @@ async def publish_revision(attempt: IngestionAttempt) -> int | None:
             .where(_CorpusState.singleton_id == 1)
             .values(generation=generation),
         )
+        await _execute(session, update(_Document).where(
+            _Document.document_id == row["document_id"]).values(
+                current_revision_id=attempt.job_id, current_version=row["document_version"]))
         await _wake_ingestion(session, row["document_id"])
         return generation
 

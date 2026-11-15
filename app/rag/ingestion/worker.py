@@ -29,12 +29,11 @@ async def handle_ingestion_job(event: JobRef) -> ConsumeDecision:
 async def prepare_chunks(upload: StagedUpload) -> list[PreparedChunk]:
     """Подготовить чанки для Gateway до регистрации задания; индексатор разбиение не повторяет.
 
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
-
     Args:
         upload: Markdown и манифест из Runtime.
 
     Returns:
         Упорядоченный список PreparedChunk; [] — нет пригодного содержимого.
     """
-    raise NotImplementedError
+    from rag.ingestion._chunking import _prepare_chunks
+    return await _prepare_chunks(upload)

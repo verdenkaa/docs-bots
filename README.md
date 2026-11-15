@@ -10,6 +10,16 @@ Telegram-бот, который отвечает на вопросы по заг
 
 Для запуска стенда откройте `container-manager\manage.bat` на Windows или выполните `sh container-manager/manage.sh` на Linux/macOS. В меню выберите `2`, чтобы поднять инфраструктуру и каркас приложения.
 
+## Запуск на сервере
+
+Корневой `compose.yaml` запускает рабочие процессы приложения, хранилища, Ollama с подготовкой моделей, nginx с выпуском и продлением HTTPS-сертификата (в том числе на публичный IPv4), Grafana, Loki и Alloy. Подготовьте корневой `.env`, откройте TCP 80/443 и выполните:
+
+```bash
+docker compose up -d --build
+```
+
+Секретный `.env` не хранится в Git и не входит в образы. Первый старт требует доступа к реестрам моделей и входящей ACME-проверки на порту 80. Grafana доступна через SSH-туннель. [Подготовка Ubuntu, настройки, обновление и проверка](docs/documents/infrastructure/server-deployment.md).
+
 ## Единая конфигурация приложения
 
 Рабочие настройки приложения и контейнеров хранятся в **`.env` в корне репозитория**. Шаблон — [`.env.example`](.env.example); секретный рабочий файл исключён из Git. Существующие локальные пароли перенесены, исходный `container-manager/.env` сохранён, но больше не читается. `app/.env` и `container-manager/app.env` также не используются.
@@ -36,5 +46,6 @@ Telegram-бот, который отвечает на вопросы по заг
 - **Python tests**: Python 3.12, установка проекта с `app/requirements.lock`, проверка зависимостей, `unittest` приложения, отдельных групп Ingestion/RAG API и менеджера контейнеров.
 - **Runtime integration tests**: изолированный Compose-стенд PostgreSQL, RabbitMQ, Redis, Qdrant и S3; проверки реальных адаптеров приложения.
 - **Documentation tests and build**: Node.js 24, установка через `npm ci`, тесты сайта и production-сборка документации.
+- **Server images and startup checks**: проверка серверного Compose без реальных секретов, сборка образов, Linux-супервизор и nginx с синтетическим TLS и тестовыми upstream.
 
 Результаты видны в Checks pull request. Чтобы запретить слияние при сбое, в правилах целевой ветки GitHub включите **Require status checks to pass** и выберите все три проверки после их первого запуска. Workflow выполняет проверки без деплоя; публикация документации описана в [`docs/README.md`](docs/README.md).

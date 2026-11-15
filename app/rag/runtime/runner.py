@@ -105,6 +105,8 @@ async def _singleton(component):
 
 async def _periodic(component, operation, interval, stop):
     async with _singleton(component) as ownership:
+        from rag.runtime._process_status import _ready
+        _ready()
         while not stop.is_set():
             # Detect loss of the singleton lock's connection; never silently reacquire.
             await ownership.execute(select(1))
@@ -216,6 +218,8 @@ async def run_runtime(
             else:
                 await _consume(route, handler, stop)
     finally:
+        from rag.runtime._process_status import _clear
+        _clear()
         try:
             if models_started:
                 async with asyncio.timeout(_get().settings.shutdown_timeout_s):

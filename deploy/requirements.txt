@@ -1,0 +1,3 @@
+# Match the application's production extra; keep the server image reproducible.
+gunicorn==23.0.0
+uvicorn-worker==0.4.0

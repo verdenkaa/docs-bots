@@ -1,0 +1,14 @@
+*
+!app/
+!app/pyproject.toml
+!app/README.md
+!app/requirements.lock
+!app/rag/
+!app/rag/**
+!deploy/
+!deploy/**
+**/__pycache__/
+**/*.pyc
+**/.env
+**/.env.*
+**/tests/

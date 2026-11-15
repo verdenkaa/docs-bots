@@ -141,3 +141,13 @@ async def schedule_question_retry(attempt: ProcessingAttempt, retry_at: datetime
 Возвращает queued, сохраняет поколение и prepared_text, записывает resume_at и RequestRef с available_at. received_at не меняется. Внешние вызовы идут вне транзакции.
 
 Наличие принятого request уже подтверждает допуск на момент регистрации. Последующее enabled=False не запрещает claim/повтор/complete_question для этого request и не отменяет его модельные шаги. Сроки попыток, версия корпуса и ограничение одного активного вопроса сохраняются.
+
+## Дополнительный веб-канал
+
+Сигнатуры этих функций и общие DTO не меняются. Для `channel=web` вход остаётся
+TextQuestion. complete_question атомарно сохраняет исход и completed_at в
+web_requests, переводит вопрос в finished и снимает закрепление. Доставка
+rag.results и Telegram-квитанции не создаются; слот освобождается независимо от
+чтения. При SupportOutcome сохраняется creating-кейс для прежней maintenance.
+Для telegram сохраняется прежний путь awaiting_delivery/awaiting_support.
+[HTTP и жизненный цикл Mini App](../../telegram/mini-app.md).

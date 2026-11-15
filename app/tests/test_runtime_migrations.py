@@ -24,8 +24,8 @@ class MigrationHistoryTests(unittest.TestCase):
     def test_migration_chain_has_one_base_and_one_head(self):
         scripts = ScriptDirectory.from_config(_migration_config())
         revisions = list(scripts.walk_revisions())
-        self.assertEqual([revision.revision for revision in revisions], ["002_ticket_resources", "001_initial"])
-        self.assertEqual(revisions[0].down_revision, '001_initial')
+        self.assertEqual([revision.revision for revision in revisions], ["003_mini_app", "002_ticket_resources", "001_initial"])
+        self.assertEqual(revisions[0].down_revision, '002_ticket_resources')
         self.assertIsNone(revisions[-1].down_revision)
 
 

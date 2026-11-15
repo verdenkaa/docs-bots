@@ -45,6 +45,11 @@ async def telegram_webhook(request: Request) -> Response:
                         status, outcome, error = 400, "invalid_update", "invalid_update_id"
                     else:
                         trace.fields["update_id"] = update["update_id"]
+                        from rag.rag_api._mini_app_webhook import _redirect
+                        redirect = await _redirect(update)
+                        if redirect is not None:
+                            status, outcome = 200, "handled"
+                            return redirect
                         result = await entrypoints.handle_telegram_update(update)
                         outcome = result.kind
                         trace.fields.update(request_id=result.request_id, delivery_id=result.delivery_id,

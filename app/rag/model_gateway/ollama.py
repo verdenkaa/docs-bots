@@ -10,7 +10,8 @@ import os
 import re
 
 import httpx
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from rag._configuration import ProjectSettings
 
 from rag.contracts import StepError
 from rag.model_gateway._config import _Settings
@@ -18,11 +19,10 @@ from rag.model_gateway.contracts import TokenUsage
 from rag.model_gateway.providers import ModelAdapter, register_provider
 
 
-class _Options(BaseSettings):
+class _Options(ProjectSettings):
     model_config = SettingsConfigDict(
         env_prefix="OLLAMA_GATEWAY_",
         extra="ignore",
-        env_file=".env",
         hide_input_in_errors=True,
     )
     keep_alive: str = "0"

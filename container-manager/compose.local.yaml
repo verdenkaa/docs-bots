@@ -4,7 +4,7 @@ services:
   redis:
     ports: ["127.0.0.1:${REDIS_PORT:-6379}:6379"]
   rabbitmq:
-    ports: ["127.0.0.1:${RABBITMQ_PORT:-5672}:5672"]
+    ports: ["127.0.0.1:${RABBITMQ_PUBLISHED_PORT:-5672}:5672"]
   qdrant:
     ports:
       - "127.0.0.1:${QDRANT_PORT:-6333}:6333"

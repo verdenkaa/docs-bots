@@ -8,3 +8,6 @@
 !rag/**
 **/__pycache__/
 **/*.pyc
+**/.env
+**/.env.*
+**/app.env

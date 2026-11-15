@@ -2,17 +2,17 @@
 
 from pathlib import Path
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from rag._configuration import ProjectSettings
 
 
-class _Settings(BaseSettings):
+class _Settings(ProjectSettings):
     model_config = SettingsConfigDict(
         env_prefix="MODEL_GATEWAY_",
         extra="ignore",
         allow_inf_nan=False,
         hide_input_in_errors=True,
-        env_file=".env",
-        env_file_encoding="utf-8",
+        env_file_encoding="utf-8-sig",
     )
     queue_size: int = Field(default=32, ge=0)
     startup_timeout_s: float = Field(default=120, gt=0)

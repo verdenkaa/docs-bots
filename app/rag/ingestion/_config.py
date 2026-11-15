@@ -3,10 +3,11 @@
 from functools import lru_cache
 
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from rag._configuration import ProjectSettings
 
 
-class ConverterSettings(BaseSettings):
+class ConverterSettings(ProjectSettings):
     """Переменные окружения RAG_CONVERTER_*; значения по умолчанию — для документов кейса."""
 
     model_config = SettingsConfigDict(
@@ -14,8 +15,7 @@ class ConverterSettings(BaseSettings):
         extra="ignore",
         allow_inf_nan=False,
         hide_input_in_errors=True,
-        env_file=".env",
-        env_file_encoding="utf-8",
+        env_file_encoding="utf-8-sig",
         protected_namespaces=("settings_",),
     )
 

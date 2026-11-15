@@ -7,10 +7,11 @@
 from functools import lru_cache
 
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from rag._configuration import ProjectSettings
 
 
-class GuardrailsSettings(BaseSettings):
+class GuardrailsSettings(ProjectSettings):
     """Переменные окружения RAG_GUARDRAILS_*."""
 
     model_config = SettingsConfigDict(
@@ -18,8 +19,7 @@ class GuardrailsSettings(BaseSettings):
         extra="ignore",
         allow_inf_nan=False,
         hide_input_in_errors=True,
-        env_file=".env",
-        env_file_encoding="utf-8",
+        env_file_encoding="utf-8-sig",
     )
 
     max_question_chars: int = Field(default=4000, gt=0)  # длиннее — invalid_input

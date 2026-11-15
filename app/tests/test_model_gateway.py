@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import redirect_stdout
 from io import StringIO
+from pathlib import Path
 import os
 import tempfile
 import unittest
@@ -94,6 +95,17 @@ class ModelGatewayTests(unittest.IsolatedAsyncioTestCase):
         await close_models()
         configure_coordination(None)
         unregister_provider(self.name)
+
+    async def test_file_credential_is_available_to_provider_only_during_lifecycle(self):
+        path = Path(self.temp.name) / 'models.env'
+        path.write_text('FIXTURE_MODEL_SECRET=private-test-value\n', encoding='utf-8')
+        with patch.dict(os.environ, {'RAG_ENV_FILE': str(path)}):
+            binding = self.binding('embedding', credential_env='FIXTURE_MODEL_SECRET')
+            self.assertNotIn('FIXTURE_MODEL_SECRET', os.environ)
+            await start_models({'embedding': binding})
+            self.assertEqual(os.environ['FIXTURE_MODEL_SECRET'], 'private-test-value')
+            await close_models()
+            self.assertNotIn('FIXTURE_MODEL_SECRET', os.environ)
 
     def binding(self, role, **updates):
         values = dict(

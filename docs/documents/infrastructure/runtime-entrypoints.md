@@ -82,7 +82,7 @@ python -m rag.runtime model-calls --limit 100
 история удалена. Начальная строка `corpus_state` добавляется миграцией как данные.
 Legacy-таблицы и поля переноса старых идентичностей больше не создаются.
 
-Работайте из `app/` с отдельной БД разработки и теми же настройками окружения/.env,
+Работайте из `app/` с отдельной БД разработки и теми же настройками окружения/корневого .env,
 что у Runtime. Сначала обновите её до head, затем измените модели и сгенерируйте ревизию:
 
 ~~~text
@@ -135,7 +135,7 @@ recovery восстанавливает все три маршрута, убир
 
 ## Окружение и проверки
 
-Адреса и секреты: PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, REDIS_URL, RABBITMQ_HOST/RABBITMQ_PORT/RABBITMQ_USER/RABBITMQ_PASSWORD, QDRANT_URL, RAG_QDRANT_API_KEY, S3_ENDPOINT_URL/S3_ACCESS_KEY/S3_SECRET_KEY/S3_REGION, TELEGRAM_BOT_TOKEN, ADMIN_LOGIN/ADMIN_PASSWORD. WORKER_SPOOL_DIR указывает постоянный рабочий том. Полный набор параметров и безопасные значения по умолчанию — в app/rag/runtime/_config.py. Настройки читаются при явном запуске из окружения и локального .env текущего каталога; явное окружение имеет приоритет. Реальные секреты не коммитятся.
+Адреса и секреты: PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, REDIS_URL, RABBITMQ_HOST/RABBITMQ_PORT/RABBITMQ_USER/RABBITMQ_PASSWORD, QDRANT_URL, RAG_QDRANT_API_KEY, S3_ENDPOINT_URL/S3_ACCESS_KEY/S3_SECRET_KEY/S3_REGION, TELEGRAM_BOT_TOKEN, ADMIN_LOGIN/ADMIN_PASSWORD. WORKER_SPOOL_DIR указывает постоянный рабочий том. Полный набор параметров и безопасные значения по умолчанию — в app/rag/runtime/_config.py. Настройки читаются при явном запуске из окружения и единого .env в корне репозитория (либо файла RAG_ENV_FILE); явное окружение имеет приоритет. Реальные секреты не коммитятся.
 
 prepare_telegram_photo использует отдельный завершаемый процесс с Pillow 13.0.0: EXIF-ориентация, белый фон для прозрачности, RGB/JPEG, поля без обрезания, уменьшение размеров и подбор качества. S3-оригинал не меняется. Анимация даёт первый кадр. RAG_PHOTO_MAX_PIXELS (по умолчанию 25 миллионов) ограничивает декодирование, RAG_PHOTO_MEMORY_BYTES (512 MiB) задаёт жёсткий лимит адресного пространства Linux-исполнителя, RAG_PHOTO_TIMEOUT_S (15 секунд) дополнительно ограничен остатком DeliveryAttempt. На процесс Runtime одновременно выполняется одно преобразование; отмена/таймаут останавливает и дожидается исполнителя. На Windows доступны пиксельный лимит, последовательность и остановка процесса; жёсткий лимит памяти применяется в рабочем Linux-контейнере.
 

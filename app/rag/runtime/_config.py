@@ -5,19 +5,19 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from rag._configuration import ProjectSettings
 from sqlalchemy import URL
 
 
-class RuntimeSettings(BaseSettings):
+class RuntimeSettings(ProjectSettings):
     model_config = SettingsConfigDict(
         env_prefix="RAG_",
         extra="ignore",
         allow_inf_nan=False,
         populate_by_name=True,
         hide_input_in_errors=True,
-        env_file=".env",
-        env_file_encoding="utf-8",
+        env_file_encoding="utf-8-sig",
     )
 
     pg_host: str = Field(default="localhost", validation_alias="PGHOST")

@@ -2,14 +2,15 @@
 import re
 from urllib.parse import urlsplit
 from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from rag._configuration import ProjectSettings
 from rag.runtime._config import RuntimeSettings
 
 WEBHOOK_PATH = "/telegram/webhook"
 
 
-class _WebhookSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file='.env', extra='ignore', hide_input_in_errors=True)
+class _WebhookSettings(ProjectSettings):
+    model_config = SettingsConfigDict(extra='ignore', hide_input_in_errors=True)
     secret: SecretStr = Field(default=SecretStr(''), validation_alias='TELEGRAM_WEBHOOK_SECRET')
     public_url: str = Field(default='', validation_alias='TELEGRAM_WEBHOOK_URL')
 

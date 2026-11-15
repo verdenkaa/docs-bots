@@ -1,8 +1,9 @@
 """Core policy loaded at call time; no services at import."""
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from rag._configuration import ProjectSettings
 
-class _Settings(BaseSettings):
+class _Settings(ProjectSettings):
     model_config = SettingsConfigDict(env_prefix="RAG_CORE_", extra="ignore", allow_inf_nan=False)
     cache_timeout_s: float = Field(default=0.25, gt=0)
     generation_timeout_s: float = Field(default=60, gt=0)

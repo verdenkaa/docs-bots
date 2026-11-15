@@ -49,10 +49,10 @@ sh manage.sh
 
 ### Где задаются пароли
 
-Для каждого стенда используется свой `container-manager/.env`. В нём задаются `POSTGRES_PASSWORD`, `RABBITMQ_PASSWORD`, `GRAFANA_PASSWORD` и `S3_SECRET_KEY`. Compose берёт из этого файла учётные данные для инфраструктуры и передаёт соответствующие пароли `core` и `worker`.
+Для каждого стенда используется свой `.env` в корне репозитория. В нём задаются `PGPASSWORD`, `RABBITMQ_PASSWORD`, `GRAFANA_PASSWORD` и `S3_SECRET_KEY`. Compose берёт из этого файла учётные данные для инфраструктуры и передаёт соответствующие пароли `core` и `worker`.
 
 - **Локально.** Если `.env` уже есть, менеджер использует его как есть. Если файла и томов ещё нет, менеджер создаёт `.env` один раз. На новом локальном стенде можно заранее задать свои значения по `.env.example`.
-- **На сервере.** До первого запуска положите на сервер его собственный `container-manager/.env` с отдельными секретами. Сохраните файл в защищённом хранилище вместе с настройками стенда. `.env` исключён из Git.
+- **На сервере.** До первого запуска положите на сервер его собственный `.env` в корне репозитория с отдельными секретами. Сохраните файл в защищённом хранилище вместе с настройками стенда. `.env` исключён из Git.
 
 Пароли сохраняются между запусками. Если файл потерян, а тома уже есть, восстановите исходный `.env`. Для смены пароля в работающем PostgreSQL сначала обновите его у роли в самой базе, затем синхронизируйте `.env` и настройки подключений.
 
@@ -82,7 +82,7 @@ RabbitMQ считается готовым, когда принимает TCP-с
 ssh -N -L 9000:127.0.0.1:9000 -L 9001:127.0.0.1:9001 user@SERVER
 ```
 
-После этого консоль доступна по локальному адресу 9001. Для снятия опубликованных портов S3 пересоздайте `s3` с базовой конфигурацией и прежним `.env`: `docker compose -p rag-hackathon -f compose.yaml up -d --no-deps --force-recreate s3` из `container-manager/`. Том сохранится. Одиночный контейнер не обеспечивает репликацию; включите `s3_data` в резервное копирование постоянных данных. [Контейнер RustFS](https://docs.rustfs.com/en/installation/container/docker).
+После этого консоль доступна по локальному адресу 9001. Для снятия опубликованных портов S3 пересоздайте `s3` с базовой конфигурацией и прежним `.env`: `docker compose --env-file ../.env -p rag-hackathon -f compose.yaml up -d --no-deps --force-recreate s3` из `container-manager/`. Том сохранится. Одиночный контейнер не обеспечивает репликацию; включите `s3_data` в резервное копирование постоянных данных. [Контейнер RustFS](https://docs.rustfs.com/en/installation/container/docker).
 
 ### Как посмотреть память в Podman
 
@@ -102,7 +102,7 @@ podman top rag-hackathon-rabbitmq-1 -eo pid,rss,comm
 
 Core слушает `0.0.0.0:8000` и отвечает на `/health/ready`. Worker пишет временные загрузки в `WORKER_SPOOL_DIR`. Его образ должен давать процессу право записи в этот каталог и включать healthcheck. Общие настройки приложения можно передать через `app.env`. У каркаса в Grafana Explore стартовые события можно найти запросом `{service=~"core|worker"} | json | operation="bootstrap" | mode="scaffold"`.
 
-Для Telegram впишите выданный `@BotFather` токен в `TELEGRAM_BOT_TOKEN` в файле `container-manager/.env`. Compose передаёт эту переменную контейнеру `core`, где её читает RAG API. Менеджер генерирует пароли инфраструктуры, а токен добавляется вручную. Для запуска `up infra` токен не нужен. Если `core` уже создан, после правки токена выполните `update local`, чтобы Compose применил новые настройки. [Инструкция Telegram](https://core.telegram.org/bots/tutorial#obtain-your-bot-token)
+Для Telegram впишите выданный `@BotFather` токен в `TELEGRAM_BOT_TOKEN` в файле корневом `.env`. Compose передаёт эту переменную контейнеру `core`, где её читает RAG API. Менеджер генерирует пароли инфраструктуры, а токен добавляется вручную. Для запуска `up infra` токен не нужен. Если `core` уже создан, после правки токена выполните `update local`, чтобы Compose применил новые настройки. [Инструкция Telegram](https://core.telegram.org/bots/tutorial#obtain-your-bot-token)
 
 После изменения кода каркаса выполните `update local`, чтобы пересобрать его. Для своих образов `update local` применяет уже собранные локальные теги, а `update registry` загружает указанные образы из реестра. Менеджер обновляет `core` и `worker` и проверяет их состояние. Для продового стенда сначала сверяйтесь с [порядком обновления и миграций](./production-update.md). Не запускайте CI/CD и менеджер одновременно для одного Compose-проекта.
 
@@ -167,7 +167,7 @@ ssh -N -L 3300:127.0.0.1:3300 -L 8089:127.0.0.1:8089 user@SERVER
 Из `container-manager/` используйте то же имя проекта и те же профили. Для локального режима добавьте `-f compose.local.yaml` сразу после базового файла. Для Podman замените `docker compose` на `podman compose`.
 
 ```bash
-c() { docker compose -p rag-hackathon -f compose.yaml --profile '*' "$@"; }
+c() { docker compose --env-file ../.env -p rag-hackathon -f compose.yaml --profile '*' "$@"; }
 c config -q
 c up -d --no-recreate postgres redis rabbitmq qdrant s3
 c up -d --no-recreate core worker

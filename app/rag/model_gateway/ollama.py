@@ -30,6 +30,7 @@ class _Options(ProjectSettings):
     keep_alive: str = "0"
     text_context_length: int = Field(default=2048, ge=2048, le=32768)
     vision_context_length: int = Field(default=2048, ge=2048, le=32768)
+    vision_max_output_tokens: int = Field(default=512, ge=1, le=4096)
     generation_json: bool = False
 
 
@@ -154,6 +155,7 @@ class _OllamaAdapter(ModelAdapter):
         options = _Options()
         self.keep_alive = _keep_alive(options.keep_alive)
         self.generation_json = options.generation_json and self.role == "generation"
+        self.vision_max_output_tokens = options.vision_max_output_tokens
         self.context_length = (options.vision_context_length if self.role in ("ocr", "vision")
                                else options.text_context_length)
         headers = {}
@@ -371,7 +373,8 @@ class _OllamaAdapter(ModelAdapter):
                     content=prompt,
                     images=[base64.b64encode(payload["image"]["data"]).decode("ascii")],
                 )
-                result = await self._chat([message], 512, 0, None, timeout_s)
+                tokens = self.vision_max_output_tokens if self.role == "vision" else 512
+                result = await self._chat([message], tokens, 0, None, timeout_s)
                 if result["finish_reason"] != "completed":
                     _invalid()
                 return dict(

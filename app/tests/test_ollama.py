@@ -37,6 +37,7 @@ class OllamaTests(unittest.IsolatedAsyncioTestCase):
                 "OLLAMA_GATEWAY_KEEP_ALIVE": "0",
                 "OLLAMA_GATEWAY_TEXT_CONTEXT_LENGTH": "2048",
                 "OLLAMA_GATEWAY_VISION_CONTEXT_LENGTH": "2048",
+                "OLLAMA_GATEWAY_VISION_MAX_OUTPUT_TOKENS": "512",
                 "OLLAMA_GATEWAY_GENERATION_JSON": "false",
             },
         )
@@ -313,6 +314,29 @@ class OllamaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await recognize_text(image, timeout_s=1)).text, "")
         with self.assertRaisesRegex(StepError, "model_invalid_response"):
             await describe_image(image, timeout_s=1)
+
+    async def test_vision_output_budget_does_not_change_ocr_or_accept_truncation(self):
+        with patch.dict(os.environ, {"OLLAMA_GATEWAY_VISION_CONTEXT_LENGTH": "8192",
+                                     "OLLAMA_GATEWAY_VISION_MAX_OUTPUT_TOKENS": "2048"}):
+            await self.start("ocr", "vision")
+        image = ImageContent(data=b"fixture", mime_type="image/png")
+        await describe_image(image, timeout_s=1)
+        await recognize_text(image, timeout_s=1)
+        chats = [body for _, path, body in self.requests if path == "/api/chat"]
+        self.assertEqual([body["options"]["num_predict"] for body in chats], [2048, 512])
+        self.override = lambda request, body: (
+            httpx.Response(200, json=dict(model=body["model"], done=True, done_reason="length",
+                message=dict(role="assistant", content="unfinished description")))
+            if request.url.path == "/api/chat" else None
+        )
+        with self.assertRaisesRegex(StepError, "model_invalid_response"):
+            await describe_image(ImageContent(data=b"different", mime_type="image/png"), timeout_s=1)
+
+    async def test_vision_output_budget_must_fit_context_before_inference(self):
+        with patch.dict(os.environ, {"OLLAMA_GATEWAY_VISION_MAX_OUTPUT_TOKENS": "2048"}):
+            with self.assertRaisesRegex(StepError, "model_invalid_input"):
+                await self.start("vision")
+        self.assertFalse(any(path == "/api/chat" for _, path, _ in self.requests))
 
     async def test_explicit_text_context_controls_admission_and_server_limit(self):
         with patch.dict(os.environ, {"OLLAMA_GATEWAY_TEXT_CONTEXT_LENGTH": "4096"}):

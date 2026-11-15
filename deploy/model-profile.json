@@ -15,7 +15,8 @@
     "provider": "ollama",
     "model_id": "qwen3-vl:8b-instruct-q8_0",
     "model_revision": "sha256:cc61569a61859d58022573b405f576b7efa9c50442ccc8acce62e9ec781fde0f",
-    "profile_id": "qwen3vl-8b-instruct-q8-8k-v1-cc61569a6185"
+    "profile_id": "qwen3vl-8b-instruct-q8-8k-output2k-v2-cc61569a6185",
+    "max_output_tokens": 2048
   },
   "reranker": {
     "provider": "native_cpu",

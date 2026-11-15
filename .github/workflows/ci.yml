@@ -112,8 +112,8 @@ jobs:
       - name: Exercise CPU model SDKs without pretrained weights or network
         run: >-
           docker run --rm --network none --entrypoint python
-          -v "$PWD/deploy/tests/check_native_image.py:/check_native_image.py:ro" rag-native-check
-          /check_native_image.py
+          -v "$PWD/deploy/tests/check_native_image.py:/opt/native/check_native_image.py:ro" rag-native-check
+          /opt/native/check_native_image.py
       - name: Build existing Horizon detector runtime without downloading weights
         run: docker build -t rag-detector-check -f deploy/detector/Dockerfile .
       - name: Check ONNX detector SDK imports

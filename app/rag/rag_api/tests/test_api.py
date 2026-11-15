@@ -440,13 +440,17 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_limiter_has_distinct_bot_and_chat_pacing(self):
         limiter = TelegramLimiter(bot_interval=0.01, chat_interval=0.1)
-        with patch('rag.rag_api.delivery.limiter.monotonic', return_value=10.0), \
-             patch('rag.rag_api.delivery.limiter.asyncio.sleep', AsyncMock()) as sleep:
+        now = 10.0
+        async def advance(seconds):
+            nonlocal now
+            now += seconds
+        with patch('rag.rag_api.delivery.limiter.monotonic', side_effect=lambda: now), \
+             patch('rag.rag_api.delivery.limiter.asyncio.sleep', AsyncMock(side_effect=advance)) as sleep:
             await limiter.wait(1)
             await limiter.wait(2)
             self.assertAlmostEqual(sleep.await_args.args[0], 0.01)
             await limiter.wait(1)
-            self.assertAlmostEqual(sleep.await_args.args[0], 0.1)
+            self.assertAlmostEqual(sleep.await_args.args[0], 0.09)
 
 
 class DeliveryTests(unittest.IsolatedAsyncioTestCase):

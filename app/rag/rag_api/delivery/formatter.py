@@ -1,6 +1,7 @@
 """A conservative Markdown subset translated into visible text and entities."""
 import re
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from rag.rag_api.config import trusted_base_url
 from rag.rag_api.contracts import ClaimedDelivery, DeliveryPart, ImagePart, InlineAction, TelegramEntity, TextPart
@@ -33,14 +34,66 @@ def safe_link(url: str) -> bool:
             and not any(c.isspace() or ord(c) < 32 for c in url))
 
 
+def _compatible_entities(entities):
+    """Prefer links over code, and code over overlapping styles."""
+    def overlaps(left, right):
+        return (left.offset < right.offset + right.length
+                and right.offset < left.offset + left.length)
+
+    links = [e for e in entities if e.type == 'text_link']
+    code = [e for e in entities if e.type in ('code', 'pre')
+            and not any(overlaps(e, link) for link in links)]
+    result = [*links, *code]
+    for entity in entities:
+        if entity.type not in ('bold', 'italic'):
+            continue
+        # Retain styling on either side of code, without styling code itself.
+        ranges = [(entity.offset, entity.offset + entity.length)]
+        for block in code:
+            start, end = block.offset, block.offset + block.length
+            ranges = [(a, b) for left, right in ranges
+                      for a, b in ((left, min(right, start)), (max(left, end), right))
+                      if a < b]
+        result.extend(entity.model_copy(update={'offset': start, 'length': end - start})
+                      for start, end in ranges)
+    return sorted(result, key=lambda e: (e.offset, -e.length))
+
+
+def _closing_marker(source, marker, start):
+    """Find an unescaped closing delimiter; underscores cannot split words."""
+    end = start
+    while end < len(source):
+        if source[end] == '\\' and end + 1 < len(source):
+            end += 2
+            continue
+        if source[end] == '`':
+            ticks = re.match(r'`+', source[end:])[0]
+            closing = source.find(ticks, end + len(ticks))
+            if closing >= 0:
+                end = closing + len(ticks)
+                continue
+        if not source.startswith(marker, end):
+            end += 1
+            continue
+        after = end + len(marker)
+        intraword = (marker[0] == '_' and end > 0 and after < len(source)
+                     and source[end - 1].isalnum() and source[after].isalnum())
+        # A longer run is ambiguous here; keep it literal unless the triple
+        # delimiter is handled explicitly by the caller.
+        longer = ((after < len(source) and source[after] == marker[0])
+                  or (end > 0 and source[end - 1] == marker[0]))
+        if not intraword and not longer:
+            return end
+        end += len(marker)
+    return -1
+
+
 def markdown(text: str) -> tuple[str, list[TelegramEntity]]:
     """Render supported spans recursively; unsupported constructs stay literal.
 
     Raw HTML is plain text. Code never contains nested entities. Links with
     credentials or non-HTTP schemes are rendered as labels only.
     """
-    text = re.sub(r'(?m)^ {0,3}#{1,6}\s+', '', text)
-
     def render(source, depth=0):
         output, entities = [], []
         position, index = 0, 0
@@ -51,7 +104,15 @@ def markdown(text: str) -> tuple[str, list[TelegramEntity]]:
             position += units(value)
 
         while index < len(source):
-            if source[index] == '\\' and index + 1 < len(source):
+            # Code is consumed as one span below, so headings inside it never
+            # reach this branch. Only strip heading markers in ordinary text.
+            if depth == 0 and (index == 0 or source[index - 1] == '\n'):
+                heading = re.match(r' {0,3}#{1,6}[ \t]+', source[index:])
+                if heading:
+                    index += len(heading[0])
+                    continue
+            if (source[index] == '\\' and index + 1 < len(source)
+                    and source[index + 1] in r'!"#$%&\'()*+,-./:;<=>?@[\]^_`{|}~\\'):
                 append(source[index + 1])
                 index += 2
                 continue
@@ -68,11 +129,18 @@ def markdown(text: str) -> tuple[str, list[TelegramEntity]]:
                     index += len(match[0])
                     continue
             handled = False
-            for marker, kind in [('```', 'pre'), ('`', 'code'), ('**', 'bold'),
+            for marker, kind in [('```', 'pre'), ('`', 'code'), ('***', 'bold'),
+                                 ('___', 'bold'), ('**', 'bold'),
                                  ('__', 'bold'), ('*', 'italic'), ('_', 'italic')]:
                 if depth >= 16 or not source.startswith(marker, index):
                     continue
-                end = source.find(marker, index + len(marker))
+                if marker[0] == '_' and index > 0 and source[index - 1].isalnum():
+                    continue
+                if (marker[0] in '*_' and index + len(marker) < len(source)
+                        and source[index + len(marker)] == marker[0]):
+                    continue
+                end = (source.find(marker, index + len(marker)) if kind in ('code', 'pre')
+                       else _closing_marker(source, marker, index + len(marker)))
                 if end <= index + len(marker):
                     continue
                 inner = source[index + len(marker):end]
@@ -83,16 +151,22 @@ def markdown(text: str) -> tuple[str, list[TelegramEntity]]:
                 append(visible)
                 if visible:
                     entities.append(TelegramEntity(type=kind, offset=start, length=units(visible)))
+                    if marker in ('***', '___'):
+                        entities.append(TelegramEntity(type='italic', offset=start, length=units(visible)))
                     entities.extend(e.model_copy(update={'offset': e.offset + start}) for e in nested)
                 index = end + len(marker)
                 handled = True
                 break
             if not handled:
-                append(source[index])
-                index += 1
+                # Do not reinterpret the tail of an unsupported delimiter run.
+                literal = (re.match(r'([*_`])\1*', source[index:])[0]
+                           if source[index] in '*_`' else source[index])
+                append(literal)
+                index += len(literal)
         return ''.join(output), sorted(entities, key=lambda e: (e.offset, -e.length))
 
-    return render(text)
+    visible, entities = render(text)
+    return visible, _compatible_entities(entities)
 
 
 def button(text, data):
@@ -109,15 +183,15 @@ def _build(delivery: ClaimedDelivery, source_base_url: str) -> list[DeliveryPart
     actions, images, entities = [], [], []
     if purpose in ('answer', 'notice'):
         result = delivery.content
-        allowed = {str(image.image_id): image for image in result.images}
+        allowed = {image.image_id: image for image in result.images}
 
         def replace_image(match):
-            image = allowed.get(match[1].lower())
+            image = allowed.get(UUID(match[1]))
             if image is None:
                 raise ValueError('unknown_image')
             # Escape description so a saved image description cannot introduce
             # extra Markdown entities or image URLs.
-            return re.sub(r'([\\`*_\[\]])', r'\\\1', image.description)
+            return re.sub(r'([\\`*_\[\]#])', r'\\\1', image.description)
 
         raw = re.sub(r'!\[(?:\\.|[^\]\\])*\]\(image://([^)]+)\)', replace_image, result.answer_text)
         if 'image://' in raw:
@@ -173,5 +247,7 @@ def _build(delivery: ClaimedDelivery, source_base_url: str) -> list[DeliveryPart
             'denied': 'Доступ к боту не предоставлен. Обратитесь к администратору.',
             'first_question': 'Сначала задайте вопрос и дождитесь ответа бота.',
         }[purpose]
-    return [TextPart(kind='text', text=text or 'Ответ не содержит текста.', variant=variant,
+    if not text.strip():
+        text, entities = 'Ответ не содержит текста.', []
+    return [TextPart(kind='text', text=text, variant=variant,
                      entities=entities, actions=actions), *images]

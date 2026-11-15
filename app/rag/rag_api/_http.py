@@ -6,7 +6,11 @@ from rag.rag_api.contracts import TicketMessageInput
 
 
 async def _json_body(request):
-    maximum = 32 * 1024
+    return await _bounded_body(request, 32 * 1024)
+
+
+async def _bounded_body(request, maximum):
+    """Bound both declared and streamed bytes before decoding untrusted JSON."""
     length = request.headers.get('content-length')
     if length is not None:
         if not length.isascii() or not length.isdecimal():

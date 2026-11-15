@@ -24,6 +24,11 @@ from rag.runtime.runner import _bindings, run_runtime
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
 
 
+async def _placeholder_handler(*args, **kwargs):
+    """Explicit fixture, independent of which business handlers are implemented."""
+    raise NotImplementedError
+
+
 class RuntimeFaultTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.state = _state._Resources(RuntimeSettings(telegram_bot_token="test-token"))
@@ -76,10 +81,20 @@ class RuntimeFaultTests(unittest.IsolatedAsyncioTestCase):
             _state._get()
 
     async def test_roles_refuse_placeholder_handlers_before_resources(self):
-        with patch("rag.runtime.runner.start_runtime", new=AsyncMock()) as start:
-            with self.assertRaisesRegex(StepError, "business_handler_not_implemented"):
-                await run_runtime("questions")
-            start.assert_not_awaited()
+        for component, target in (
+            ("questions", "rag.rag_core.entrypoints.handle_rag_question"),
+            ("questions", "rag.guardrails.entrypoints.check_question"),
+            ("questions", "rag.searcher.entrypoints.search"),
+            ("results", "rag.rag_api.entrypoints.handle_rag_result"),
+            ("maintenance", "rag.rag_api.entrypoints.run_api_maintenance"),
+            ("ingestion", "rag.ingestion.worker.handle_ingestion_job"),
+        ):
+            with self.subTest(component=component, target=target), \
+                    patch(target, new=_placeholder_handler), \
+                    patch("rag.runtime.runner.start_runtime", new=AsyncMock()) as start:
+                with self.assertRaisesRegex(StepError, "business_handler_not_implemented"):
+                    await run_runtime(component)
+                start.assert_not_awaited()
 
     def test_bindings_require_roles_and_profile_and_do_not_load_unused_roles(self):
         self.assertEqual(_bindings("relay", self.state.settings), {})

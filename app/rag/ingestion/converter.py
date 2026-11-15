@@ -11,10 +11,9 @@ import asyncio
 import hashlib
 import re
 import secrets
-import time
 import zipfile
 from io import BytesIO
-from uuid import UUID, uuid4, uuid5
+from uuid import UUID, uuid5
 
 from pydantic import ValidationError
 
@@ -22,7 +21,7 @@ from rag.contracts import ImageContent, ImageRef, StepError
 from rag.ingestion._config import ConverterSettings, converter_settings
 from rag.ingestion.contracts import ConversionResult, ConvertedImage, UploadInput
 from rag.model_gateway import entrypoints as model_gateway
-from rag.runtime.events import emit_event
+from rag.runtime.events import _operation_trace, _span, emit_event
 
 _markdown_suffixes = (".md", ".markdown")
 
@@ -43,34 +42,36 @@ async def convert_document(upload: UploadInput, revision_id: UUID) -> Conversion
         settings = converter_settings()
     except ValidationError:
         raise StepError("ingestion_configuration_error", False) from None
-    started = time.monotonic()
-    log: dict[str, object] = {"job_id": str(revision_id), "outcome": "failed"}
-    try:
-        async with asyncio.timeout(settings.total_timeout_s):
-            data = await _read_upload(upload, settings.max_upload_bytes)
-            kind = log["format"] = _detect_format(data, upload.source.filename)
-            markdown, marker, images = await _parse(kind, data, settings, log)
-            del data
-            result = await _assemble(markdown, marker, images, revision_id, settings)
-            if len(result.markdown.encode("utf-8")) > settings.max_markdown_bytes:
-                raise StepError("too_large", False)
-        log.update(outcome="converted", images=len(result.images))
-        return result
-    except TimeoutError:
-        log["error_code"] = "converter_unavailable"
-        raise StepError("converter_unavailable", True) from None
-    except StepError as error:
-        log["error_code"] = error.code
-        raise
-    except asyncio.CancelledError:
-        log["outcome"] = "cancelled"
-        raise
-    except Exception:
-        log["error_code"] = "conversion_failed"
-        raise StepError("conversion_failed", False) from None
-    finally:
-        emit_event("ingestion_gateway", "convert_document", "finished", uuid4().hex,
-                   duration_ms=round((time.monotonic() - started) * 1000), **log)
+    # convert_document → parse original in a managed process, then enrich images.
+    with _operation_trace("ingestion_gateway", "convert_document", emit=emit_event,
+                          job_id=str(revision_id), revision_id=str(revision_id)) as log:
+        try:
+            async with asyncio.timeout(settings.total_timeout_s):
+                with _span("read_upload"):
+                    data = await _read_upload(upload, settings.max_upload_bytes)
+                kind = log["format"] = _detect_format(data, upload.source.filename)
+                # parse_document → CPU work is isolated; timeout/cancellation stops the process.
+                with _span("parse_document"):
+                    markdown, marker, images = await _parse(kind, data, settings, log)
+                del data
+                with _span("assemble_document"):
+                    result = await _assemble(markdown, marker, images, revision_id, settings)
+                if len(result.markdown.encode("utf-8")) > settings.max_markdown_bytes:
+                    raise StepError("too_large", False)
+            log.update(outcome="converted", images=len(result.images))
+            return result
+        except TimeoutError:
+            log["error_code"] = "converter_unavailable"
+            raise StepError("converter_unavailable", True) from None
+        except StepError as error:
+            log["error_code"] = error.code
+            raise
+        except asyncio.CancelledError:
+            log["outcome"] = "cancelled"
+            raise
+        except Exception:
+            log["error_code"] = "conversion_failed"
+            raise StepError("conversion_failed", False) from None
 
 
 async def _read_upload(upload: UploadInput, maximum: int) -> bytes:
@@ -161,10 +162,13 @@ async def _describe_images(images: list[bytes], settings: ConverterSettings) -> 
     async def describe(data: bytes) -> str:
         image = ImageContent(data=data, mime_type="image/png")
         async with limit:
-            described = await model_gateway.describe_image(image, timeout_s=settings.describe_timeout_s)
-            recognized = await model_gateway.recognize_text(image, timeout_s=settings.ocr_timeout_s)
-        described = _validated(ImageDescription, described, "model_invalid_response")
-        recognized = _validated(OcrResult, recognized, "model_invalid_response")
+            # Each model's own _span is nested below its business step automatically.
+            with _span("describe_image"):
+                described = await model_gateway.describe_image(image, timeout_s=settings.describe_timeout_s)
+                described = _validated(ImageDescription, described, "model_invalid_response")
+            with _span("recognize_text"):
+                recognized = await model_gateway.recognize_text(image, timeout_s=settings.ocr_timeout_s)
+                recognized = _validated(OcrResult, recognized, "model_invalid_response")
         text = " ".join(described.description.split())
         if recognized.text.strip():
             text = f"{text.rstrip('.')}. Текст на изображении: {' '.join(recognized.text.split())}"

@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Literal
+from uuid import uuid4
 
 _context = ContextVar("rag_event_context", default={})
 _trace = ContextVar("rag_trace", default=None)
@@ -89,6 +90,35 @@ def _event_context(**fields):
         yield
     finally:
         _context.reset(token)
+
+
+@contextmanager
+def _operation_trace(component, operation, *, emit=None, **identifiers):
+    """Own one attempt's context and JSON lifecycle; callers supply business outcomes.
+
+    An optional sink lets tests inspect events without replacing the trace mechanism.
+    Each operation owns a separate tree; model calls attach to its current step.
+    """
+    sink = emit or emit_event
+    run_id, started, started_at = str(uuid4()), monotonic(), _utc_now()
+    steps, result = [], {"outcome": "completed"}
+    # Every attempt gets its own context; inherited broker correlation is preserved.
+    with _event_context(**{**_context.get(), **identifiers}), _trace_context(started, steps):
+        sink(component, operation, "started", run_id,
+             **{**_context.get(), "started_at": started_at})
+        try:
+            yield result
+        except BaseException as exc:
+            cancelled = isinstance(exc, asyncio.CancelledError)
+            result.update(outcome="cancelled" if cancelled else "failed",
+                          error_code="cancelled" if cancelled else getattr(exc, "code", type(exc).__name__))
+            raise
+        finally:
+            sink(component, operation, "finished", run_id, **{
+                **_context.get(), **result, "started_at": started_at,
+                "finished_at": _utc_now(), "duration_ms": round((monotonic() - started) * 1000, 3),
+                "steps": steps,
+            })
 
 
 def emit_event(

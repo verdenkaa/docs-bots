@@ -12,7 +12,8 @@ class _Dependencies:
     """Importing adapters does not create clients or start services.
 
     Tests replace these module-shaped ports on an instance. The production
-    bindings deliberately call the existing adapters, including their stubs.
+    bindings call existing Runtime/Model Gateway operations; event emission is
+    supplied to Runtime tracing as a sink, not as a separate trace implementation.
     """
 
     def __init__(self) -> None:

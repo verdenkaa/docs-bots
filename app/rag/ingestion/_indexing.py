@@ -7,10 +7,11 @@ from datetime import timedelta
 
 from rag.contracts import ConsumeDecision, StepError, StorageError
 from rag.dto import PositiveId
+from rag.runtime.events import _span, _operation_trace, _context
 from rag.ingestion._batch import _BatchChecks
 from rag.ingestion._dependencies import _Dependencies
 from rag.ingestion._execution import (
-    _AttemptExpired, _Boundary, _Budget, _DatabaseUnknown, _LostAttempt, _Trace,
+    _AttemptExpired, _Boundary, _Budget, _DatabaseUnknown, _LostAttempt,
 )
 from rag.ingestion._maintenance import _Maintenance
 from rag.ingestion._preparation import _Preparation
@@ -26,27 +27,31 @@ class _Indexer:
         self.deps = deps
         self.job: ClaimedIngestionJob | None = None
         self.writing_started = False
-        self.trace: _Trace
+        self.log: dict
         self.budget: _Budget
 
     async def _db(self, name, function, annotation, *args):
-        try:
-            raw = await self.trace.call(name, self.budget, self.settings.step_timeout_s,
-                                        function, *args)
-        except (StorageError, TimeoutError):
-            raise _DatabaseUnknown from None
-        try:
-            return _Boundary.validate(raw, annotation, "database_invalid_response")
-        except StepError:
-            raise _DatabaseUnknown from None
+        # DB: an unconfirmed commit is retried by the broker, never treated as absence.
+        with _span(name):
+            try:
+                async with asyncio.timeout(self.budget.remaining(self.settings.step_timeout_s)):
+                    raw = await function(*args)
+                return _Boundary.validate(raw, annotation, "database_invalid_response")
+            except (StorageError, TimeoutError):
+                raise _DatabaseUnknown from None
+            except StepError as error:
+                if error.code == "database_invalid_response":
+                    raise _DatabaseUnknown from None
+                raise
 
     async def _spool(self, name, function, annotation, *args):
-        try:
-            raw = await self.trace.call(name, self.budget, self.settings.step_timeout_s,
-                                        function, *args)
-        except (StorageError, TimeoutError):
-            raise StepError("staging_unavailable", True) from None
-        return _Boundary.validate(raw, annotation, "staging_invalid_data")
+        with _span(name):
+            try:
+                async with asyncio.timeout(self.budget.remaining(self.settings.step_timeout_s)):
+                    raw = await function(*args)
+                return _Boundary.validate(raw, annotation, "staging_invalid_data")
+            except (StorageError, TimeoutError):
+                raise StepError("staging_unavailable", True) from None
 
     async def _reserve(self, batch: DocumentBatch) -> ReservedRevision:
         job = self.job
@@ -66,7 +71,7 @@ class _Indexer:
         if revision is None:
             raise _LostAttempt
         _BatchChecks.check_reservation(job, revision, base)
-        self.trace.fields["document_version"] = revision.document_version
+        self.log["document_version"] = revision.document_version
         return revision
 
     def _check_snapshot(self, prepared: PreparedRevision, batch: DocumentBatch,
@@ -91,14 +96,14 @@ class _Indexer:
             return prepared
         if job.expected_chunk_count is not None:
             raise StepError("prepared_revision_missing", False)
-        prepared = await _Preparation(self.settings, self.deps, self.trace, self.budget).build(batch, revision)
+        prepared = await _Preparation(self.settings, self.deps, self.budget).build(batch, revision)
         self._check_snapshot(prepared, batch, revision)
         try:
-            raw = await self.trace.call(
-                "store_prepared_revision", self.budget, self.settings.step_timeout_s,
-                self.deps.spool.store_prepared_revision, job.staging_ref, prepared,
-            )
-            _Boundary.validate(raw, type(None), "staging_invalid_data")
+            # store_prepared_revision → сохранить неизменяемый снимок до первой записи Qdrant.
+            with _span("store_prepared_revision"):
+                async with asyncio.timeout(self.budget.remaining(self.settings.step_timeout_s)):
+                    raw = await self.deps.spool.store_prepared_revision(job.staging_ref, prepared)
+                _Boundary.validate(raw, type(None), "staging_invalid_data")
         except (StorageError, TimeoutError):
             restored = await self._spool(
                 "confirm_prepared_revision", self.deps.spool.load_prepared_revision,
@@ -113,14 +118,16 @@ class _Indexer:
         return prepared
 
     async def _index(self, name, function, annotation, *args):
-        try:
-            raw = await self.trace.call(name, self.budget, self.settings.index_timeout_s,
-                                        function, *args)
-        except TimeoutError:
-            raise StepError("index_timeout", True) from None
-        return _Boundary.validate(raw, annotation, "index_invalid_response")
+        with _span(name):
+            try:
+                async with asyncio.timeout(self.budget.remaining(self.settings.index_timeout_s)):
+                    raw = await function(*args)
+                return _Boundary.validate(raw, annotation, "index_invalid_response")
+            except TimeoutError:
+                raise StepError("index_timeout", True) from None
 
     async def _run(self, event: JobRef) -> str:
+        # ├── claim_ingestion_job → получить попытку; None означает отсутствие доступной работы.
         self.job = await self._db("claim_ingestion_job", self.deps.jobs.claim_ingestion_job,
                                   ClaimedIngestionJob | None, event.job_id)
         job = self.job
@@ -131,36 +138,45 @@ class _Indexer:
             self.job = None
             raise _DatabaseUnknown
         self.budget = _Budget.from_deadline(job.attempt.deadline_at, self.deps)
-        self.trace.fields.update(attempt_no=job.attempt.attempt_no, document_id=str(job.document_id))
+        self.log.update(attempt_no=job.attempt.attempt_no, document_id=str(job.document_id))
+        _context.get().update(attempt_no=job.attempt.attempt_no, document_id=str(job.document_id))
         if job.attempt.attempt_no > self.settings.max_attempts:
             raise StepError("ingestion_attempts_exhausted", False)
+        # ├── load_document_batch → прочитать всю принятую партию без повторного разбиения.
         batch = await self._spool("load_document_batch", self.deps.spool.load_document_batch,
                                    DocumentBatch | None, job.staging_ref)
         if batch is None:
             raise StepError("document_batch_missing", False)
         _BatchChecks.check_limits(batch, self.settings.max_chunks, self.settings.max_document_characters)
+        # ├── reserve_document_version → закрепить версию 0/следующую; повтор не меняет номер.
         revision = await self._reserve(batch)
+        # ├── PreparedRevision → восстановить снимок или подготовить оба набора векторов.
         prepared = await self._prepare(batch, revision)
+        # ├── begin_revision_write → после этой границы неизвестная запись требует сверки.
         allowed = await self._db("begin_revision_write", self.deps.jobs.begin_revision_write,
                                  bool, job.attempt, len(prepared.points), len(prepared.topic_points))
         if not allowed:
             raise _LostAttempt
         self.writing_started = True
+        # ├── write_revision_points → записать чанки документа.
         await self._index("write_revision_points", self.deps.index.write_revision_points,
                           type(None), revision.revision_id, prepared.points)
+        # ├── write_topic_points → записать примеры вопросов для проверки темы.
         await self._index("write_topic_points", self.deps.index.write_topic_points,
                           type(None), revision.revision_id, prepared.topic_points)
+        # ├── verify_* → подтвердить полноту обоих индексов до публикации.
         if not await self._index("verify_revision_points", self.deps.index.verify_revision_points,
                                  bool, revision.revision_id, len(prepared.points)):
             raise StepError("revision_points_mismatch", True)
         if not await self._index("verify_topic_points", self.deps.index.verify_topic_points,
                                  bool, revision.revision_id, len(prepared.topic_points)):
             raise StepError("topic_points_mismatch", True)
+        # └── publish_revision → атомарно открыть редакцию в новом поколении корпуса.
         generation = await self._db("publish_revision", self.deps.jobs.publish_revision,
                                     PositiveId | None, job.attempt)
         if generation is None:
             raise _LostAttempt
-        self.trace.fields["corpus_generation"] = generation
+        self.log["corpus_generation"] = generation
         return "published"
 
     async def _persist_error(self, error: StepError) -> str:
@@ -188,37 +204,40 @@ class _Indexer:
         return outcome
 
     async def handle(self, event: JobRef) -> ConsumeDecision:
+        # job_id → одна попытка, общий контекст Runtime и итоговый JSON даже при ошибке.
+        with _operation_trace("ingestion_worker", "handle_ingestion_job", emit=self.deps.emit,
+                              job_id=str(event.job_id), revision_id=str(event.job_id)) as log:
+            self.log = log
+            return await self._handle(event)
+
+    async def _handle(self, event: JobRef) -> ConsumeDecision:
         self.job = None
         self.writing_started = False
-        self.trace = _Trace(str(event.job_id), self.deps)
         self.budget = _Budget.for_seconds(self.settings.step_timeout_s, self.deps)
-        decision: ConsumeDecision | None = None
-        outcome = "unexpected_error"
-        error_code: str | None = None
+        error_code = None
         try:
             try:
-                try:
-                    outcome = await self._run(event)
-                except StepError as error:
-                    error_code = error.code
-                    outcome = await self._persist_error(error)
-                decision = "ack"
-            except _DatabaseUnknown:
-                decision, outcome, error_code = "retry_broker", "database_unknown", "storage_unconfirmed"
-            except _AttemptExpired:
-                # An expired attempt cannot persist a new retry/failure. Let a
-                # redelivery/recovery verify the actual database state.
-                decision, outcome, error_code = "retry_broker", "attempt_expired", "attempt_expired"
-            except _LostAttempt:
-                decision, outcome = "ack", "attempt_lost"
-            if outcome in ("published", "failed", "idle"):
-                errors = await _Maintenance(self.settings, self.deps, self.trace).run()
-                if errors:
-                    self.trace.fields["maintenance_error_codes"] = errors
-            assert decision is not None
-            return decision
-        except asyncio.CancelledError:
-            outcome, decision = "cancelled", None
-            raise
-        finally:
-            self.trace.finish(outcome, decision, error_code)
+                outcome = await self._run(event)
+            except StepError as error:
+                error_code = error.code
+                # До begin_revision_write сохраняем повтор/отказ; после него ждём сверки.
+                outcome = await self._persist_error(error)
+            decision = "ack"
+        except _DatabaseUnknown:
+            decision, outcome, error_code = "retry_broker", "database_unknown", "storage_unconfirmed"
+        except _AttemptExpired:
+            # Срок истёк: новый переход не разрешён, состояние проверит повтор/восстановление.
+            decision, outcome, error_code = "retry_broker", "attempt_expired", "attempt_expired"
+        except _LostAttempt:
+            decision, outcome = "ack", "attempt_lost"
+
+        # Уборка идёт после результата; её сбой не отменяет публикацию.
+        # При отмене/неожиданной ошибке Runtime завершит трассу без consume_decision.
+        if outcome in ("published", "failed", "idle"):
+            errors = await _Maintenance(self.settings, self.deps).run()
+            if errors:
+                self.log["maintenance_error_codes"] = errors
+        self.log.update(outcome=outcome, consume_decision=decision)
+        if error_code is not None:
+            self.log["error_code"] = error_code
+        return decision

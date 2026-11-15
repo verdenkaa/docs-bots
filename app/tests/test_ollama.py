@@ -36,6 +36,7 @@ class OllamaTests(unittest.IsolatedAsyncioTestCase):
                 "MODEL_GATEWAY_STARTUP_TIMEOUT_S": "5",
                 "OLLAMA_GATEWAY_KEEP_ALIVE": "0",
                 "OLLAMA_GATEWAY_TEXT_CONTEXT_LENGTH": "2048",
+                "OLLAMA_GATEWAY_VISION_CONTEXT_LENGTH": "2048",
                 "OLLAMA_GATEWAY_GENERATION_JSON": "false",
             },
         )
@@ -206,6 +207,26 @@ class OllamaTests(unittest.IsolatedAsyncioTestCase):
                 if isinstance(expected, (int, float)):
                     self.assertTrue(all(type(body["keep_alive"]) is type(expected) for body in calls))
                 await close_models()
+
+    async def test_bge_m3_does_not_receive_embeddinggemma_instructions(self):
+        self.models["bge-m3:567m"] = ["embedding"]
+        await self.start("embedding")
+        await close_models()
+        self.bindings["embedding"] = self.bindings["embedding"].model_copy(update={
+            "model_id": "bge-m3:567m", "profile_id": "bge-m3-fixture"})
+        await start_models(self.bindings)
+        self.requests.clear()
+        await embed_texts(["Question"], "query", timeout_s=1)
+        await embed_texts(["Document"], "document", timeout_s=1)
+        batches = [body for _, path, body in self.requests if path == "/api/embed"]
+        self.assertEqual([body["input"] for body in batches], [["Question"], ["Document"]])
+        self.assertTrue(all(body["truncate"] is False for body in batches))
+
+    async def test_vision_context_is_configured_independently_from_text(self):
+        with patch.dict(os.environ, {"OLLAMA_GATEWAY_VISION_CONTEXT_LENGTH": "8192"}):
+            await self.start("generation", "vision")
+        self.assertEqual(_manager._get_control().manager.roles["vision"].adapter.context_length, 8192)
+        self.assertEqual(_manager._get_control().manager.roles["generation"].adapter.context_length, 2048)
 
     async def test_changed_digest_rejects_inference_before_post(self):
         await self.start("embedding")

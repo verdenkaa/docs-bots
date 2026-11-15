@@ -29,6 +29,25 @@ docker compose logs --tail 100 validate migrate models-init prepare nginx webhoo
 
 ## Адрес и сертификат без домена
 
+### Long polling вместо входящих webhook-запросов
+
+Если VPS не принимает соединения от Telegram, задайте `TELEGRAM_UPDATE_MODE=polling` и добавьте `polling` в `COMPOSE_PROFILES` (для полного набора моделей: `native,polling`). Обычный `docker compose up -d --build` запускает `telegram-poller`. Задача `webhook` в этом режиме пропускает регистрацию. HTTPS продолжает обслуживать админку, документы и тикеты; `TELEGRAM_WEBHOOK_URL` сохраняет канонический адрес приложения.
+
+Poller удаляет webhook с `drop_pending_updates=false`, получает `getUpdates` с ожиданием 30 секунд и передаёт обновления по внутреннему HTTP на существующий `/telegram/webhook`, с секретом из env. Вопросы, callback-запросы, доступ сотрудников и сохранение в PostgreSQL обрабатывает прежний RAG API. Только после HTTP 200 увеличивается `offset`; Telegram подтверждает предыдущие обновления при следующем `getUpdates` с новым offset. До успешного приёма обновление не подтверждается. При потере HTTP-ответа или перезапуске возможна повторная доставка: её обрабатывает существующая идемпотентность по `update_id`. [Правила Bot API](https://core.telegram.org/bots/api#getupdates).
+
+Сбой сети или HTTP 503 приводит к повтору. HTTP 429 учитывает `retry_after`. Ошибка токена, конфликт другого получателя или постоянный отказ внутреннего API останавливает процесс с безопасной диагностикой; проблемное обновление не подтверждается автоматически. Файл lock в общем spool допускает один poller в пределах проекта Compose. Не запускайте второй экземпляр того же бота в другом проекте или локально. Telegram хранит входящие обновления не более 24 часов; это ограничение источника, а не гарантия бесконечной очереди.
+
+У `telegram-poller` включены автозапуск и health по живому PID и времени последнего успешного обмена/приёма обновления. Тексты, токен и секрет в его логи не выводятся. Для проверки:
+
+```bash
+docker compose ps -a telegram-poller webhook
+docker compose logs --tail=50 telegram-poller
+```
+
+При переключении транспорта сначала остановите poller: `docker compose --profile polling stop telegram-poller webhook`. Затем измените env. Для возврата к webhook задайте `TELEGRAM_UPDATE_MODE=webhook`, уберите профиль `polling` и выполните `up -d --build`. Для polling измените оба параметра обратно и запустите `up`. `restart` не обновляет окружение контейнеров. Не удаляйте тома и не используйте `drop_pending_updates=true`.
+
+При сетевой блокировке нужен исходящий доступ к Bot API и загрузке файлов Telegram также из контейнеров доставки и Core. На целевом сервере он обеспечен отдельным Amnezia-туннелем: только TCP/443 к сетям Telegram, основной маршрут и DNS сохранены. Управление: `systemctl status docs-bots-telegram-vpn`; эксплуатационная заметка — `/root/.config/docs-bots-vpn/README.md`. Ключи VPN находятся вне checkout и не входят в Git или Docker-образы. При переносе на другой VPS сетевой туннель настраивается отдельно.
+
 `PUBLIC_HOST` — публичный IPv4 либо DNS-имя. `TELEGRAM_WEBHOOK_URL` должен быть точно `https://PUBLIC_HOST`, без пути и порта. nginx сначала обслуживает только HTTP-проверку ACME, затем получает доверенный сертификат через Certbot и включает HTTPS.
 
 Для IPv4 применяется `--ip-address` с профилем `shortlived`: сертификат действует около шести дней. Проверка продления выполняется каждые шесть часов; при ошибке повтор через пять минут. После обновления сертификата nginx перезагружает конфигурацию. Certbot 5.10 закреплён в образе, поэтому поддержка IP не зависит от старого пакета Ubuntu. [Сертификаты IP в Certbot](https://letsencrypt.org/2026/03/11/shorter-certs-certbot.html).

@@ -2,6 +2,7 @@
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import time
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -19,6 +20,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         value = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == '/bot123:synthetic/deleteWebhook':
+            if value.get('drop_pending_updates') is not False:
+                self.send_error(400)
+                return
+            self.respond({'ok': True, 'result': True})
+            return
+        if self.path == '/bot123:synthetic/getUpdates':
+            time.sleep(.5)
+            updates = [{'update_id': 91743000}] if value.get('offset', 0) <= 91743000 else []
+            self.respond({'ok': True, 'result': updates})
+            return
         if value.get("keep_alive") == "-1":
             self.send_error(400, "Bare numeric strings are not Go durations")
             return

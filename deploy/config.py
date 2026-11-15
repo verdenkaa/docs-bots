@@ -43,6 +43,11 @@ def active_bindings(settings):
 
 def validate():
     values = environment_values()
+    mode = values.get('TELEGRAM_UPDATE_MODE', 'webhook')
+    if mode not in ('webhook', 'polling'):
+        raise ValueError('TELEGRAM_UPDATE_MODE must be webhook or polling')
+    if mode == 'polling' and 'polling' not in values.get('COMPOSE_PROFILES', '').split(','):
+        raise ValueError('Long polling requires COMPOSE_PROFILES to include polling')
     host = public_host(values.get("PUBLIC_HOST", ""))
     api = get_settings()
     if api.public_url != "https://" + host:

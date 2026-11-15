@@ -43,6 +43,8 @@ def main():
                   INGESTION_CHUNK_CHARACTERS="500", INGESTION_CHUNK_OVERLAP="50",
                   MODEL_GATEWAY_PROVIDER_MODULES='["rag.model_gateway.ollama"]',
                   OLLAMA_GATEWAY_KEEP_ALIVE="-1", OLLAMA_GATEWAY_TEXT_CONTEXT_LENGTH="16384",
+                  TELEGRAM_UPDATE_MODE="polling", COMPOSE_PROFILES="polling",
+                  RAG_TELEGRAM_BASE_URL="http://ollama:11434",
                   RAG_MODEL_BINDINGS=json.dumps(bindings), RAG_STARTUP_TIMEOUT_S="60",
                   MODEL_GATEWAY_STARTUP_TIMEOUT_S="60", API_WORKERS="1", INGESTION_HTTP_WORKERS="1")
     with tempfile.TemporaryDirectory(prefix="rag-deploy-test-") as directory:
@@ -76,7 +78,28 @@ def main():
             assert all(row["Service"] not in {"nginx", "webhook"} for row in rows)
             # Image EXPOSE metadata appears here too, with PublishedPort=0.
             assert not any(port.get("PublishedPort", 0) for row in rows for port in (row.get("Publishers") or []))
-            run("stop", "core", "worker")
+            # Exercise the real poller, API intake and PostgreSQL ledger. The
+            # synthetic Telegram transport is served only inside this network.
+            run("up", "-d", "--no-build", "--no-deps", "--wait", "--wait-timeout", "60", "telegram-poller")
+            run("exec", "-T", "telegram-poller", "python", "-m", "deploy", "polling-health")
+            inspect_ledger = '''import asyncio
+from sqlalchemy import select
+from rag.runtime.lifecycle import start_runtime, close_runtime
+from rag.runtime.postgresql._db import _transaction, _one
+from rag.runtime.postgresql._models import _TelegramUpdate
+async def main():
+    await start_runtime()
+    try:
+        async with _transaction() as session:
+            row = await _one(session, select(_TelegramUpdate).where(_TelegramUpdate.update_id == 91743000))
+            assert row is not None, 'Polled update was not durably recorded'
+        print('Real polling-to-PostgreSQL intake passed')
+    finally:
+        await close_runtime()
+asyncio.run(main())
+'''
+            run("exec", "-T", "core", "python", "-c", inspect_ledger)
+            run("stop", "telegram-poller", "core", "worker")
             run("run", "--rm", "--no-deps", "-T", "-e", "RUN_RUNTIME_INTEGRATION=1",
                 "-v", str(ROOT / "app/tests") + ":/opt/rag/tests:ro",
                 "core", "python", "-m", "unittest", "discover", "-s", "tests",

@@ -12,3 +12,5 @@ RAG API работает в контейнере `core`: принимает Tele
 - [Точки входа](./module/entrypoints.md), [DTO](./module/contracts.md) и [HTTP-ручки](./endpoints/index.md) — целевые контракты; [функции компонентов](./module/service-entrypoints.md).
 
 [Python-функции текущего HTTP-адаптера](./module/http-adapter-entrypoints.md).
+
+В серверном развёртывании обновления могут поступать через [long polling](../infrastructure/server-deployment.md#long-polling-вместо-входящих-webhook-запросов): отдельный poller передаёт их существующему HTTP-адаптеру во внутренней сети. Обработчик, DTO и правила сохранения остаются общими для обоих транспортов.

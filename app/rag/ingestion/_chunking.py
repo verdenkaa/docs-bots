@@ -3,16 +3,39 @@
 import asyncio
 import re
 
-from rag._configuration import environment_values
-
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from rag._configuration import environment_values
 from rag.contracts import SourceLocator, StepError, StorageError
 from rag.ingestion.contracts import ConvertedDocument, PreparedChunk, StagedUpload
 
 
 _IMAGE = r"!\[(?:\\.|[^\]\\])*\]\(image://([^)]+)\)"
 _TOKEN = re.compile(_IMAGE + r"|\s+|(?:(?!!\[)\S)+|.", re.DOTALL)
+_SENTENCE_END = re.compile(r'''[.!?…]["'»”\)\]]*$''')
+
+
+class _Block:
+    """Private parsing state, not a boundary DTO."""
+
+    def __init__(self, text: str, protected: bool = False,
+                 heading: str | None = None, level: int = 0):
+        self.text, self.protected = text, protected
+        self.heading, self.level = heading, level
+
+
+class _Section:
+    """A local Markdown tree; never stored in DocumentBatch."""
+
+    def __init__(self, heading: str | None = None, level: int = 0, blocks=None):
+        self.heading, self.level = heading, level
+        self.blocks = [] if blocks is None else blocks
+        self.children = []
+
+    def contents(self):
+        yield from self.blocks
+        for child in self.children:
+            yield from child.contents()
 
 
 class _ChunkSettings(BaseModel):
@@ -61,15 +84,15 @@ def _read(upload, maximum):
 
 
 def _blocks(text):
-    """Yield section changes and blocks; only plain paragraphs may be split."""
+    """Keep Markdown boundaries until packing and overlap have both finished."""
     lines = text.splitlines(keepends=True)
     position = 0
     while position < len(lines):
         line = lines[position]
-        heading = re.match(r"^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$", line)
+        heading = re.match(r"^ {0,3}(#{1,6})[ \t]+(.+?)\s*#*\s*$", line)
         fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
         if heading:
-            yield line, heading[1], True
+            yield _Block(line, True, heading[2], len(heading[1]))
             position += 1
             continue
         block = [line]
@@ -91,49 +114,121 @@ def _blocks(text):
                     break
                 block.append(current)
                 position += 1
-        yield "".join(block), None, indivisible
+        yield _Block("".join(block), indivisible)
 
 
-def _suffix(text, maximum):
-    selected, size = [], 0
-    for match in reversed(list(_TOKEN.finditer(text))):
+def _sections(blocks):
+    root = _Section()
+    stack = [root]
+    for block in blocks:
+        if block.heading is not None:
+            while stack[-1].level >= block.level:
+                stack.pop()
+            section = _Section(block.heading, block.level, [block])
+            stack[-1].children.append(section)
+            stack.append(section)
+        else:
+            stack[-1].blocks.append(block)
+    return root
+
+
+def _sentences(text):
+    """A punctuation boundary outside an image placeholder is a fallback split."""
+    current = []
+    ended = False
+    for match in _TOKEN.finditer(text):
         token = match[0]
-        if size + len(token) > maximum:
-            break
-        selected.append(token)
-        size += len(token)
-    return "".join(reversed(selected))
+        current.append(token)
+        if token.isspace():
+            if ended:
+                yield "".join(current)
+                current = []
+            ended = False
+        else:
+            ended = bool(_SENTENCE_END.search(token))
+    if current:
+        yield "".join(current)
+
+
+def _parts(block, maximum):
+    if len(block.text.strip()) <= maximum:
+        yield block
+    elif block.protected:
+        raise StepError("chunk_too_large", False)
+    else:
+        for sentence in _sentences(block.text):
+            if len(sentence.strip()) <= maximum:
+                yield _Block(sentence)
+                continue
+            for match in _TOKEN.finditer(sentence):
+                token = match[0]
+                if len(token.strip()) > maximum:
+                    raise StepError("chunk_too_large", False)
+                yield _Block(token)
+
+
+def _suffix(blocks, maximum):
+    """Take a contiguous suffix; never enter a protected block partway."""
+    selected, size = [], 0
+    for block in reversed(blocks):
+        parts = [block] if block.protected else [
+            _Block(match[0]) for match in _TOKEN.finditer(block.text)
+        ]
+        for part in reversed(parts):
+            if size + len(part.text) > maximum:
+                return list(reversed(selected))
+            selected.append(part)
+            size += len(part.text)
+    return list(reversed(selected))
 
 
 def _split(text, upload, settings):
     from uuid import UUID
 
     images = {image.image_id: image for image in upload.images}
-    result, current, section = [], "", None
+    result = []
 
-    def flush():
-        nonlocal current
-        if current.strip():
-            refs = list(dict.fromkeys(UUID(match[1]) for match in re.finditer(_IMAGE, current)))
-            result.append(PreparedChunk(text=current.strip(),
+    def emit(blocks, section):
+        text = "".join(block.text for block in blocks).strip()
+        if text:
+            refs = list(dict.fromkeys(UUID(match[1]) for match in re.finditer(_IMAGE, text)))
+            result.append(PreparedChunk(text=text,
                 locator=SourceLocator(section=section) if section else None,
                 images=[images[identifier] for identifier in refs]))
-        current = ""
 
-    for block, heading, indivisible in _blocks(text):
-        if heading is not None:
-            flush()
-            section = heading
-        parts = [block] if indivisible else [match[0] for match in _TOKEN.finditer(block)]
-        for part in parts:
-            if len(part) > settings.characters:
-                raise StepError("chunk_too_large", False)
-            if len(current) + len(part) > settings.characters:
-                overlap = _suffix(current, min(settings.overlap, settings.characters - len(part)))
-                flush()
-                current = overlap
-            current += part
-    flush()
+    def pack(blocks, section):
+        current = []
+        current_text = ""
+        for block in blocks:
+            for part in _parts(block, settings.characters):
+                if len((current_text + part.text).strip()) > settings.characters:
+                    emit(current, section)
+                    maximum = min(settings.overlap,
+                                  settings.characters - len(part.text.rstrip()))
+                    current = _suffix(current, max(0, maximum))
+                    current_text = "".join(item.text for item in current)
+                current.append(part)
+                current_text += part.text
+        emit(current, section)
+
+    def split_section(section, prefix=()):
+        blocks = [*prefix, *section.blocks]
+        contents = [*prefix, *section.contents()]
+        # The document root separates its major sections even when all fit.
+        if not section.children or (section.level and len(
+                "".join(block.text for block in contents).strip()) <= settings.characters):
+            pack(contents, section.heading)
+            return
+        # Carry a parent heading into its first subsection instead of producing
+        # a chunk containing only that heading. An introduction has its own text.
+        if any(block.text.strip() and block.heading is None for block in blocks):
+            pack(blocks, section.heading)
+            blocks = []
+        for child in section.children:
+            split_section(child, blocks)
+            blocks = []
+
+    split_section(_sections(_blocks(text)))
     return result
 
 

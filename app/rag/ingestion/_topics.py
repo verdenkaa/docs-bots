@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from rag.runtime.events import _span
 
 from rag.contracts import StepError
 from rag.ingestion._dependencies import _Dependencies
-from rag.ingestion._execution import _Boundary, _Budget, _Trace
+from rag.ingestion._execution import _Boundary, _Budget
 from rag.ingestion._settings import _Settings
 from rag.ingestion.contracts import DocumentBatch
 from rag.model_gateway.contracts import GenerationOptions, ModelGenerationResult, ModelMessage
@@ -25,10 +27,9 @@ class _Topics:
     )
 
     def __init__(self, settings: _Settings, deps: _Dependencies,
-                 trace: _Trace, budget: _Budget) -> None:
+                 budget: _Budget) -> None:
         self.settings = settings
         self.deps = deps
-        self.trace = trace
         self.budget = budget
 
     def _messages(self, source_name: str, texts: list[str]) -> list[ModelMessage]:
@@ -99,23 +100,24 @@ class _Topics:
         # Pack the complete document before the first model call. No truncation.
         for messages in self._pack(batch):
             timeout = self.budget.remaining(self.settings.generation_timeout_s)
-            try:
-                raw = await self.trace.call(
-                    "generate_topic_questions", self.budget, timeout,
-                    self.deps.models.generate, messages,
-                    GenerationOptions(max_output_tokens=self.settings.generation_max_output_tokens,
-                                      temperature=None), timeout_s=timeout,
-                )
-            except TimeoutError:
-                raise StepError("model_timeout", True) from None
-            result = _Boundary.validate(raw, ModelGenerationResult, "model_invalid_response")
-            self.trace.steps[-1].update(model_role="generation", profile_id=result.profile_id)
-            for question in self._parse(result):
-                if question not in seen:
-                    if len(questions) >= self.settings.max_topic_questions:
-                        raise StepError("too_many_topic_questions", False)
-                    seen.add(question)
-                    questions.append(question)
+            # generate_topic_questions → Model Gateway's generate is its nested model step.
+            with _span("generate_topic_questions"):
+                try:
+                    async with asyncio.timeout(timeout):
+                        raw = await self.deps.models.generate(
+                            messages, GenerationOptions(
+                                max_output_tokens=self.settings.generation_max_output_tokens,
+                                temperature=None), timeout_s=timeout,
+                        )
+                except TimeoutError:
+                    raise StepError("model_timeout", True) from None
+                result = _Boundary.validate(raw, ModelGenerationResult, "model_invalid_response")
+                for question in self._parse(result):
+                    if question not in seen:
+                        if len(questions) >= self.settings.max_topic_questions:
+                            raise StepError("too_many_topic_questions", False)
+                        seen.add(question)
+                        questions.append(question)
         if not questions:
             raise StepError("no_topic_questions", False)
         return questions

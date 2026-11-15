@@ -2,26 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
+from rag.runtime.events import _span
 
 from rag.contracts import StepError
 from rag.ingestion._dependencies import _Dependencies
-from rag.ingestion._execution import _Boundary, _Budget, _Trace
+from rag.ingestion._execution import _Boundary, _Budget
 from rag.ingestion._settings import _Settings
 from rag.runtime.postgresql.cleanup import StagingCleanup
 
 
 class _Maintenance:
-    def __init__(self, settings: _Settings, deps: _Dependencies, trace: _Trace) -> None:
+    def __init__(self, settings: _Settings, deps: _Dependencies) -> None:
         self.settings = settings
         self.deps = deps
-        self.trace = trace
         self.budget = _Budget.for_seconds(settings.cleanup_timeout_s, deps)
 
     async def _call(self, name, function, annotation, *args):
-        raw = await self.trace.call(name, self.budget, self.settings.step_timeout_s,
-                                    function, *args)
-        return _Boundary.validate(raw, annotation, "cleanup_invalid_response")
+        with _span(name):
+            async with asyncio.timeout(self.budget.remaining(self.settings.step_timeout_s)):
+                raw = await function(*args)
+            return _Boundary.validate(raw, annotation, "cleanup_invalid_response")
 
     async def _staging(self) -> None:
         rows = await self._call("list_finished_staging", self.deps.cleanup.list_finished_staging,
@@ -44,6 +46,8 @@ class _Maintenance:
 
     async def run(self) -> list[str]:
         errors: list[str] = []
+        # After publication/failure only: PostgreSQL authorizes each deletion.
+        # remove → clear_staging; claim_cleanup → delete both indexes → finish_cleanup.
         for operation in (self._staging, self._revisions):
             try:
                 await operation()

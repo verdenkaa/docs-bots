@@ -15,6 +15,9 @@ class NotFound(Exception):
 
 class Conflict(Exception):
     pass
+
+class RateLimited(Exception):
+    pass
 ~~~
 
 ## Приём
@@ -24,6 +27,7 @@ from typing import Self
 from pydantic import StringConstraints, model_validator
 
 TelegramUsername = Annotated[str, StringConstraints(min_length=1, max_length=32, pattern=r'^[a-z0-9_]+$')]
+TicketMessageText = Annotated[str, StringConstraints(min_length=1, max_length=4096, pattern='\\S')]
 
 class NewQuestion(DTO):
     update_id: NonNegativeInt
@@ -150,23 +154,27 @@ class HistoryEntry(DTO):
     received_at: AwareDatetime
 
 class TicketMessage(DTO):
-    message_id: PositiveId
-    case_id: UUID
-    author_role: Literal['visitor', 'operator']
-    author_login: NonEmptyText | None = None
-    text: NonEmptyText
-    created_at: AwareDatetime
+    """Реплика анонимного посетителя или проверенного оператора в тикет-системе."""
+    message_id: PositiveId = Field(description='ID подтверждённого сообщения Telegram либо реплики тикета по типу DTO.')
+    case_id: UUID = Field(description='UUID обращения поддержки, уникального для исходного вопроса.')
+    author_role: Literal['visitor', 'operator'] = Field(description='Посетитель по публичной ссылке либо оператор из админ-панели.')
+    author_login: NonEmptyText | None = Field(default=None, description='Проверенный логин оператора; посетитель не имеет подтверждённой личности.')
+    text: TicketMessageText = Field(description='Непустая реплика, не более 4096 символов.')
+    created_at: AwareDatetime = Field(description='Фактическое время создания записи в UTC.')
 
     @model_validator(mode='after')
     def check_author(self) -> Self:
+        """Не приписывать посетителю подтверждённую личность оператора."""
         if (self.author_role == 'operator') != (self.author_login is not None):
             raise ValueError('Только оператор имеет author_login, и он обязателен')
         return self
 
 class TicketView(DTO):
-    case: SupportCase
-    history: list[HistoryEntry]
-    messages: list[TicketMessage]
+    """Тикет, снимок исходного контекста и дальнейшие реплики."""
+    case: SupportCase = Field(description='Обращение с владельцем, стадией и реальной ссылкой при наличии.')
+    history: list[HistoryEntry] = Field(description='Снимок исходного вопроса и фактического ответа для оператора.')
+    messages: list[TicketMessage] = Field(description='Реплики собственной тикет-системы в сохранённом порядке.')
+    next_cursor: PositiveId | None = Field(default=None, description='ID старейшей реплики страницы для чтения предыдущей; None, если продолжения нет.')
 
 class MetricsSnapshot(DTO):
     from_at: AwareDatetime
@@ -247,10 +255,12 @@ class TelegramEntity(DTO):
         return self
 
 class TextPart(DTO):
-    kind: Literal['text']
-    text: NonEmptyText
-    entities: list[TelegramEntity] = Field(default_factory=list)
-    actions: list[InlineAction] = Field(default_factory=list)
+    """Одна текстовая отправка с entities и кнопками, без parse_mode."""
+    kind: Literal['text'] = Field(description='Метка варианта DTO для выбора исхода при валидации.')
+    text: NonEmptyText = Field(description='Одна отформатированная текстовая часть, не более 4096 единиц UTF-16.')
+    variant: Literal['normal', 'length_fallback'] = Field(default='normal', description='Обычный текст или заранее подготовленный резервный ответ.')
+    entities: list[TelegramEntity] = Field(default_factory=list, description='Entities видимого текста; parse_mode не используется.')
+    actions: list[InlineAction] = Field(default_factory=list, description='Кнопки конкретной текстовой части.')
 
     @model_validator(mode='after')
     def check_text_entities(self) -> Self:
@@ -309,9 +319,11 @@ class ClaimedDelivery(DTO):
         return self
 
 class Sent(DTO):
-    kind: Literal['sent']
-    message_id: PositiveId
-    variant: Literal['normal', 'length_fallback'] = 'normal'
+    """Квитанция Telegram: message_id и факт отправки резервного текста."""
+    kind: Literal['sent'] = Field(description='Метка варианта DTO для выбора исхода при валидации.')
+    message_id: PositiveId = Field(description='ID подтверждённого сообщения Telegram либо реплики тикета по типу DTO.')
+    variant: Literal['normal', 'length_fallback'] = Field(default='normal', description='Обычный текст либо короткий резервный length_fallback.')
+    delivered_text: NonEmptyText | None = Field(default=None, description='Точный подтверждённый текст Telegram; None для изображения.')
 
 class SendFailed(DTO):
     kind: Literal['failed']
@@ -344,3 +356,22 @@ Callback-формат: `a:<request_id>` — недовольство/offer; `s:<
 У answer возможна реакция «Ответ не помог»; это не кнопка оператора. Кнопка вызова появляется в support_offer, а ticket_link содержит переход к тикету. Поля union и взаимные ограничения проверяются валидаторами, а не только аннотациями.
 
 Ограничения Telegram и формат entities: [Bot API](https://core.telegram.org/bots/api#messageentity), [кнопки](https://core.telegram.org/bots/api#inlinekeyboardbutton).
+
+
+Дополнения к контрактам:
+
+~~~python
+class TicketMessageInput(DTO):
+    """JSON реплики; автор определяется только маршрутом и аутентификацией."""
+    client_message_id: UUID = Field(description='Ключ идемпотентного повтора реплики.')
+    text: TicketMessageText = Field(description='Непустая реплика, не более 4096 символов.')
+
+~~~
+
+
+`TextPart.variant` проходит через сохранённый план к `Sent.variant`; заранее
+подготовленный fallback не становится normal после отправки.
+`Sent.delivered_text` содержит точный текст подтверждённой отправки (None для изображения).
+`TicketMessageText` ограничивает реплику 4096 символами на HTTP- и DB-границах.
+`TicketMessageInput` запрещает авторство в JSON: Principal создаётся только после HTTP-аутентификации.
+`TicketView.next_cursor` задаёт исключающую границу для следующей страницы более ранних реплик.

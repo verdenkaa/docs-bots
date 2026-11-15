@@ -16,6 +16,7 @@ from rag.dto import DTO, NonEmptyText, NonNegativeInt, PositiveId
 
 
 TelegramUsername = Annotated[str, StringConstraints(min_length=1, max_length=32, pattern=r'^[a-z0-9_]+$')]
+TicketMessageText = Annotated[str, StringConstraints(min_length=1, max_length=4096, pattern=r'\S')]
 
 
 class AccessDenied(Exception):
@@ -30,6 +31,11 @@ class NotFound(Exception):
 
 class Conflict(Exception):
     """Действие конфликтует с сохранённым состоянием или ключом повтора."""
+    pass
+
+
+class RateLimited(Exception):
+    """Превышен лимит новых сообщений публичного тикета."""
     pass
 
 
@@ -157,7 +163,7 @@ class TicketMessage(DTO):
     case_id: UUID = Field(description='UUID обращения поддержки, уникального для исходного вопроса.')
     author_role: Literal['visitor', 'operator'] = Field(description='Посетитель по публичной ссылке либо оператор из админ-панели.')
     author_login: NonEmptyText | None = Field(default=None, description='Проверенный логин оператора; посетитель не имеет подтверждённой личности.')
-    text: NonEmptyText = Field(description='Непустой текст, назначение которого задаёт конкретный DTO.')
+    text: TicketMessageText = Field(description='Непустая реплика, не более 4096 символов.')
     created_at: AwareDatetime = Field(description='Фактическое время создания записи в UTC.')
 
     @model_validator(mode='after')
@@ -173,6 +179,13 @@ class TicketView(DTO):
     case: SupportCase = Field(description='Обращение с владельцем, стадией и реальной ссылкой при наличии.')
     history: list[HistoryEntry] = Field(description='Снимок исходного вопроса и фактического ответа для оператора.')
     messages: list[TicketMessage] = Field(description='Реплики собственной тикет-системы в сохранённом порядке.')
+    next_cursor: PositiveId | None = Field(default=None, description='ID старейшей реплики страницы для чтения предыдущей; None, если продолжения нет.')
+
+
+class TicketMessageInput(DTO):
+    """JSON реплики; автор определяется только маршрутом и аутентификацией."""
+    client_message_id: UUID = Field(description='Ключ идемпотентного повтора реплики.')
+    text: TicketMessageText = Field(description='Непустая реплика, не более 4096 символов.')
 
 
 class MetricsSnapshot(DTO):
@@ -230,6 +243,7 @@ class TextPart(DTO):
     """Одна текстовая отправка с entities и кнопками, без parse_mode."""
     kind: Literal['text'] = Field(description='Метка варианта DTO для выбора исхода при валидации.')
     text: NonEmptyText = Field(description='Одна отформатированная текстовая часть, не более 4096 единиц UTF-16.')
+    variant: Literal['normal', 'length_fallback'] = Field(default='normal', description='Обычный текст или заранее подготовленный резервный ответ.')
     entities: list[TelegramEntity] = Field(default_factory=list, description='Entities видимого текста; parse_mode не используется.')
     actions: list[InlineAction] = Field(default_factory=list, description='Кнопки конкретной текстовой части.')
 
@@ -301,6 +315,7 @@ class Sent(DTO):
     kind: Literal['sent'] = Field(description='Метка варианта DTO для выбора исхода при валидации.')
     message_id: PositiveId = Field(description='ID подтверждённого сообщения Telegram либо реплики тикета по типу DTO.')
     variant: Literal['normal', 'length_fallback'] = Field(default='normal', description='Обычный текст либо короткий резервный length_fallback.')
+    delivered_text: NonEmptyText | None = Field(default=None, description='Точный подтверждённый текст Telegram; None для изображения.')
 
 
 class SendFailed(DTO):

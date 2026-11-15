@@ -20,7 +20,7 @@
 | Model Gateway | [`start_models`, `close_models`, `embed_texts`, `rerank`, `classify_injection`, `generate`, `recognize_text`, `describe_image`](rag/model_gateway/entrypoints.py), [DTO](rag/model_gateway/contracts.py) | [Точки входа](../docs/documents/model-gateway/entrypoints.md) |
 | Runtime | [PostgreSQL](rag/runtime/postgresql), [RabbitMQ](rag/runtime/rabbitmq.py), [Queue Relay](rag/runtime/queue_relay.py), [Qdrant](rag/runtime/qdrant.py), [Redis](rag/runtime/redis.py), [временный том](rag/runtime/upload_spool.py), [S3 · изображения](rag/runtime/s3.py), [Telegram-медиа/источники](rag/runtime/media.py), [данные поддержки](rag/runtime/postgresql/support.py) | [Контракты Runtime](../docs/documents/infrastructure/index.md) |
 
-Модельные вызовы находятся в `rag/model_gateway/`; `runtime/qdrant.py` получает готовые векторы и не загружает модели. Runtime реализует адаптеры хранилищ, миграции и запуск фоновых ролей; прикладные обработчики API, Guardrails и части Ingestion пока содержат `NotImplementedError`. Bootstrap не вызывает их и не подтверждает готовность моделей. [Команды Runtime, окружение и интеграционные тесты](../docs/documents/infrastructure/runtime-entrypoints.md).
+Модельные вызовы находятся в `rag/model_gateway/`; `runtime/qdrant.py` получает готовые векторы и не загружает модели. Runtime реализует адаптеры хранилищ, миграции и запуск фоновых ролей; приём/доставка API, Guardrails и Ingestion реализованы. Административные операции Access/Support и панель `/admin` подключены к Runtime. Readiness рабочего HTTP API проверяет реальные откатываемые записи и свободную ёмкость. Bootstrap не подтверждает готовность бизнес-конвейера и моделей. [Команды Runtime, окружение и интеграционные тесты](../docs/documents/infrastructure/runtime-entrypoints.md).
 
 Model Gateway проверяет все шесть ролей, ограничивает очередь и сроки, собирает stream и предоставляет local_process с управляемыми исполнителями. Для выбранных моделей нужно установить SDK и реализовать фабрики LocalModel; [интерфейс, настройки и проверка check-models](../docs/documents/model-gateway/providers.md). Runtime сохраняет результаты модельных шагов в PostgreSQL для защиты от повторного inference при retry/перезапуске. Перед запуском новой версии примените migrate до актуального head Alembic. Тестовые backend не подключаются в production.
 
@@ -40,7 +40,7 @@ DTO наследуют Pydantic-базу `rag.dto.DTO`; поля читаютс�
 
 ## Запустить локально
 
-Ingestion HTTP запускается отдельно из `app/`: `python -m uvicorn rag.ingestion.application:app --host 127.0.0.1 --port 8001 --no-access-log`. Настройки загрузки — в [корневом `.env.example`](../.env.example); задайте непустой `RAG_INGESTION_TOKEN` в `.env` в корне репозитория. Единственная бизнес-ручка — `POST /admin/ingestion/upload`, [HTTP-контракт и пример запроса](../docs/documents/ingestion/http-upload.md). Приём использует существующие конвертер, разбиение и Runtime; пока они содержат заглушки, ручка возвращает 503. Сквозная индексация требует отдельно запущенных Queue Relay и Worker, миграций и готовых расширений Runtime.
+Ingestion HTTP запускается отдельно из `app/`: `python -m uvicorn rag.ingestion.application:app --host 127.0.0.1 --port 8001 --no-access-log`. Настройки загрузки — в [корневом `.env.example`](../.env.example); задайте непустой `RAG_INGESTION_TOKEN` в `.env` в корне репозитория. Единственная бизнес-ручка — `POST /admin/ingestion/upload`, [HTTP-контракт и пример запроса](../docs/documents/ingestion/http-upload.md). Приём использует реализованные конвертер, разбиение и Runtime. Сквозная индексация требует отдельно запущенных Queue Relay и Worker, миграций, хранилищ и выбранных модельных провайдеров.
 
 Используйте Python 3.12.x (`.python-version` и `pyproject.toml`). Из папки `app` установите проект: `python -m pip install -c requirements.lock -e .`. Прямые зависимости заданы в `pyproject.toml`, точные базовые версии — в `requirements.lock`. Проверка контрактов: `python -m unittest discover -s tests -v`. Затем выполните из папки `app` по одной команде в двух терминалах.
 
@@ -51,7 +51,19 @@ python -m rag worker --port 8001
 
 Обе роли отвечают на `GET /health/live` и `GET /health/ready`. У worker проверка слушает loopback. Ctrl+C завершает процесс.
 
+## Загрузить документы демонстрации
+
+Для запуска настоящих процессов поверх существующей инфраструктуры есть `scripts/live_services.py`: из `app/` выполните `.venv\Scripts\python.exe scripts/live_services.py api relay results maintenance recovery questions`. Скрипт пересоздаёт только перечисленные контейнеры `rag-live-*`, читает общий `.env` с правильным разбором кавычек и подключает текущий код. Перед первым запуском API остановите старый контейнер каркаса, занимающий порт 8000. По умолчанию используется локальный образ зависимостей `localhost/rag-runtime-tests:local`, сеть `rag-hackathon_default` и spool `rag-hackathon_worker_spool`; параметры можно заменить флагами. Для вопросов предварительно настройте и проверьте модельный профиль. Это локальный стенд разработки, а не production-развёртывание.
+
+Из `app/`: `.venv\Scripts\python.exe scripts/load_demo_documents.py`. Скрипт включает допуск `@verdenkaa` через административный API и отправляет три PDF из `~/Downloads` в Ingestion. Секреты `ADMIN_LOGIN`, `ADMIN_PASSWORD`, `RAG_INGESTION_TOKEN` и публичный URL `TELEGRAM_WEBHOOK_URL` берутся из общего `.env`; окружение процесса имеет приоритет.
+
+По умолчанию API доступен на `http://127.0.0.1:8000`, Ingestion — на `http://127.0.0.1:8001`; другие адреса задаются через `--api-url` и `--ingestion-url`. Папка файлов задаётся через `--downloads`. Оба HTTP-приложения должны быть запущены отдельно: health-сервер каркаса не предоставляет ручку загрузки.
+
+Файл `.demo-upload-state.json` сохраняет подтверждённые `document_id`/`job_id` и предотвращает повторную отправку тех же файлов этому Ingestion. При неизвестном результате POST скрипт останавливается: перед повтором проверьте логи/БД и соответствующую запись состояния. HTTP 202 означает приём задания; для построения индекса нужны Queue Relay и Worker.
+
 ## Запустить через менеджер контейнеров
+
+Для согласованного импорта только текста PDF запустите загрузчик с `--text-only-pdf`: он извлекает Markdown, отправляет `.md` через ту же ручку и сохраняет исходные PDF нетронутыми. Изображения в таком режиме не включаются; VLM не требуется.
 
 Откройте `container-manager/manage.bat` на Windows или запустите `sh container-manager/manage.sh` на Linux/macOS. Выберите пункт `2` (`up app`). С пустыми `CORE_IMAGE` и `WORKER_IMAGE` менеджер сам соберёт недостающие образы каркаса выбранным движком. Токен Telegram для каркаса не требуется.
 
@@ -65,19 +77,19 @@ python -m rag worker --port 8001
 
 Обе роли пишут `started` при запуске и `finished` при штатной остановке. Общий [`emit_event`](rag/runtime/events.py) принимает поля из [спецификации логов](../docs/documents/faq/logging.md). При реализации передавайте в него реальные ID, исходы и замеры из обработчиков.
 
-Допуск бота задаётся списком Telegram username в БД; User ID остаётся владельцем вопроса. Админ-панель использует статичные ADMIN_LOGIN/ADMIN_PASSWORD из окружения/корневого `.env`; реальные секреты не коммитятся. Runtime реализует новый список допуска, публичное чтение/реплики тикета и операторские операции для доверенного Principal; HTTP-аутентификацию выполняет будущий web-адаптер. Callback сверяется с сохранённой кнопкой и квитанцией; гонка с сохранением квитанции требует повтора. prepare_telegram_photo готовит JPEG-копию в отдельном процессе. Для новой БД примените миграции и заполните список username: [создание и применение миграций](../docs/documents/infrastructure/runtime-entrypoints.md#создание-миграций).
+Допуск бота задаётся списком Telegram username в БД; User ID остаётся владельцем вопроса. Админ-панель использует статичные ADMIN_LOGIN/ADMIN_PASSWORD из окружения/корневого `.env`; реальные секреты не коммитятся. Runtime реализует новый список допуска, публичное чтение/реплики тикета и операторские операции для доверенного Principal; HTTP-аутентификацию выполняет RAG API: Basic credentials и проверка Origin для мутаций. Callback сверяется с сохранённой кнопкой и квитанцией; гонка с сохранением квитанции требует повтора. prepare_telegram_photo готовит JPEG-копию в отдельном процессе. Для новой БД примените миграции и заполните список username: [создание и применение миграций](../docs/documents/infrastructure/runtime-entrypoints.md#создание-миграций).
 
-Партия `DocumentBatch` содержит полное разбиение одного документа и общие `UploadSource.filename/access_level`. Gateway сохраняет её через `store_document_batch` до регистрации задания. Worker читает `load_document_batch`, вызывает `read_document_version` и `reserve_document_version`, затем готовит оба индекса. Первая версия документа — 0, повтор задания сохраняет назначенный номер. RabbitMQ по-прежнему передаёт только JobRef. Новые операции Runtime остаются контрактными заглушками.
+Партия `DocumentBatch` содержит полное разбиение одного документа и общие `UploadSource.filename/access_level`. Gateway сохраняет её через `store_document_batch` до регистрации задания. Worker читает `load_document_batch`, вызывает `read_document_version` и `reserve_document_version`, затем готовит оба индекса. Первая версия документа — 0, повтор задания сохраняет назначенный номер. RabbitMQ по-прежнему передаёт только JobRef. Эти операции Runtime реализованы.
 
 ## Реализация RAG Core
 
 RAG Core, Exact Cache и Answer Generator реализуют поток из документации. Вопрос
 обрабатывается в пределах срока попытки; OCR сохраняется до проверки, временные
 ошибки планируют устойчивый повтор, готовый ответ попадает в кеш после коммита.
-Searcher реализован через существующие Model Gateway и Qdrant; Guardrails пока
-остаётся заглушкой и требует реализации для сквозного production-запуска.
-Роль `questions` проверяет готовность этих шагов до открытия ресурсов; при наличии заглушек
-запуск завершается с `business_handler_not_implemented`.
+Searcher реализован через существующие Model Gateway и Qdrant; Guardrails
+проверяет вопрос через настроенный детектор Model Gateway и индекс примеров темы.
+Роль `questions` отказывает при наличии заглушек с `business_handler_not_implemented`,
+проверяет модельные bindings и запускает выбранные провайдеры до потребления очереди.
 
 Политика Core читается из корневого `.env` и окружения при вызове (префикс `RAG_CORE_`):
 
@@ -116,13 +128,12 @@ Searcher реализован через существующие Model Gateway 
 `RAG_SEARCH_SCORE_THRESHOLD`; reranker включается `RAG_USE_RERANKER=true`.
 Значения по умолчанию и шкала порога — в [конвейере поиска](../docs/documents/retrieval/pipeline.md#настройки-searcher).
 
-Зависимости `embed_texts`, `find_chunks`, `rerank` и загрузка редакций Core через
-`load_revision_ids` реализованы. Поток `questions` пока блокирует заглушка
-`check_question` в Guardrails. Приём и доставка API также требуют реализации.
-Автоматическую загрузку корпуса блокируют `accept_upload`, `prepare_chunks`,
-`store_document_batch`, `load_document_batch`, `read_document_version` и
-`reserve_document_version`: эти операции остаются заглушками. Наличие Searcher
-не означает готовность всего бота.
+Зависимости `embed_texts`, `find_chunks`, `rerank`, загрузка редакций Core через
+`load_revision_ids`, `check_question`, приём и доставка API реализованы.
+Операции `accept_upload`, `prepare_chunks`, `store_document_batch`, `load_document_batch`,
+`read_document_version` и `reserve_document_version` также реализованы. Готовность
+всего бота требует сквозного прогона с выбранными моделями и внешними сервисами;
+готовность HTTP-процесса проверяется отдельной пробой admission.
 
 Проверки: `python -m unittest discover -s tests -p test_searcher.py -v`.
 
@@ -141,3 +152,12 @@ python -m alembic check
 Проверьте созданный файл перед применением. Alembic использует те же
 PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, `RAG_PG_SCHEMA` и корневой `.env`,
 что и Runtime. Начальная ревизия — `001_initial`; старая неиспользованная история удалена.
+
+
+Панель Support: `/admin` с HTTP Basic по ADMIN_LOGIN/ADMIN_PASSWORD, через HTTPS
+прокси и с публичным origin из TELEGRAM_WEBHOOK_URL. Посетитель по ссылке тикета
+остаётся анонимным даже после входа администратора; оператор пишет отдельной ручкой.
+Публичные реплики ограничены 4096 символами, телом 32 КиБ и 20 новыми сообщениями
+за минуту на тикет. История выдаётся страницами по 50 реплик.
+Миграция `002_ticket_resources` добавляет ограничения/индексы сообщений;
+примените `python -m rag.runtime migrate` до запуска новой версии.

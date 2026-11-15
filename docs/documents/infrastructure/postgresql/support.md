@@ -198,7 +198,7 @@ async def read_ticket_list(actor: Principal, limit: int) -> list[SupportCase]: .
 ## <span className="operation-badge operation-badge--db">DB</span> `read_ticket` {#read-ticket}
 
 ~~~python
-async def read_ticket(case_id: UUID) -> TicketView:
+async def read_ticket(case_id: UUID, limit: int=50, before_message_id: int | None=None) -> TicketView:
     ...
 ~~~
 
@@ -308,3 +308,26 @@ async def read_metrics(actor: Principal, from_at: datetime, to_at: datetime) -> 
 Запросы относятся к received_at периода; answered/escalated — их зафиксированные итоги, dissatisfied — вопросы с зарегистрированным offer(reason=dissatisfied). Повторы/попытки не увеличивают счётчик. reply_duration_ms использует первое confirmed_at нормальной текстовой части answer и received_at; ticket_duration_ms берёт closed_at минус received_at вопроса, только для закрытых кейсов; fallback не считается доставкой исходного ответа.
 
 Автоматическое создание тикета по SupportOutcome принятого вопроса не требует повторного разрешения сотрудника на новый вопрос. Новые Telegram-действия проверяют текущий username; публичное чтение/реплики тикета не проверяют допуск Telegram, административные действия требуют входа по env.
+
+
+### Страницы и ресурсные ограничения тикета
+
+`read_ticket`/`get_ticket` принимают limit=50 (1..100) и before_message_id=None.
+Без курсора выбирают последние реплики; внутри страницы порядок хронологический.
+`TicketView.next_cursor` — ID старейшей реплики страницы, если есть более ранние.
+SQL читает максимум limit+1 записей по индексу (case_id,message_id), без загрузки
+всей истории. Новый ответ посетителя возвращает страницу к последним сообщениям.
+
+Реплика ограничена 4096 символами. PostgreSQL под блокировкой тикета сначала
+проверяет ключ идемпотентности, затем open и квоту 20 новых visitor-реплик за минуту.
+`RateLimited` даёт HTTP 429; одинаковый повтор и ответы оператора квоту не расходуют.
+На HTTP-границе действует отдельный предел тела 32768 байт до JSON-разбора.
+
+### История и стоимость метрик
+
+При создании тикета история копирует точный delivered_text из подтверждённых
+квитанций, а не исходный ответ генератора. При отсутствии текстовой квитанции
+answer_text=None. Квитанция fallback не считается нормальным текстовым ответом
+в reply_duration_ms. Метрики агрегируются одним SQL-запросом; полные входы/ответы
+и истории периода в Python не загружаются. Списки длительностей сохраняют контракт.
+Последний доставленный вопрос для Support также выбирается одним ограниченным SQL-запросом.

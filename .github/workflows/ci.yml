@@ -40,6 +40,8 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Run ingestion component tests
         run: python -m unittest discover -s rag/ingestion/_tests -v
+      - name: Run API component tests
+        run: python -m unittest discover -s rag/rag_api/tests -v
       - name: Run container manager tests
         working-directory: container-manager
         run: python -m unittest discover -s tests -v

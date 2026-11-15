@@ -11,6 +11,7 @@ toc_max_heading_level: 2
 | GET [/health/live](./health-live.md) | Среда запуска | HTTP-процесс жив. |
 | GET [/health/ready](./health-ready.md) | Среда запуска | Готовность надёжного приёма и outbox. |
 | GET [/sources/&#123;document_id&#125;](./source-page.md) | Браузер | Публичная HTML-заглушка только с названием документа. |
+| GET [/admin](./admin-panel.md) | Администратор | Панель тикетов, допуска и метрик. |
 | GET [/tickets](./ticket-list.md) | Администратор | Список всех созданных тикетов. |
 | GET [/tickets/&#123;case_id&#125;](./ticket-page.md) | Любой посетитель ссылки | Контекст и разговор в тикете. |
 | POST [/tickets/&#123;case_id&#125;/messages](./ticket-message.md) | Любой посетитель ссылки | Реплика «Посетитель». |

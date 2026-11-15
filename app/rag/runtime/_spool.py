@@ -32,8 +32,10 @@ def _directory(ref):
 
 
 @contextmanager
-def _guard(ref):
+def _guard(ref, *, upload_lease=False):
     target, lock = _directory(ref)
+    if upload_lease:
+        lock = lock.with_suffix('.upload.lock')
     if lock.is_symlink():
         raise StorageError("Unsafe spool lock")
     with lock.open("a+b") as file:
@@ -52,6 +54,10 @@ def _guard(ref):
                     fcntl.flock(file,fcntl.LOCK_EX|fcntl.LOCK_NB)
                 break
             except OSError:
+                if upload_lease:
+                    # Active uploads are skipped, never waited out by a sweep.
+                    yield None
+                    return
                 if time.monotonic()>=deadline:
                     raise StorageError("Spool lock timed out") from None
                 time.sleep(0.01)
@@ -146,7 +152,7 @@ def _remove(ref):
             _sync_dir(target.parent)
 
 
-def _candidates(older_than, limit):
+def _candidates(older_than, limit, after=None):
     root = _get().settings.spool_dir.resolve()/"uploads"
     if not root.exists():
         return []
@@ -158,9 +164,11 @@ def _candidates(older_than, limit):
             _staging_revision("uploads/"+path.name)
         except ValueError:
             continue
-        if not path.is_symlink() and path.is_dir() and path.stat().st_mtime<older_than.timestamp():
-            candidates.append((path.stat().st_mtime,"uploads/"+path.name))
-    return [ref for _,ref in sorted(candidates)[:limit]]
+        ref = 'uploads/' + path.name
+        if (not path.is_symlink() and path.is_dir() and path.stat().st_mtime<older_than.timestamp()
+                and (after is None or ref > after)):
+            candidates.append(ref)
+    return sorted(candidates)[:limit]
 
 
 def _prepared(ref, value=None):

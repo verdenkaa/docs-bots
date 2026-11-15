@@ -13,7 +13,7 @@ hide_title: true
 
 ## Что принимает
 
-case_id: UUID. JSON: client_message_id (UUID) и text (непустая строка). Автор/роль не принимаются.
+case_id: UUID. JSON: client_message_id (UUID) и text (непустая строка, максимум 4096 символов). Автор/роль не принимаются.
 
 ## Бизнес-логика
 
@@ -30,3 +30,6 @@ case_id: UUID. JSON: client_message_id (UUID) и text (непустая стро
 ## Связанные контракты
 
 [add_ticket_message](../module/service-entrypoints.md#add-ticket-message) · [Публичная реплика](./ticket-message.md)
+
+
+HTTP-тело ограничено 32768 байтами до JSON-разбора, с Content-Length и без него; переполнение — 413. Неизвестные поля запрещены.

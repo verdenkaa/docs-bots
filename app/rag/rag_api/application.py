@@ -13,6 +13,9 @@ from rag.rag_api._observability import _operation, _step, _utc_now
 from rag.rag_api.health.router import router as health_router
 from rag.rag_api.public import router as public_router
 from rag.rag_api.telegram.router import router as telegram_router
+from rag.rag_api.admin import router as admin_router
+from rag.rag_api.contracts import AccessDenied, Conflict, NotFound
+from rag.contracts import StorageError
 from rag.runtime._config import RuntimeSettings
 from rag.runtime.lifecycle import close_runtime, start_runtime
 
@@ -84,6 +87,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+async def _business_error(request, error):
+    code = 404 if isinstance(error, NotFound) else 409 if isinstance(error, Conflict) else 403 if isinstance(error, AccessDenied) else 503
+    return Response(status_code=code, headers={'Cache-Control': 'no-store'})
+
+
+for _error in (NotFound, Conflict, AccessDenied, StorageError):
+    app.add_exception_handler(_error, _business_error)
+
+
 @app.middleware("http")
 async def _log_http(request, call_next):
     with _operation("http", method=request.method, received_at=_utc_now()) as trace:
@@ -102,9 +114,11 @@ async def _log_http(request, call_next):
             trace.fields["error_code"] = error
         elif response.status_code >= 500:
             trace.fields.setdefault("error_code", "http_unavailable")
+        response.headers.setdefault('Cache-Control', 'no-store')
         return response
 
 
 app.include_router(telegram_router)
 app.include_router(health_router)
 app.include_router(public_router)
+app.include_router(admin_router)

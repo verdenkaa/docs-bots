@@ -92,10 +92,11 @@ async def remove_staged_upload(staging_ref: str) -> None: ...
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `list_staging_candidates` {#list-staging-candidates}
 
 ~~~python
-async def list_staging_candidates(older_than: datetime, limit: int) -> list[str]: ...
+async def list_staging_candidates(older_than: datetime, limit: int, after: str | None=None) -> list[str]:
+    ...
 ~~~
 
-**Кто вызывает.** Ingestion Worker до запуска приёма загрузок.
+**Кто вызывает.** Runtime при стартовой и периодической сверке Gateway/Worker.
 
 ### Что принимает
 
@@ -103,6 +104,7 @@ async def list_staging_candidates(older_than: datetime, limit: int) -> list[str]
 | --- | --- | --- | --- |
 | `older_than` | `datetime` | Порог возраста загрузки в UTC. | `datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)` |
 | `limit` | `int` | Положительный предел размера пачки. | `20` |
+| `after` | `str` или None | Исключающий staging_ref; ключи упорядочены лексикографически. | None |
 
 ### Что отдаёт
 
@@ -114,7 +116,7 @@ async def list_staging_candidates(older_than: datetime, limit: int) -> list[str]
 
 ### Правила и ошибки
 
-Worker перед удалением проверяет [`is_staging_referenced`](../postgresql/cleanup.md#is-staging-referenced) в PostgreSQL. Ключ кандидата должен позволять определить `revision_id` даже без полного манифеста.
+Runtime перед удалением удерживает блокировку активной загрузки и проверяет [`is_staging_referenced`](../postgresql/cleanup.md#is-staging-referenced) в PostgreSQL. Ключ кандидата должен позволять определить `revision_id` даже без полного манифеста.
 
 ## Подготовленный набор {#prepared-revision}
 

@@ -67,7 +67,8 @@ binding; Searcher связывает оценки с кандидатами по
 retryable; отказ reranker не переключает поиск на выдачу без переоценки.
 
 Прямые зависимости `embed_texts`, `find_chunks` и `rerank` реализованы;
-Core загружает редакции реализованным `load_revision_ids`. Сквозной запуск
-`questions` пока блокирует заглушка `check_question` в Guardrails.
+Core загружает редакции реализованным `load_revision_ids`; `check_question`
+в Guardrails также реализован. Запуск `questions` требует настроенных
+модельных bindings, провайдеров и внешних сервисов.
 Поведенческие проверки: `python -m unittest discover -s tests -p test_searcher.py -v`
 из каталога `app/`; внешние сервисы и загрузка моделей для них не нужны.

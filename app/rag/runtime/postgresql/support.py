@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from uuid import UUID
+from pydantic import TypeAdapter
 
 from rag.rag_api.contracts import (
     AccessRecord,
@@ -21,7 +22,7 @@ from rag.rag_api.contracts import (
 
 from datetime import datetime as _DateTime
 from uuid import uuid4
-from rag.rag_api.contracts import Conflict, NotFound, HistoryEntry
+from rag.rag_api.contracts import Conflict, NotFound, HistoryEntry, RateLimited, TicketMessageText
 from rag.contracts import RagResult
 from rag.runtime._validation import _positive, _text, _utc
 from ._db import (
@@ -36,6 +37,7 @@ from ._db import (
     _data,
     _prior_update,
     _save_update,
+    _now,
 )
 from ._support import _actor, _case, _ticket, _answered_request, _history, _username
 from ._callbacks import _callback_state
@@ -348,7 +350,7 @@ async def create_support_ticket(case_id: UUID, ticket_url: str) -> SupportCase:
         request = await _one(
             session, select(_Request).where(_Request.request_id == row["request_id"])
         )
-        history = _history(request)
+        history = await _history(session, request)
         row = await _one(
             session,
             update(_SupportCase)
@@ -406,15 +408,23 @@ async def read_ticket_list(actor: Principal, limit: int) -> list[SupportCase]:
         return [_case(row) for row in rows]
 
 
-async def read_ticket(case_id: UUID) -> TicketView:
+async def read_ticket(case_id: UUID, limit: int = 50, before_message_id: int | None = None) -> TicketView:
     """Прочитать разрешённый тикет, контекст и сообщения.
 
     Args:
         case_id: Тикет.
+        limit: Размер страницы 1..100, по умолчанию последние 50 реплик.
+        before_message_id: Исключающий курсор старых сообщений.
 
     Returns:
         TicketView.
     """
+    if type(limit) is not int or not 1 <= limit <= 100:
+        raise ValueError("Message limit must be 1..100")
+    if before_message_id is not None:
+        _positive(before_message_id)
+        if before_message_id >= 2 ** 63:
+            raise ValueError("Message cursor exceeds bigint range")
     async with _transaction() as session:
         row = await _ticket(session, case_id)
         messages = await _all(
@@ -427,13 +437,15 @@ async def read_ticket(case_id: UUID) -> TicketView:
                 _SupportMessage.text,
                 _SupportMessage.created_at,
             )
-            .where(_SupportMessage.case_id == case_id)
-            .order_by(_SupportMessage.message_id),
+            .where(_SupportMessage.case_id == case_id,
+                   _SupportMessage.message_id < before_message_id if before_message_id is not None else True)
+            .order_by(_SupportMessage.message_id.desc()).limit(limit + 1),
         )
         return TicketView(
             case=_case(row),
             history=_decode(list[HistoryEntry], row["history"]),
-            messages=[TicketMessage(**item) for item in messages],
+            messages=[TicketMessage(**item) for item in reversed(messages[:limit])],
+            next_cursor=messages[limit - 1]["message_id"] if len(messages) > limit else None,
         )
 
 
@@ -451,7 +463,7 @@ async def append_ticket_message(
     Returns:
         TicketMessage.
     """
-    _text(text)
+    text = TypeAdapter(TicketMessageText).validate_python(text, strict=True)
     async with _transaction() as session:
         login = await _actor(session, actor) if actor is not None else None
         role = "operator" if actor is not None else "visitor"
@@ -477,6 +489,13 @@ async def append_ticket_message(
             return TicketMessage(**old)
         if case["state"] != "open":
             raise Conflict("Ticket is closed")
+        if actor is None:
+            from datetime import timedelta
+            count = (await _execute(session, select(func.count()).select_from(_SupportMessage).where(
+                _SupportMessage.case_id == case_id, _SupportMessage.author_role == "visitor",
+                _SupportMessage.created_at > await _now(session) - timedelta(minutes=1)))).scalar_one()
+            if count >= 20:
+                raise RateLimited("Ticket message limit reached")
         row = await _one(
             session,
             insert(_SupportMessage)
@@ -540,67 +559,43 @@ async def read_metrics(actor: Principal, from_at: datetime, to_at: datetime) -> 
         raise ValueError("Invalid metrics period")
     async with _transaction() as session:
         await _actor(session, actor)
-        requests = await _all(
-            session,
-            select(_Request).where(_Request.received_at >= from_at, _Request.received_at < to_at),
-        )
-        answered = escalated = dissatisfied = 0
-        replies, tickets = [], []
-        for request in requests:
-            outcome = _data(request["result"])
-            answered += int(outcome is not None and outcome["kind"] == "answered")
-            case = await _one(
-                session,
-                select(_SupportCase).where(_SupportCase.request_id == request["request_id"]),
-            )
-            escalated += int(
-                (outcome is not None and outcome["kind"] == "support")
-                or (case is not None and case["state"] in ("creating", "open", "closed"))
-            )
-            reaction = await _one(
-                session,
-                select(_TelegramUpdate.update_id)
-                .where(
-                    _TelegramUpdate.action["kind"].as_string() == "offer",
-                    _TelegramUpdate.action["reason"].as_string() == "dissatisfied",
-                    _TelegramUpdate.action["request_id"].as_string() == str(request["request_id"]),
-                    _TelegramUpdate.result["kind"].as_string() == "handled",
-                )
-                .limit(1),
-            )
-            dissatisfied += int(reaction is not None)
-            deliveries = await _all(
-                session,
-                select(_Delivery.parts, _Delivery.receipts).where(
-                    _Delivery.request_id == request["request_id"], _Delivery.purpose == "answer"
-                ),
-            )
-            dates = []
-            for delivery in deliveries:
-                parts = _data(delivery["parts"]) or []
-                for receipt in _data(delivery["receipts"]):
-                    if (
-                        receipt["variant"] == "normal"
-                        and receipt["part_no"] < len(parts)
-                        and parts[receipt["part_no"]]["kind"] == "text"
-                    ):
-                        dates.append(_DateTime.fromisoformat(receipt["confirmed_at"]))
-            if dates:
-                replies.append(
-                    max(0, int((min(dates) - request["received_at"]).total_seconds() * 1000))
-                )
-            if case is not None and case["closed_at"] is not None:
-                tickets.append(
-                    max(0, int((case["closed_at"] - request["received_at"]).total_seconds() * 1000))
-                )
-        return MetricsSnapshot(
-            from_at=from_at,
-            to_at=to_at,
-            requests=len(requests),
-            answered=answered,
-            escalated=escalated,
-            dissatisfied=dissatisfied,
-            reply_duration_ms=replies,
-            ticket_duration_ms=tickets,
-            topics=None,
-        )
+        from sqlalchemy import case, cast, DateTime, BigInteger, String, true, type_coerce
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        receipt = func.jsonb_array_elements(_Delivery.receipts).table_valued('value').alias('receipt')
+        payload = type_coerce(receipt.c.value, JSONB)
+        reply_at = select(func.min(cast(payload['confirmed_at'].as_string(), DateTime(timezone=True)))).select_from(
+            _Delivery).join(receipt, true()).where(
+                _Delivery.request_id == _Request.request_id, _Delivery.purpose == 'answer',
+                payload['variant'].as_string() == 'normal',
+                payload['delivered_text'].as_string().is_not(None)).correlate(_Request).scalar_subquery()
+        reaction = select(_TelegramUpdate.update_id).where(
+            _TelegramUpdate.action['kind'].as_string() == 'offer',
+            _TelegramUpdate.action['reason'].as_string() == 'dissatisfied',
+            _TelegramUpdate.action['request_id'].as_string() == cast(_Request.request_id, String),
+            _TelegramUpdate.result['kind'].as_string() == 'handled').correlate(_Request).exists()
+        facts = select(
+            _Request.result['kind'].as_string().label('kind'),
+            or_(_Request.result['kind'].as_string() == 'support',
+                _SupportCase.state.in_(('creating', 'open', 'closed'))).label('escalated'),
+            reaction.label('dissatisfied'), _Request.received_at.label('received_at'),
+            reply_at.label('reply_at'), _SupportCase.closed_at.label('closed_at')
+        ).select_from(_Request).outerjoin(_SupportCase, _SupportCase.request_id == _Request.request_id).where(
+            _Request.received_at >= from_at, _Request.received_at < to_at).subquery()
+        reply_ms = cast(func.greatest(0, func.floor(func.extract('epoch',
+            facts.c.reply_at - facts.c.received_at) * 1000)), BigInteger)
+        ticket_ms = cast(func.greatest(0, func.floor(func.extract('epoch',
+            facts.c.closed_at - facts.c.received_at) * 1000)), BigInteger)
+        row = await _one(session, select(
+            func.count().label('requests'),
+            func.coalesce(func.sum(case((facts.c.kind == 'answered', 1), else_=0)), 0).label('answered'),
+            func.coalesce(func.sum(case((facts.c.escalated, 1), else_=0)), 0).label('escalated'),
+            func.coalesce(func.sum(case((facts.c.dissatisfied, 1), else_=0)), 0).label('dissatisfied'),
+            func.array_agg(reply_ms).filter(facts.c.reply_at.is_not(None)).label('reply_duration_ms'),
+            func.array_agg(ticket_ms).filter(facts.c.closed_at.is_not(None)).label('ticket_duration_ms')
+        ).select_from(facts))
+        return MetricsSnapshot(from_at=from_at, to_at=to_at,
+                               requests=row['requests'], answered=row['answered'],
+                               escalated=row['escalated'], dissatisfied=row['dissatisfied'],
+                               reply_duration_ms=row['reply_duration_ms'] or [],
+                               ticket_duration_ms=row['ticket_duration_ms'] or [], topics=None)

@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Literal
 
 from rag.contracts import DeliveryAttempt, RagResult
-from rag.rag_api.contracts import ClaimedDelivery, DeliveryPart, IntakeResult, NewQuestion
+from rag.rag_api.contracts import ClaimedDelivery, DeliveryPart, IntakeResult, NewQuestion, TextPart
 
 from datetime import timedelta
 from rag.rag_api.contracts import SupportCase
@@ -37,6 +37,38 @@ from ._db import (
 
 from sqlalchemy import func, insert, or_, select, update
 from ._models import _Delivery, _Employee, _Request, _SupportCase
+
+
+async def check_admission_ready() -> bool:
+    """Проверить ёмкость и реальные записи вопроса/outbox, откатив пробу.
+
+    Returns:
+        True при готовности; ошибка хранилища не разрешает приём.
+    """
+    from uuid import uuid4
+
+    async with _transaction() as session:
+        await _lock(session, "admission", 0)
+        count = (await _execute(session, select(func.count()).select_from(_Request).where(
+            _Request.state != "finished"))).scalar_one()
+        if count >= _get().settings.max_pending_requests:
+            return False
+        # Exercise the same constraints, privileges and sequences as admission.
+        # The savepoint is always rolled back; no probe can reach the relay.
+        probe = await session.begin_nested()
+        try:
+            await _execute(session, select(_Employee.username).limit(0))
+            identity = -(uuid4().int % (2 ** 62) + 1)
+            row = await _one(session, insert(_Request).values(
+                user_id=identity, chat_id=identity, update_id=identity,
+                input={"kind": "text", "text": "Readiness probe"},
+                received_at=func.clock_timestamp(), state="finished").returning(_Request.request_id))
+            await _outbox(session, "rag.questions", row["request_id"])
+            await _save_update(session, -identity, identity, identity, await _now(session),
+                               IntakeResult(kind="ignored"))
+        finally:
+            await probe.rollback()
+        return True
 
 
 async def register_question(question: NewQuestion) -> IntakeResult:
@@ -292,6 +324,7 @@ async def record_delivery_part(
     part_no: int,
     message_id: int,
     variant: Literal["normal", "length_fallback"],
+    delivered_text: str | None = None,
 ) -> bool:
     """Сохранить квитанцию одной части и перейти к следующей неподтверждённой.
 
@@ -300,6 +333,7 @@ async def record_delivery_part(
         part_no: Право и индекс текущей части.
         message_id: Реальная квитанция Telegram.
         variant: Реальная квитанция Telegram.
+        delivered_text: Подтверждённый текст; None для изображения.
 
     Returns:
         bool.
@@ -315,9 +349,20 @@ async def record_delivery_part(
         plan, receipts = _data(row["parts"]), _data(row["receipts"])
         if plan is None or part_no >= len(plan):
             raise ValueError("Receipt has no planned part")
+        part = plan[part_no]
+        if part["kind"] == "text":
+            if delivered_text is None and variant == "normal":
+                delivered_text = part["text"]
+            TextPart(kind="text", text=delivered_text)
+            if variant == "normal" and (delivered_text != part["text"]
+                                        or part.get("variant", "normal") != "normal"):
+                raise ValueError("Receipt differs from planned text")
+        elif delivered_text is not None or variant != "normal":
+            raise ValueError("Image receipt cannot contain text or fallback")
         if part_no < row["next_part"]:
             old = receipts[part_no]
-            if old["message_id"] != message_id or old["variant"] != variant:
+            if (old["message_id"] != message_id or old["variant"] != variant
+                    or old.get("delivered_text") != delivered_text):
                 raise ValueError("Conflicting receipt")
             return True
         if part_no != row["next_part"]:
@@ -327,6 +372,7 @@ async def record_delivery_part(
                 "part_no": part_no,
                 "message_id": message_id,
                 "variant": variant,
+                "delivered_text": delivered_text,
                 "confirmed_at": now.isoformat(),
             }
         )

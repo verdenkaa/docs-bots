@@ -35,6 +35,8 @@ class OllamaTests(unittest.IsolatedAsyncioTestCase):
                 "MODEL_GATEWAY_PROVIDER_MODULES": '["rag.model_gateway.ollama"]',
                 "MODEL_GATEWAY_STARTUP_TIMEOUT_S": "5",
                 "OLLAMA_GATEWAY_KEEP_ALIVE": "0",
+                "OLLAMA_GATEWAY_TEXT_CONTEXT_LENGTH": "2048",
+                "OLLAMA_GATEWAY_GENERATION_JSON": "false",
             },
         )
         self.env.start()
@@ -97,7 +99,9 @@ class OllamaTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
         if request.url.path == "/api/chat":
-            if "format" in body:
+            if body.get("format") == "json":
+                content = '{"questions":[]}'
+            elif "format" in body:
                 properties = body["format"]["properties"]
                 if "label" in properties:
                     value = {"label": "benign"}
@@ -272,6 +276,30 @@ class OllamaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await recognize_text(image, timeout_s=1)).text, "")
         with self.assertRaisesRegex(StepError, "model_invalid_response"):
             await describe_image(image, timeout_s=1)
+
+    async def test_explicit_text_context_controls_admission_and_server_limit(self):
+        with patch.dict(os.environ, {"OLLAMA_GATEWAY_TEXT_CONTEXT_LENGTH": "4096"}):
+            await self.start("generation", "vision")
+        await generate([ModelMessage(role="user", content="x" * 3000)],
+                       GenerationOptions(max_output_tokens=8, temperature=0), timeout_s=1)
+        call = next(body for _, path, body in self.requests if path == "/api/chat")
+        self.assertEqual(call["options"]["num_ctx"], 4096)
+        self.assertEqual(_manager._get_control().manager.roles["vision"].adapter.context_length, 2048)
+        before = sum(path == "/api/chat" for _, path, _ in self.requests)
+        with self.assertRaisesRegex(StepError, "model_invalid_input"):
+            await generate([ModelMessage(role="user", content="x" * 4200)],
+                           GenerationOptions(max_output_tokens=8, temperature=0), timeout_s=1)
+        self.assertEqual(sum(path == "/api/chat" for _, path, _ in self.requests), before)
+
+    async def test_json_generation_profile_requests_json_without_changing_other_roles(self):
+        with patch.dict(os.environ, {"OLLAMA_GATEWAY_GENERATION_JSON": "true"}):
+            await self.start("generation", "injection")
+        await generate([ModelMessage(role="user", content='Return {"questions":[]}')],
+                       GenerationOptions(max_output_tokens=32, temperature=None), timeout_s=1)
+        call = next(body for _, path, body in self.requests if path == "/api/chat")
+        self.assertEqual(call["format"], "json")
+        self.assertEqual(call["options"]["temperature"], 0)
+        self.assertFalse(_manager._get_control().manager.roles["injection"].adapter.generation_json)
 
     async def test_profile_file_values_round_trip_through_dotenv(self):
         import tempfile

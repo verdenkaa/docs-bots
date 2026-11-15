@@ -1,6 +1,7 @@
 """Real splitting preserves placeholders, headings and complete Markdown blocks."""
 
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -24,7 +25,7 @@ class ChunkingTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.env.stop)
 
     async def split(self, text, images=()):
-        self.path.write_text(text, encoding="utf-8")
+        self.path.write_text(text, encoding="utf-8", newline="\n")
         return await prepare_chunks(StagedUpload(path=self.path,
             source=UploadSource(filename="guide.md", access_level="staff"), images=list(images)))
 
@@ -32,8 +33,8 @@ class ChunkingTests(unittest.IsolatedAsyncioTestCase):
         text = "# First\n\n" + " ".join(f"word{i}" for i in range(50)) + "\n\n# Second\n\nEnd"
         chunks = await self.split(text)
         self.assertTrue(all(len(chunk.text) <= 120 for chunk in chunks))
-        for i in range(50):
-            self.assertTrue(any(f"word{i}" in chunk.text for chunk in chunks))
+        words = [word for chunk in chunks for word in re.findall(r'\bword\d+\b', chunk.text)]
+        self.assertEqual(list(dict.fromkeys(words)), [f"word{i}" for i in range(50)])
         self.assertEqual(chunks[-1].locator.section, "Second")
         self.assertNotIn("word49", chunks[-1].text)
 
@@ -59,6 +60,13 @@ class ChunkingTests(unittest.IsolatedAsyncioTestCase):
         chunks = await self.split("# Real\n\n```md\n# Not a heading\n```\n\nAfter")
         self.assertEqual([chunk.locator.section for chunk in chunks], ["Real"])
         self.assertIn("# Not a heading", chunks[0].text)
+
+    async def test_small_table_and_code_are_preserved_as_complete_blocks(self):
+        for block in ('| A | B |\n|---|---|\n| 1 | 2 |\n',
+                      '```python\nx = 1\nprint(x)\n```\n'):
+            with self.subTest(block=block):
+                chunks = await self.split('Before ' * 10 + '\n\n' + block + '\nAfter')
+                self.assertTrue(any(block.strip() in chunk.text for chunk in chunks))
 
     async def test_overlap_and_determinism(self):
         text = " ".join(f"item{i}" for i in range(70))

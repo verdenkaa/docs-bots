@@ -27,7 +27,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Document Converter: DOCX и PDF без тегов структуры. Тянет torch и не ставится на Alpine (musl).
+# Не подключён к Document Converter; установка не расширяет поддержку форматов.
+# Для отдельных экспериментов с Docling; тянет torch и не ставится на Alpine (musl).
 docling = [
     "docling>=2.150,<3",
 ]

@@ -46,6 +46,8 @@ def _bindings(component, settings):
     )
     if component == "questions" and settings.use_reranker:
         required.add("reranker")
+    if component == "questions" and settings.text_only:
+        required.discard("ocr")
     if not required <= bindings.keys():
         raise StepError("model_bindings_missing", False)
     selected = {role: bindings[role] for role in required}
@@ -61,7 +63,9 @@ def _bindings(component, settings):
 async def _cleanup_batch(limit):
     from rag.runtime.qdrant import delete_revision_points
     from rag.runtime.upload_spool import remove_staged_upload
+    from rag.runtime._uploads import _sweep_orphans
 
+    await _sweep_orphans(limit)
     for item in await cleanup.list_finished_staging(limit):
         await remove_staged_upload(item.staging_ref)
         await cleanup.clear_staging_ref(item.revision_id, item.staging_ref)
@@ -155,6 +159,12 @@ async def run_runtime(
             raise StepError("business_handler_not_implemented", False)
     if component == "ingestion" and "RAG_WATCHDOG_FD" not in os.environ:
         raise StepError("worker_supervisor_required", False)
+    if component == "ingestion":
+        from rag.ingestion._settings import _Settings
+
+        # Permanent configuration errors must stop startup, before a consumer
+        # can turn them into unbounded broker retries without claiming a job.
+        _Settings.from_environment()
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     installed = []

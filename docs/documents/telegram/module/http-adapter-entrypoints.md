@@ -3,11 +3,6 @@ title: "Python-функции HTTP-адаптера"
 sidebar_position: 20
 ---
 
-:::warning
-Приём и доставка подключены к Runtime. Для readiness пока нет публичной проверки
-доступности PostgreSQL и свободной глобальной ёмкости; `/health/ready` возвращает 503.
-:::
-
 Публичные сигнатуры HTTP-адаптера сохранены. Прикладные сценарии описаны в
 [точках входа](./entrypoints.md), внешние маршруты — в [эндпоинтах](../endpoints/index.md).
 
@@ -54,14 +49,15 @@ allowed_updates=[message, callback_query]; unregister_webhook явно удал�
 регистрацию. pending updates не удаляются. Эти операции вызываются оператором,
 а не каждым HTTP worker; остановка HTTP не удаляет webhook работающих реплик.
 
-## <span className="operation-badge operation-badge--call">CALL</span> Проверки процесса
+## <span className="operation-badge operation-badge--async">ASYNC</span> Проверки процесса
 
 ~~~python
 def health_live() -> Response: ...
-def health_ready() -> Response: ...
+async def health_ready() -> Response:
+    ...
 ~~~
 
 health_live возвращает 200 с пустым телом без проверки внешних сервисов.
-health_ready возвращает 503 с пустым телом до добавления публичного интерфейса
-Runtime для достоверной проверки PostgreSQL и глобальной ёмкости приёма.
+health_ready вызывает check_admission_ready в Runtime и возвращает 200 при успешной
+пробе записи и свободной ёмкости; 503 при ошибке настроек/БД или исчерпании лимита.
 Доступность RabbitMQ сама по себе не должна запрещать приём через outbox.

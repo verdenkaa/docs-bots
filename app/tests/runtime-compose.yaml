@@ -53,6 +53,7 @@ services:
     command: [python, -m, unittest, discover, -s, tests, -v]
     environment:
       RUN_RUNTIME_INTEGRATION: "1"
+      RUN_MIGRATION_INTEGRATION: "1"
       PGHOST: postgres
       PGDATABASE: runtime_test
       PGUSER: runtime_test

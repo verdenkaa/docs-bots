@@ -138,6 +138,9 @@ class _SupportMessage(_Base):
     __table_args__ = (
         UniqueConstraint("case_id", "author_role", "client_message_id", name="support_messages_case_role_client_key"),
         CheckConstraint("length(btrim(text))>0", name="support_messages_text_check"),
+        CheckConstraint("length(text)<=4096", name="support_messages_text_length"),
+        Index("support_messages_page", "case_id", "message_id"),
+        Index("support_messages_rate", "case_id", "author_role", "created_at"),
         CheckConstraint("author_role IN ('visitor','operator') AND ((author_role='operator') = (author_login IS NOT NULL))", name="support_messages_public_author"),
     )
     message_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

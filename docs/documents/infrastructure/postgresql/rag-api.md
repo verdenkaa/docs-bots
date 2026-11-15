@@ -121,7 +121,8 @@ async def store_delivery_parts(attempt: DeliveryAttempt, parts: Sequence[Deliver
 ## <span className="operation-badge operation-badge--db">DB</span> `record_delivery_part` {#record-delivery-part}
 
 ~~~python
-async def record_delivery_part(attempt: DeliveryAttempt, part_no: int, message_id: int, variant: Literal['normal', 'length_fallback']) -> bool: ...
+async def record_delivery_part(attempt: DeliveryAttempt, part_no: int, message_id: int, variant: Literal['normal', 'length_fallback'], delivered_text: str | None=None) -> bool:
+    ...
 ~~~
 
 **Кто вызывает.** После Sent от send_answer.
@@ -229,3 +230,39 @@ async def queue_waiting_statuses(now: datetime, limit: int) -> int: ...
 ### Правила и ошибки
 
 Для вопроса без готового итога и с received_at &lt;= now-10 секунд создаёт один status и outbox. Уникальный ключ (request_id,purpose=status) защищает от повторов. 20 секунд здесь не проверяются как deadline.
+
+
+## <span className="operation-badge operation-badge--db">DB</span> `check_admission_ready` {#check-admission-ready}
+
+~~~python
+async def check_admission_ready() -> bool: ...
+~~~
+
+**Кто вызывает.** RAG API при GET /health/ready.
+
+### Что принимает
+
+Параметров нет; использует текущие клиенты Runtime и RAG_MAX_PENDING_REQUESTS.
+
+### Что отдаёт
+
+Одно bool: False при исчерпании глобального лимита, True после успешной пробы записи.
+
+### Правила и ошибки
+
+Под общей блокировкой admission проверяет число незавершённых вопросов. В savepoint
+записывает пробный вопрос, outbox и ledger, затем всегда откатывает savepoint.
+Проба не публикуется и не остаётся в таблицах; значения последовательностей могут
+пропускаться. Ошибка БД даёт StorageError. RabbitMQ, Redis, Qdrant и модели для этой
+проверки не вызываются. Возвращённое True — снимок готовности; регистрацию вопроса
+по-прежнему защищает собственная атомарная проверка лимита.
+
+
+### Сохранение фактического текста
+
+`record_delivery_part(..., delivered_text=None)` сохраняет точный текст вместе с
+message_id, variant и временем подтверждения. Для normal-текста отсутствие
+параметра означает неизменённый text сохранённого плана; для length_fallback
+подтверждённый текст обязателен. Для изображения текст отсутствует, variant=normal.
+Повтор квитанции сверяет также текст. Это поле используется при создании истории
+Support; исходный QuestionOutcome его не подменяет.

@@ -93,6 +93,7 @@ class RuntimeSettings(ProjectSettings):
     startup_timeout_s: float = Field(default=120, gt=0, lt=86400)
     model_bindings: SecretStr = SecretStr("{}")
     use_reranker: bool = False
+    text_only: bool = False
 
     @field_validator("pg_schema")
     @classmethod

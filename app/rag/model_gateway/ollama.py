@@ -29,6 +29,7 @@ class _Options(ProjectSettings):
     )
     keep_alive: str = "0"
     text_context_length: int = Field(default=2048, ge=2048, le=32768)
+    vision_context_length: int = Field(default=2048, ge=2048, le=32768)
     generation_json: bool = False
 
 
@@ -77,7 +78,7 @@ class _OllamaAdapter(ModelAdapter):
             raise StepError("model_configuration_error", False)
         if (
             role == "embedding"
-            and binding.model_id.rsplit("/", 1)[-1].split(":")[0] != "embeddinggemma"
+            and binding.model_id.rsplit("/", 1)[-1].split(":")[0] not in {"embeddinggemma", "bge-m3"}
         ):
             raise StepError("model_configuration_error", False)
 
@@ -153,7 +154,7 @@ class _OllamaAdapter(ModelAdapter):
         options = _Options()
         self.keep_alive = _keep_alive(options.keep_alive)
         self.generation_json = options.generation_json and self.role == "generation"
-        self.context_length = (2048 if self.role in ("ocr", "vision")
+        self.context_length = (options.vision_context_length if self.role in ("ocr", "vision")
                                else options.text_context_length)
         headers = {}
         if self.binding.credential_env:
@@ -263,6 +264,8 @@ class _OllamaAdapter(ModelAdapter):
                     if payload["purpose"] == "query"
                     else "title: none | text: "
                 )
+                if self.binding.model_id.rsplit("/", 1)[-1].split(":")[0] == "bge-m3":
+                    prefix = ""  # BGE-M3 uses the same unprefixed input for query/document.
                 result = await self._request(
                     "POST",
                     "/api/embed",

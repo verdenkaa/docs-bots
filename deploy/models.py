@@ -20,7 +20,8 @@ async def prepare_models():
     timeout = float(values.get("MODEL_DOWNLOAD_TIMEOUT_S", "3600"))
     models = {}
     for binding in bindings.values():
-        models[_model_name(binding.model_id)] = binding.model_revision.removeprefix("sha256:")
+        if binding.provider == "ollama":
+            models[_model_name(binding.model_id)] = binding.model_revision.removeprefix("sha256:")
     async with httpx.AsyncClient(base_url="http://ollama:11434", trust_env=False, timeout=30) as client:
         deadline = time.monotonic() + settings.startup_timeout_s
         while True:

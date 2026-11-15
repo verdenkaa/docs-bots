@@ -42,6 +42,7 @@ def main():
                   INGESTION_TOPIC_INPUT_CHARACTERS="1000", INGESTION_GENERATION_MAX_OUTPUT_TOKENS="256",
                   INGESTION_CHUNK_CHARACTERS="500", INGESTION_CHUNK_OVERLAP="50",
                   MODEL_GATEWAY_PROVIDER_MODULES='["rag.model_gateway.ollama"]',
+                  OLLAMA_GATEWAY_KEEP_ALIVE="-1", OLLAMA_GATEWAY_TEXT_CONTEXT_LENGTH="16384",
                   RAG_MODEL_BINDINGS=json.dumps(bindings), RAG_STARTUP_TIMEOUT_S="60",
                   MODEL_GATEWAY_STARTUP_TIMEOUT_S="60", API_WORKERS="1", INGESTION_HTTP_WORKERS="1")
     with tempfile.TemporaryDirectory(prefix="rag-deploy-test-") as directory:
@@ -75,6 +76,11 @@ def main():
             assert all(row["Service"] not in {"nginx", "webhook"} for row in rows)
             # Image EXPOSE metadata appears here too, with PublishedPort=0.
             assert not any(port.get("PublishedPort", 0) for row in rows for port in (row.get("Publishers") or []))
+            run("stop", "core", "worker")
+            run("run", "--rm", "--no-deps", "-T", "-e", "RUN_RUNTIME_INTEGRATION=1",
+                "-v", str(ROOT / "app/tests") + ":/opt/rag/tests:ro",
+                "core", "python", "-m", "unittest", "discover", "-s", "tests",
+                "-p", "test_runtime_integration.py", "-k", "empty_embedding", "-v")
             print("Isolated startup passed: migrations, storage, Model Gateway probes, API, all background roles, supervised worker and shared spool")
         except BaseException:
             run("logs", "--tail", "100", check=False)

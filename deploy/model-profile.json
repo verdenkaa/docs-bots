@@ -1,0 +1,50 @@
+{
+  "embedding": {
+    "provider": "ollama",
+    "model_id": "bge-m3:567m",
+    "model_revision": "sha256:7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab",
+    "profile_id": "bge-m3-dense-1024-unprefixed-v1-790764642607"
+  },
+  "generation": {
+    "provider": "ollama",
+    "model_id": "qwen3.5:9b-q4_K_M",
+    "model_revision": "sha256:56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90",
+    "profile_id": "qwen35-9b-q4-json-16k-v1-56671c2ab938"
+  },
+  "vision": {
+    "provider": "ollama",
+    "model_id": "qwen3-vl:8b-instruct-q8_0",
+    "model_revision": "sha256:cc61569a61859d58022573b405f576b7efa9c50442ccc8acce62e9ec781fde0f",
+    "profile_id": "qwen3vl-8b-instruct-q8-8k-v1-cc61569a6185"
+  },
+  "reranker": {
+    "provider": "native_cpu",
+    "model_id": "BAAI/bge-reranker-v2-m3",
+    "model_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "profile_id": "bge-reranker-v2-m3-sigmoid-1024-v1-953dc6f6f85a"
+  },
+  "injection": {
+    "provider": "injection_detector",
+    "model_id": "Horizon-Labs/prompt-injection-guard-base",
+    "model_revision": "fc071c5754f8cf2edce9dc1d7fd3513ef9287007",
+    "profile_id": "injection-horizon-base-v1",
+    "normalization": "onnx-fp32-logit-difference-w512-overlap64-max-v1"
+  },
+  "ocr": {
+    "provider": "native_cpu",
+    "model_id": "PaddleOCR/PP-OCRv5-ru",
+    "components": {
+      "detector": {
+        "model_id": "PaddlePaddle/PP-OCRv5_server_det",
+        "model_revision": "ca867c897ecbca8873081573a802ad70d499cb94"
+      },
+      "recognizer": {
+        "model_id": "PaddlePaddle/eslav_PP-OCRv5_mobile_rec",
+        "model_revision": "7553801264d3379d8d2e854971989e5e26c22e03"
+      }
+    },
+    "normalization": "ppocr-v5-ru-en-bgr-no-orientation-v1",
+    "model_revision": "sha256:69645585ae2dd1bb29a9912a7f43072da39562dc75ed00d8b10595e83e6b7359",
+    "profile_id": "ppocr-v5-ru-en-v1-69645585ae2d"
+  }
+}

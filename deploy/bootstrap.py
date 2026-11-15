@@ -12,6 +12,9 @@ from rag.runtime.postgresql.support import write_user_access
 async def prepare_storage():
     await start_runtime()
     try:
+        if environment_values().get("ALLOW_EMPTY_EMBEDDING_PROFILE_SWITCH", "false").lower() == "true":
+            from rag.runtime._qdrant import _switch_empty_embedding_profile
+            await _switch_empty_embedding_profile()
         await prepare_runtime_storage()
         settings = RuntimeSettings()
         for username in json.loads(environment_values().get("RAG_BOOTSTRAP_USERNAMES", "[]")):

@@ -19,6 +19,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         value = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if value.get("keep_alive") == "-1":
+            self.send_error(400, "Bare numeric strings are not Go durations")
+            return
         model = value["model"]
         if self.path == "/api/show":
             self.respond({"capabilities": ["embedding"] if model.startswith("embeddinggemma") else ["completion"]})

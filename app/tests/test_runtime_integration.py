@@ -84,6 +84,33 @@ def answer():
     os.environ.get("RUN_RUNTIME_INTEGRATION") == "1", "Use tests/runtime-compose.yaml"
 )
 class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_embedding_switch_preserves_data_and_refuses_a_used_corpus(self):
+        from rag.runtime._qdrant import _switch_empty_embedding_profile
+
+        original = self.state.settings.embedding_profile
+        self.state.settings.embedding_profile = "new-empty-profile"
+        self.state.settings.embedding_dimensions = 1024
+        await _switch_empty_embedding_profile()
+        await _switch_empty_embedding_profile()  # idempotent
+        async with _transaction() as connection:
+            row = await _one(connection, "SELECT embedding_profile, embedding_dimensions FROM corpus_state")
+            self.assertNotEqual(row["embedding_profile"], original)
+            self.assertEqual((row["embedding_profile"], row["embedding_dimensions"]), ("new-empty-profile", 1024))
+            await _execute(connection, "UPDATE corpus_state SET generation=1")
+        self.state.settings.embedding_profile = "another-profile"
+        with self.assertRaises(StepError):
+            await _switch_empty_embedding_profile()
+        async with _transaction() as connection:
+            await _execute(connection, "UPDATE corpus_state SET generation=0")
+            await _execute(connection, "INSERT INTO documents(document_id,source_name) VALUES(:id,'retained-document')", id=uuid4())
+        with self.assertRaises(StepError) as error:
+            await _switch_empty_embedding_profile()
+        self.assertEqual(error.exception.code, "embedding_profile_change_requires_reindex")
+        async with _transaction() as connection:
+            self.assertIsNotNone(await _one(connection, "SELECT document_id FROM documents WHERE source_name='retained-document'"))
+            row = await _one(connection, "SELECT embedding_profile FROM corpus_state")
+            self.assertEqual(row["embedding_profile"], "new-empty-profile")
+
     async def asyncSetUp(self):
         token = uuid4().hex
         self.schema = "runtime_" + token

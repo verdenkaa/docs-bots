@@ -66,8 +66,22 @@ def validate():
     revisions = {}
     from rag.model_gateway.ollama import _model_name
     for binding in bindings.values():
+        if binding.provider == "injection_detector" and binding.execution == "remote":
+            if binding != bindings.get("injection") or binding.endpoint != "http://injection-detector:8080" or binding.credential_env:
+                raise ValueError("Injection detector must use its private endpoint without a credential_env")
+            if "native" not in values.get("COMPOSE_PROFILES", "").split(","):
+                raise ValueError("Injection detector requires COMPOSE_PROFILES=native")
+            continue
+        if binding.provider == "native_cpu" and binding.execution == "remote":
+            if binding.endpoint != "http://native-models:8090":
+                raise ValueError("Native CPU bindings must use http://native-models:8090")
+            if binding.credential_env != "NATIVE_MODEL_TOKEN" or not values.get("NATIVE_MODEL_TOKEN"):
+                raise ValueError("Native CPU models require NATIVE_MODEL_TOKEN")
+            if "native" not in values.get("COMPOSE_PROFILES", "").split(","):
+                raise ValueError("Native CPU models require COMPOSE_PROFILES=native")
+            continue
         if binding.provider != "ollama" or binding.execution != "remote":
-            raise ValueError("This server composition requires the Ollama provider")
+            raise ValueError("Unsupported server model provider")
         endpoint = urlsplit(binding.endpoint)
         if (endpoint.scheme != "http" or endpoint.hostname != "ollama"
                 or endpoint.port != 11434 or endpoint.path not in ("", "/")
@@ -82,6 +96,18 @@ def validate():
     modules = json.loads(values.get("MODEL_GATEWAY_PROVIDER_MODULES", "[]"))
     if "rag.model_gateway.ollama" not in modules:
         raise ValueError("MODEL_GATEWAY_PROVIDER_MODULES must register the Ollama adapter")
+    if any(binding.provider == "native_cpu" for binding in bindings.values()) and "rag.model_gateway.native_cpu" not in modules:
+        raise ValueError("MODEL_GATEWAY_PROVIDER_MODULES must register the native CPU adapter")
+    if any(binding.provider == "injection_detector" for binding in bindings.values()) and "rag.model_gateway.injection_detector" not in modules:
+        raise ValueError("MODEL_GATEWAY_PROVIDER_MODULES must register the injection detector adapter")
+    from rag.rag_core._settings import _Settings as CoreSettings
+    from rag.rag_core.answer_generator import _SYSTEM
+    from rag.model_gateway.ollama import _Options
+    core = CoreSettings()
+    if core.max_input_bytes < len(_SYSTEM.encode("utf-8")) + 512:
+        raise ValueError("RAG_CORE_MAX_INPUT_BYTES leaves no room for document fragments after the system prompt")
+    if bindings["generation"].provider == "ollama" and core.max_input_bytes + core.max_output_tokens + 192 > _Options().text_context_length:
+        raise ValueError("OLLAMA_GATEWAY_TEXT_CONTEXT_LENGTH must cover Core input, output and protocol overhead")
     if int(values.get("INGESTION_PROXY_TIMEOUT_S", "660")) <= gateway.upload_timeout_s:
         raise ValueError("INGESTION_PROXY_TIMEOUT_S must exceed the ingestion upload timeout")
     for key in ("API_WORKERS", "INGESTION_HTTP_WORKERS"):

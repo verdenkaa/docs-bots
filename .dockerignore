@@ -5,6 +5,9 @@
 !app/requirements.lock
 !app/rag/
 !app/rag/**
+!app/injection_detector/
+!app/injection_detector/*.py
+!app/injection_detector/requirements.txt
 !deploy/
 !deploy/**
 **/__pycache__/

@@ -7,7 +7,7 @@ from ._models import _Delivery
 
 def _callback_data(action):
     if action.kind == "offer":
-        return ("d:" if action.reason == "dissatisfied" else "h:") + str(action.request_id)
+        return ("a:" if action.reason == "dissatisfied" else "h:") + str(action.request_id)
     if action.kind == "start":
         return "s:" + str(action.request_id)
     return ("y:" if action.kind == "confirm" else "n:") + str(action.case_id)

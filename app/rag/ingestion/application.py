@@ -20,6 +20,7 @@ from rag.model_gateway.providers import configure_coordination
 from rag.runtime._config import RuntimeSettings
 from rag.runtime._model_calls import _PostgresModelCalls
 from rag.runtime.lifecycle import close_runtime, start_runtime
+from rag.runtime._uploads import _sweep_orphans, _sweep_loop
 
 
 @asynccontextmanager
@@ -29,6 +30,8 @@ async def _lifespan(app):
         raise RuntimeError("RAG_INGESTION_TOKEN must be configured")
     app.state.ingestion_settings = settings
     coordinated = False
+    cleanup_task = None
+    stop = asyncio.Event()
     try:
         await start_runtime()
         runtime_settings = RuntimeSettings()
@@ -41,8 +44,14 @@ async def _lifespan(app):
             coordinated = True
             async with asyncio.timeout(runtime_settings.startup_timeout_s):
                 await start_models(selected)
+        await _sweep_orphans(runtime_settings.batch_size)
+        cleanup_task = asyncio.create_task(_sweep_loop(stop))
         yield
     finally:
+        stop.set()
+        if cleanup_task is not None:
+            cleanup_task.cancel()
+            await asyncio.gather(cleanup_task, return_exceptions=True)
         try:
             await close_models()
         finally:
@@ -91,8 +100,9 @@ async def _upload(request: Request):
     mime = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if mime not in {
         "application/octet-stream", "application/pdf",
+        "text/markdown",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    } or not source.filename.lower().endswith((".pdf", ".docx")):
+    } or not source.filename.lower().endswith((".pdf", ".docx", ".md", ".markdown")):
         return _rejected("unsupported_format", 415)
     length = request.headers.get("content-length")
     if length is not None:

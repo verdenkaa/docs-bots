@@ -93,20 +93,24 @@ async def remove_staged_upload(staging_ref: str) -> None:
         return await asyncio.to_thread(_spool._call,_spool._remove,staging_ref)
 
 
-async def list_staging_candidates(older_than: datetime, limit: int) -> list[str]:
+async def list_staging_candidates(older_than: datetime, limit: int, after: str | None = None) -> list[str]:
     """Найти старые загрузки для сверки с PostgreSQL перед приёмом новых.
 
     Args:
         older_than: Порог возраста загрузки в UTC.
         limit: Положительный предел размера пачки.
+        after: Исключающий курсор staging_ref; порядок лексикографический.
 
     Returns:
         Список строк, пустой список допустим.
     """
     _utc(older_than)
     _positive(limit)
+    if after is not None:
+        from rag.runtime._validation import _staging_revision
+        _staging_revision(after)
     with _watchdog._step(_get().settings.io_timeout_s, "upload_spool"):
-        return await asyncio.to_thread(_spool._call,_spool._candidates,older_than,limit)
+        return await asyncio.to_thread(_spool._call,_spool._candidates,older_than,limit,after)
 
 
 async def store_document_batch(staging_ref: str, batch: DocumentBatch) -> None:

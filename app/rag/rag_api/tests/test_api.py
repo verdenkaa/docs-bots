@@ -59,7 +59,8 @@ class _HttpCase(unittest.IsolatedAsyncioTestCase):
         self.output = io.StringIO()
         self.enterContext(redirect_stdout(self.output))
         self.enterContext(patch.dict('os.environ', TELEGRAM_BOT_TOKEN='123:test', BOT_TOKEN='',
-                                    TELEGRAM_WEBHOOK_SECRET='test-secret', TELEGRAM_WEBHOOK_URL='https://bot.example'))
+                                    TELEGRAM_WEBHOOK_SECRET='test-secret', TELEGRAM_WEBHOOK_URL='https://bot.example',
+                                    ADMIN_LOGIN='admin', ADMIN_PASSWORD='test-password'))
 
     async def asyncSetUp(self):
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=application.app), base_url='http://test')
@@ -295,13 +296,28 @@ class FormatterTests(unittest.TestCase):
         self.assertEqual(formatter.markdown('[x](javascript:bad)')[1], [])
         self.assertEqual(formatter.markdown('[x](https://[)')[1], [])
 
-    def test_exact_limit_overflow_and_surrogate_safe_truncation(self):
+    def test_exact_limit_and_oversized_answer_fallback_without_images(self):
         plain = _delivery('notice', content=RagResult(answer_text='x' * 4096, sources=[]))
         self.assertEqual(len(entrypoints.build_delivery_parts(plain, 'https://bot.example')[0].text), 4096)
-        long = _delivery(content=RagResult(answer_text='**' + '😀' * 3000 + '**', sources=[_source()]))
-        part = entrypoints.build_delivery_parts(long, 'https://bot.example')[0]
-        self.assertLessEqual(formatter.units(part.text), 4096)
-        self.assertIn('Источники:', part.text)
+        image = ImageRef(image_id=uuid4(), description='Diagram')
+        long = _delivery(content=RagResult(answer_text='**' + '😀' * 3000 + f'** ![Diagram](image://{image.image_id})',
+                                           sources=[_source()], images=[image]))
+        parts = entrypoints.build_delivery_parts(long, 'https://bot.example')
+        self.assertEqual(len(parts), 1)
+        part = parts[0]
+        self.assertEqual((part.text, part.variant), (sender.FALLBACK_TEXT, 'length_fallback'))
+        self.assertEqual(part.entities, [])
+        self.assertEqual(part.actions[0].callback_data, 'a:10')
+        TextPart.model_validate(part.model_dump())
+
+    def test_compact_source_preserves_entire_answer_at_limit(self):
+        source = _source(name='😀' * 30)
+        answer_text = 'x' * 4090
+        delivery = _delivery(content=RagResult(answer_text=answer_text, sources=[source, _source()]))
+        part = entrypoints.build_delivery_parts(delivery, 'https://bot.example')[0]
+        self.assertEqual(part.text, answer_text + '\n' + '😀' * 2)
+        self.assertEqual(part.variant, 'normal')
+        self.assertEqual(part.entities[0].url, f'https://bot.example/sources/{source.document_id}')
         TextPart.model_validate(part.model_dump())
 
     def test_sources_are_grouped_by_document_and_use_only_trusted_base(self):
@@ -353,7 +369,7 @@ class SenderTests(unittest.IsolatedAsyncioTestCase):
         part = entrypoints.build_delivery_parts(_delivery(), 'https://bot.example')[0]
         with patch.object(adapter, '_post', AsyncMock(return_value=(200, {'ok': True, 'result': {'message_id': 11}}))) as post:
             result = await entrypoints.send_answer(99, part)
-            self.assertEqual(result, Sent(kind='sent', message_id=11))
+            self.assertEqual(result, Sent(kind='sent', message_id=11, delivered_text=part.text))
             method, payload = post.await_args.args
             self.assertEqual(method, 'sendMessage')
             self.assertNotIn('parse_mode', payload)
@@ -561,8 +577,8 @@ class PublicTests(_HttpCase):
             with patch.object(support.repository, 'read_ticket', AsyncMock(side_effect=exception)):
                 self.assertEqual((await self.client.get(f'/tickets/{uuid4()}')).status_code, code)
         self.assertEqual((await self.client.get('/tickets/bad-uuid')).status_code, 422)
-        self.assertEqual((await self.client.get('/tickets')).status_code, 404)
-        self.assertEqual((await self.client.get('/admin/metrics')).status_code, 404)
+        self.assertEqual((await self.client.get('/tickets')).status_code, 401)
+        self.assertEqual((await self.client.get('/admin/metrics')).status_code, 401)
 
     async def test_source_uses_metadata_escapes_title_and_ignores_query(self):
         from rag.runtime.media import SourceMetadata

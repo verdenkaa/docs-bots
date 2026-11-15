@@ -1,25 +1,18 @@
 """Public per-ticket pages and document title placeholders. No Admin routes."""
 from html import escape
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Response, Request, Query
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from rag.contracts import StorageError
 from rag.rag_api import support
-from rag.rag_api.contracts import Conflict, NotFound
+from rag.rag_api.contracts import Conflict, NotFound, RateLimited
+from rag.rag_api._http import _message_body
 from rag.runtime import media
 from rag.rag_api._observability import _call
 
 router = APIRouter()
-
-
-class VisitorMessage(BaseModel):
-    model_config = ConfigDict(extra='forbid', hide_input_in_errors=True)
-    client_message_id: UUID
-    text: Annotated[str, StringConstraints(strict=True, min_length=1, pattern=r'\S')]
 
 
 def page(title, body):
@@ -35,9 +28,10 @@ def page(title, body):
 
 
 @router.get('/tickets/{case_id}')
-async def _ticket_page(case_id: UUID):
+async def _ticket_page(case_id: UUID, limit: int = Query(50, ge=1, le=100),
+                       before_message_id: int | None = Query(None, gt=0, le=2 ** 63 - 1)):
     try:
-        view = await support.get_ticket(case_id)
+        view = await support.get_ticket(case_id, limit, before_message_id)
     except NotFound:
         return Response(status_code=404)
     except StorageError:
@@ -53,9 +47,13 @@ async def _ticket_page(case_id: UUID):
     for message in view.messages:
         role = 'Оператор' if message.author_role == 'operator' else 'Посетитель'
         body += f'<article><strong>{role}</strong> <small>{escape(message.created_at.isoformat())}</small><pre>{escape(message.text)}</pre></article>'
+    if view.next_cursor is not None:
+        body += f'<p><a href="?limit={limit}&amp;before_message_id={view.next_cursor}">Предыдущие сообщения</a></p>'
+    if before_message_id is not None:
+        body += f'<p><a href="/tickets/{case_id}">Последние сообщения</a></p>'
     if view.case.state == 'open':
         body += '''<form id="reply"><h2>Сообщение посетителя</h2>
-<textarea id="text" required aria-label="Сообщение"></textarea><br>
+<textarea id="text" required maxlength="4096" aria-label="Сообщение"></textarea><br>
 <button>Отправить</button><p id="status" role="status"></p></form>
 <script>
 const form = document.getElementById('reply');
@@ -71,7 +69,7 @@ form.addEventListener('submit', async event => {
     const response = await fetch(location.pathname.replace(/\\/$/, '') + '/messages', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(pending)
     });
-    if (response.ok) { pending = null; location.reload(); }
+    if (response.ok) { pending = null; location.href = location.pathname; }
     else document.getElementById('status').textContent = 'Не удалось отправить. Код: ' + response.status;
   } catch { document.getElementById('status').textContent = 'Связь прервана. Повторите отправку.'; }
   finally { button.disabled = false; }
@@ -81,13 +79,16 @@ form.addEventListener('submit', async event => {
 
 
 @router.post('/tickets/{case_id}/messages')
-async def _ticket_message(case_id: UUID, body: VisitorMessage):
+async def _ticket_message(case_id: UUID, request: Request):
+    body = await _message_body(request)
     try:
         return await support.add_ticket_message(None, case_id, body.client_message_id, body.text)
     except NotFound:
         return Response(status_code=404)
     except Conflict:
         return Response(status_code=409)
+    except RateLimited:
+        return Response(status_code=429, headers={'Retry-After': '60'})
     except StorageError:
         return Response(status_code=503)
 

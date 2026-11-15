@@ -21,11 +21,12 @@ from rag.runtime.postgresql._models import _CorpusState, _Employee
 
 
 class MigrationHistoryTests(unittest.TestCase):
-    def test_single_initial_revision(self):
+    def test_migration_chain_has_one_base_and_one_head(self):
         scripts = ScriptDirectory.from_config(_migration_config())
         revisions = list(scripts.walk_revisions())
-        self.assertEqual([revision.revision for revision in revisions], ["001_initial"])
-        self.assertIsNone(revisions[0].down_revision)
+        self.assertEqual([revision.revision for revision in revisions], ["002_ticket_resources", "001_initial"])
+        self.assertEqual(revisions[0].down_revision, '001_initial')
+        self.assertIsNone(revisions[-1].down_revision)
 
 
 @unittest.skipUnless(os.environ.get("RUN_MIGRATION_INTEGRATION") == "1",
@@ -38,6 +39,7 @@ class MigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
             try:
                 await migrate_runtime()
                 await migrate_runtime()
+                baseline = ScriptDirectory.from_config(_migration_config()).get_current_head()
                 config = _migration_config()
 
                 async def run(action):
@@ -74,7 +76,7 @@ class MigrationIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             cfg, message="test extra column", autogenerate=True))
                         await run(lambda cfg: command.upgrade(cfg, "head"))
                         await run(command.check)
-                        await run(lambda cfg: command.downgrade(cfg, "001_initial"))
+                        await run(lambda cfg: command.downgrade(cfg, baseline))
                     finally:
                         _Employee.__table__._columns.remove(column)
                         _Employee.__table__.constraints.remove(constraint)

@@ -4,7 +4,7 @@ sidebar_position: 3
 ---
 
 :::warning Готовность зависимостей
-HTTP-адаптер и Gateway используют существующие Python-контракты. Конвертер PDF/DOCX, разбиение и расширения Runtime для DocumentBatch разрабатываются отдельно. Пока зависимость остаётся заглушкой, приём возвращает 503. Сквозная готовность индексации этим не подтверждается.
+HTTP-адаптер, Gateway, конвертер PDF/DOCX, разбиение и расширения Runtime для DocumentBatch реализованы. Сквозная готовность требует выбранных модельных провайдеров и внешних сервисов; успешные модульные тесты её не подтверждают.
 :::
 
 ## <span className="operation-badge operation-badge--post">POST</span> `/admin/ingestion/upload`
@@ -17,11 +17,11 @@ HTTP-адаптер и Gateway используют существующие Pyt
 
 ## Что принимает
 
-`Content-Type: application/octet-stream`, `application/pdf` либо `application/vnd.openxmlformats-officedocument.wordprocessingml.document`. Тело — исходные байты одного файла, без multipart, JSON и base64. Оригинал не сохраняется на диск HTTP-адаптером. Тип файла проверяет конвертер; расширение само по себе не подтверждает формат.
+`Content-Type: application/octet-stream`, `application/pdf`, `text/markdown` либо `application/vnd.openxmlformats-officedocument.wordprocessingml.document`. Тело — байты одного файла PDF, DOCX или UTF-8 Markdown (`.md`/`.markdown`), без multipart, JSON и base64. Оригинал не сохраняется на диск HTTP-адаптером. Тип файла проверяет конвертер; расширение само по себе не подтверждает формат.
 
 | Query-параметр | Тип | Обязательность и смысл |
 | --- | --- | --- |
-| filename | непустая строка | Обязателен. Точное имя документа, включая `.pdf` или `.docx`; не путь. |
+| filename | непустая строка | Обязателен. Точное имя документа, включая `.pdf`, `.docx`, `.md` или `.markdown`; не путь. |
 | access_level | непустая строка | Обязателен. Метка доступа документа от доверенного администратора; для общего корпуса — `employees`. Не включает фильтрацию поиска. |
 | document_id | UUID | Необязателен. ID обновляемого документа согласно контракту register_revision. |
 

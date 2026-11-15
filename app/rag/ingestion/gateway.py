@@ -21,6 +21,7 @@ from rag.ingestion.contracts import (
 from rag.ingestion.converter import convert_document
 from rag.ingestion.worker import prepare_chunks
 from rag.runtime.events import _event_context, emit_event
+from rag.runtime._uploads import _protect_upload
 from rag.runtime.postgresql.ingestion import register_revision
 from rag.runtime.s3 import put_image
 from rag.runtime.upload_spool import (
@@ -85,7 +86,7 @@ async def accept_upload(upload: UploadInput) -> UploadResult:
     outcome = "technical_error"
     registration_started = False
     try:
-        async with asyncio.timeout(settings.upload_timeout_s):
+        async with asyncio.timeout(settings.upload_timeout_s), _protect_upload(revision_id):
             try:
                 with _event_context(job_id=str(revision_id)):
                     converted = await convert_document(bounded, revision_id)
@@ -112,8 +113,15 @@ async def accept_upload(upload: UploadInput) -> UploadResult:
                 raise StorageError("Staged upload is unavailable")
             if staged.source != source or staged.images != document.images:
                 raise StorageError("Staged upload metadata mismatch")
-            chunks = TypeAdapter(list[PreparedChunk]).validate_python([
-                chunk.model_dump() for chunk in await prepare_chunks(staged)])
+            try:
+                chunks = TypeAdapter(list[PreparedChunk]).validate_python([
+                    chunk.model_dump() for chunk in await prepare_chunks(staged)])
+            except StepError as exc:
+                if exc.code != "chunk_too_large" or exc.retryable:
+                    raise
+                await remove_staged_upload(staging_ref)
+                outcome = "conversion_failed"
+                return UploadRejected(kind="rejected", code="conversion_failed")
             if not chunks:
                 outcome = "conversion_failed"
                 return UploadRejected(kind="rejected", code="conversion_failed")

@@ -143,7 +143,7 @@ HTTP-адаптер проверяет статичный вход до чтен
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `get_ticket` {#get-ticket}
 
 ~~~python
-async def get_ticket(case_id: UUID) -> TicketView:
+async def get_ticket(case_id: UUID, limit: int=50, before_message_id: int | None=None) -> TicketView:
     ...
 ~~~
 
@@ -251,3 +251,17 @@ async def get_metrics(actor: Principal, from_at: datetime, to_at: datetime) -> M
 ### Правила и ошибки
 
 Runtime.read_metrics считает уникальные вопросы/кейсы/реакции и подтверждённые доставки, не попытки. Процент решённых проблем не выдаём без утверждённой формулы. Тема пока не размечена надёжно: разрез по темам остаётся открытым, не заполняется выдуманными значениями.
+
+
+### Страницы и ресурсные ограничения тикета
+
+`get_ticket` (через Runtime read_ticket) принимает limit=50 (1..100) и before_message_id=None.
+Без курсора выбирают последние реплики; внутри страницы порядок хронологический.
+`TicketView.next_cursor` — ID старейшей реплики страницы, если есть более ранние.
+SQL читает максимум limit+1 записей по индексу (case_id,message_id), без загрузки
+всей истории. Новый ответ посетителя возвращает страницу к последним сообщениям.
+
+Реплика ограничена 4096 символами. PostgreSQL под блокировкой тикета сначала
+проверяет ключ идемпотентности, затем open и квоту 20 новых visitor-реплик за минуту.
+`RateLimited` даёт HTTP 429; одинаковый повтор и ответы оператора квоту не расходуют.
+На HTTP-границе действует отдельный предел тела 32768 байт до JSON-разбора.

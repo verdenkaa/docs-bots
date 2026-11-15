@@ -16,6 +16,7 @@ from sqlalchemy import text
 
 from rag.contracts import (
     AnsweredOutcome,
+    DeliveryRef,
     ImageContent,
     NoticeOutcome,
     RagResult,
@@ -813,8 +814,8 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await outbox.list_ready_outbox(20), [])
 
     async def test_callback_receipt_race_and_forged_actions(self):
-        from rag.rag_api.contracts import InlineAction
-        from rag.runtime.postgresql._callbacks import _callback_data
+        from rag.rag_api.entrypoints import build_delivery_parts
+        from rag.rag_api.intake import parse_action
 
         accepted = await self.question()
         question = await rag_core.claim_question(accepted.request_id)
@@ -826,17 +827,11 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             row.notice.event.delivery_id for row in rows if row.notice.route == "rag.results"
         )
         delivery = await rag_api.claim_delivery(delivery_id)
-        action = SupportAction(kind="offer", request_id=accepted.request_id, reason="dissatisfied")
-        await rag_api.store_delivery_parts(
-            delivery.attempt,
-            [
-                TextPart(
-                    kind="text",
-                    text="Answer",
-                    actions=[InlineAction(text="Help", callback_data=_callback_data(action))],
-                )
-            ],
-        )
+        parts = build_delivery_parts(delivery, "https://bot.example")
+        action = parse_action(parts[0].actions[0].callback_data)
+        self.assertEqual(action, SupportAction(kind="offer", request_id=accepted.request_id,
+                                              reason="dissatisfied"))
+        await rag_api.store_delivery_parts(delivery.attempt, parts)
         command = SupportCommand(
             update_id=uuid4().int % 10**15,
             user_id=2,
@@ -986,3 +981,141 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         async with self.state.engine.connect() as connection:
             await connection.run_sync(check)
+
+    async def test_readiness_writes_roll_back_and_reject_read_only_or_full_database(self):
+        from contextlib import asynccontextmanager
+
+        async def counts():
+            async with _transaction() as session:
+                return await _one(session, 'SELECT (SELECT count(*) FROM rag_requests) AS requests, '
+                                  '(SELECT count(*) FROM outbox) AS notices, '
+                                  '(SELECT count(*) FROM telegram_updates) AS updates')
+        initial = dict(await counts())
+        self.assertTrue(await rag_api.check_admission_ready())
+        self.assertEqual(dict(await counts()), initial)
+        @asynccontextmanager
+        async def read_only():
+            async with _transaction() as session:
+                await _execute(session, 'SET TRANSACTION READ ONLY')
+                yield session
+        with patch.object(rag_api, '_transaction', read_only):
+            with self.assertRaises(StorageError):
+                await rag_api.check_admission_ready()
+        self.assertEqual(dict(await counts()), initial)
+        self.state.settings.max_pending_requests = 1
+        await self.question()
+        self.assertFalse(await rag_api.check_admission_ready())
+
+    async def test_public_rate_limit_is_atomic_and_pagination_has_no_gaps(self):
+        from rag.rag_api.contracts import RateLimited
+        from pydantic import ValidationError
+
+        accepted = await self.question()
+        question = await rag_core.claim_question(accepted.request_id)
+        await rag_core.complete_question(question.attempt, SupportOutcome(kind='support', reason='no_evidence'))
+        case = (await support.list_pending_support(now(), 10))[0]
+        await support.create_support_ticket(case.case_id, f'https://bot.example/tickets/{case.case_id}')
+        keys = [uuid4() for _ in range(23)]
+        replies = await asyncio.gather(*(support.append_ticket_message(None, case.case_id, key, 'Visitor')
+                                         for key in keys), return_exceptions=True)
+        accepted_replies = [reply for reply in replies if not isinstance(reply, Exception)]
+        self.assertEqual(len(accepted_replies), 20)
+        self.assertEqual(sum(isinstance(reply, RateLimited) for reply in replies), 3)
+        first_index = next(i for i, reply in enumerate(replies) if not isinstance(reply, Exception))
+        self.assertEqual(await support.append_ticket_message(None, case.case_id, keys[first_index], 'Visitor'),
+                         replies[first_index])
+        with self.assertRaises(ValidationError):
+            await support.append_ticket_message(None, case.case_id, uuid4(), 'x' * 4097)
+        # Operators remain able to respond while a visitor is at the limit.
+        operator = await support.append_ticket_message(Principal(login='runtime_admin'), case.case_id, uuid4(), 'Operator')
+        seen, cursor = [], None
+        while True:
+            view = await support.read_ticket(case.case_id, 7, cursor)
+            seen.extend(message.message_id for message in view.messages)
+            if view.next_cursor is None:
+                break
+            cursor = view.next_cursor
+        expected = {reply.message_id for reply in accepted_replies} | {operator.message_id}
+        self.assertEqual(set(seen), expected)
+        self.assertEqual(len(seen), len(expected))
+        async with _transaction() as session:
+            await _execute(session, "UPDATE support_messages SET created_at=clock_timestamp()-interval '61 seconds' WHERE case_id=:id", id=case.case_id)
+        await support.append_ticket_message(None, case.case_id, uuid4(), 'After window')
+
+    async def test_actual_fallback_is_saved_in_ticket_and_metrics_use_one_query(self):
+        from sqlalchemy import event
+        from rag.rag_api.entrypoints import handle_rag_result
+        from rag.rag_api.delivery import sender
+
+        expected_text, fallback_request = None, None
+        with patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN':'123:test', 'TELEGRAM_WEBHOOK_SECRET':'test-secret',
+                                     'TELEGRAM_WEBHOOK_URL':'https://bot.example'}):
+            for user, text_value in ((2, 'Long answer ' * 1000), (3, 'Normal answer')):
+                accepted = await self.question(user=user)
+                question = await rag_core.claim_question(accepted.request_id)
+                result = answer().model_copy(update={'answer_text': text_value})
+                await rag_core.complete_question(question.attempt, AnsweredOutcome(kind='answered', result=result))
+                async with _transaction() as session:
+                    row = await _one(session, "SELECT delivery_id FROM rag_deliveries WHERE request_id=:id AND purpose='answer'", id=accepted.request_id)
+                with patch.object(sender.adapter, '_post', AsyncMock(return_value=(200, {'ok':True,'result':{'message_id':321}}))):
+                    self.assertEqual(await handle_rag_result(DeliveryRef(delivery_id=row['delivery_id'])), 'ack')
+                if user == 2:
+                    fallback_request = accepted.request_id
+                    async with _transaction() as session:
+                        saved = await _one(session, 'SELECT parts,receipts FROM rag_deliveries WHERE delivery_id=:id', id=row['delivery_id'])
+                    self.assertEqual(saved['receipts'][0]['variant'], 'length_fallback')
+                    expected_text = saved['receipts'][0]['delivered_text']
+                    self.assertEqual(expected_text, saved['parts'][0]['text'])
+                    self.assertNotIn('Long answer', expected_text)
+        # A delivered fallback still supports the genuine dissatisfaction action.
+        applied = await support.record_support_action(SupportCommand(update_id=uuid4().int % 10**15,
+            user_id=2, chat_id=2, username='employee_2', received_at=now(), origin='callback', callback_message_id=321,
+            action=SupportAction(kind='offer', request_id=fallback_request, reason='dissatisfied')), None)
+        self.assertEqual(applied.kind, 'handled')
+        case_id = uuid4()
+        async with _transaction() as session:
+            await _execute(session, "INSERT INTO support_cases(case_id,request_id,user_id,state,reason) VALUES(:case,:request,2,'creating','dissatisfied')",
+                           case=case_id, request=fallback_request)
+        await support.create_support_ticket(case_id, f'https://bot.example/tickets/{case_id}')
+        view = await support.read_ticket(case_id)
+        self.assertEqual(view.history[0].answer_text, expected_text)
+        await support.close_ticket_record(Principal(login='runtime_admin'), case_id)
+        queries = []
+        def counted(conn, cursor, statement, parameters, context, executemany):
+            queries.append(statement)
+        event.listen(self.state.engine.sync_engine, 'before_cursor_execute', counted)
+        try:
+            metrics = await support.read_metrics(Principal(login='runtime_admin'), now()-timedelta(days=1), now()+timedelta(seconds=1))
+        finally:
+            event.remove(self.state.engine.sync_engine, 'before_cursor_execute', counted)
+        self.assertEqual(len(queries), 1)
+        self.assertEqual((metrics.requests, metrics.answered, metrics.escalated, metrics.dissatisfied), (2,2,1,1))
+        self.assertEqual(len(metrics.reply_duration_ms), 1)
+        self.assertEqual(len(metrics.ticket_duration_ms), 1)
+        empty = await support.read_metrics(Principal(login='runtime_admin'), now()+timedelta(days=1), now()+timedelta(days=2))
+        self.assertEqual((empty.requests, empty.answered, empty.escalated, empty.dissatisfied), (0,0,0,0))
+
+    async def test_orphan_sweep_waits_for_unknown_registration_commit(self):
+        import os
+        from rag.runtime._uploads import _protect_upload, _sweep_orphans
+
+        revision = uuid4()
+        source = UploadSource(filename='Orphan test', access_level='employees')
+        ref = await upload_spool.stage_upload(revision, ConvertedDocument(markdown='Document'), source)
+        path = self.state.settings.spool_dir / ref
+        os.utime(path, (1,1))
+        async with _protect_upload(revision):
+            self.assertEqual(await _sweep_orphans(1), 0)
+            self.assertTrue(path.exists())
+            # Registration commits, but the caller loses its response.
+            accepted = await ingestion.register_revision(revision, None, ref, source, [])
+        self.assertEqual(await _sweep_orphans(1), 0)
+        self.assertTrue(path.exists())
+        other = uuid4()
+        other_ref = await upload_spool.stage_upload(other, ConvertedDocument(markdown='Orphan'), source)
+        os.utime(self.state.settings.spool_dir / other_ref, (1,1))
+        # A registered old directory must not starve the next page of candidates.
+        self.assertEqual(await _sweep_orphans(1), 1)
+        self.assertFalse((self.state.settings.spool_dir / other_ref).exists())
+        self.assertTrue(path.exists())
+        self.assertIsNotNone(accepted)

@@ -11,6 +11,7 @@ import re
 
 import httpx
 from pydantic_settings import SettingsConfigDict
+from pydantic import Field
 from rag._configuration import ProjectSettings
 
 from rag.contracts import StepError
@@ -26,6 +27,8 @@ class _Options(ProjectSettings):
         hide_input_in_errors=True,
     )
     keep_alive: str = "0"
+    text_context_length: int = Field(default=2048, ge=2048, le=32768)
+    generation_json: bool = False
 
 
 def _digest(value):
@@ -134,7 +137,11 @@ class _OllamaAdapter(ModelAdapter):
     async def start(self):
         settings = _Settings()
         self.maximum = settings.max_message_bytes
-        self.keep_alive = _Options().keep_alive
+        options = _Options()
+        self.keep_alive = options.keep_alive
+        self.generation_json = options.generation_json and self.role == "generation"
+        self.context_length = (2048 if self.role in ("ocr", "vision")
+                               else options.text_context_length)
         headers = {}
         if self.binding.credential_env:
             headers["Authorization"] = (
@@ -172,15 +179,15 @@ class _OllamaAdapter(ModelAdapter):
         self.ready = True
 
     async def _chat(self, messages, tokens, temperature, schema, timeout_s):
-        # This development profile has a fixed 2K context. A byte-based upper
+        # The configured development profile uses a byte-based upper
         # bound is deliberately conservative, avoiding Ollama's silent trimming.
         text_bytes = sum(
             len(message["content"].encode("utf-8")) for message in messages
         )
         image_budget = 768 if any(message.get("images") for message in messages) else 0
-        if tokens + text_bytes + 32 * len(messages) + 128 + image_budget > 2048:
+        if tokens + text_bytes + 32 * len(messages) + 128 + image_budget > self.context_length:
             raise StepError("model_invalid_input", False)
-        options = dict(num_ctx=2048, num_predict=tokens)
+        options = dict(num_ctx=self.context_length, num_predict=tokens)
         if temperature is not None:
             options["temperature"] = temperature
         request = dict(
@@ -192,6 +199,10 @@ class _OllamaAdapter(ModelAdapter):
         )
         if schema is not None:
             request["format"] = schema
+        elif self.generation_json:
+            request["format"] = "json"
+            if temperature is None:
+                options["temperature"] = 0
         if self.thinking:
             request["think"] = False
         result = await self._request("POST", "/api/chat", request, timeout_s=timeout_s)

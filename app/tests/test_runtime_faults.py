@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -31,7 +32,7 @@ async def _placeholder_handler(*args, **kwargs):
 
 class RuntimeFaultTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.state = _state._Resources(RuntimeSettings(telegram_bot_token="test-token"))
+        self.state = _state._Resources(RuntimeSettings(_env_file=None, telegram_bot_token="test-token"))
         _state._set(self.state)
 
     async def asyncTearDown(self):
@@ -110,6 +111,39 @@ class RuntimeFaultTests(unittest.IsolatedAsyncioTestCase):
         self.state.settings.embedding_profile = "profile"
         self.state.settings.embedding_dimensions = 3
         self.assertEqual(set(_bindings("ingestion", self.state.settings)), {"embedding", "generation"})
+
+    async def test_ingestion_configuration_fails_before_resources_or_consumption(self):
+        with patch.dict(os.environ, {"RAG_WATCHDOG_FD": "10"}), \
+                patch("rag.ingestion._settings.environment_values", return_value={}), \
+                patch("rag.runtime.runner.start_runtime", new=AsyncMock()) as start, \
+                patch("rag.runtime.runner._consume", new=AsyncMock()) as consume:
+            with self.assertRaisesRegex(StepError, "ingestion_configuration_error") as caught:
+                await run_runtime("ingestion")
+            self.assertFalse(caught.exception.retryable)
+            start.assert_not_awaited()
+            consume.assert_not_awaited()
+
+    def test_explicit_text_only_profile_does_not_require_vision_weights(self):
+        from pydantic import SecretStr
+        binding = dict(profile_id="text-demo", execution="remote", provider="test",
+                       model_id="tiny", model_revision="v1", endpoint="http://localhost",
+                       credential_env=None, max_concurrency=1, embedding_dimensions=3)
+        settings = self.state.settings
+        settings.model_bindings = SecretStr(json.dumps({
+            role: binding for role in ("embedding", "generation", "injection")
+        }))
+        settings.embedding_profile = "text-demo"
+        settings.embedding_dimensions = 3
+        settings.use_reranker = False
+        settings.text_only = False
+        with self.assertRaisesRegex(StepError, "model_bindings_missing"):
+            _bindings("questions", settings)
+        settings.text_only = True
+        self.assertEqual(set(_bindings("questions", settings)),
+                         {"embedding", "generation", "injection"})
+        settings.use_reranker = True
+        with self.assertRaisesRegex(StepError, "model_bindings_missing"):
+            _bindings("questions", settings)
 
 
 @unittest.skipUnless(sys.platform == "linux", "Worker supervision runs inside a Linux container")

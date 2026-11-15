@@ -1,7 +1,7 @@
 """Upload admission, persistence order, authentication and uncertain commits."""
 
 import asyncio
-from contextlib import ExitStack
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 import tempfile
 import unittest
@@ -20,9 +20,15 @@ from rag.ingestion.contracts import (
 )
 
 
+@asynccontextmanager
+async def _test_upload_lease(revision_id):
+    yield
+
+
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.stack = ExitStack()
+        self.stack.enter_context(patch.object(gateway, "_protect_upload", _test_upload_lease))
         self.addCleanup(self.stack.close)
         self.settings = _GatewaySettings(_env_file=None, token="test-secret", max_upload_bytes=10)
         self.stack.enter_context(patch.object(gateway, "_GatewaySettings", return_value=self.settings))
@@ -89,6 +95,30 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 self.stage_upload.assert_not_awaited()
                 self.register_revision.assert_not_awaited()
 
+    async def test_upload_lease_covers_conversion_and_unknown_registration(self):
+        active = False
+        @asynccontextmanager
+        async def lease(revision_id):
+            nonlocal active
+            self.assertEqual(revision_id, self.revision)
+            active = True
+            try:
+                yield
+            finally:
+                active = False
+        async def convert(upload, revision):
+            self.assertTrue(active)
+            return await self._convert(upload, revision)
+        async def register(*args):
+            self.assertTrue(active)
+            raise StorageError("unknown commit")
+        self.convert_document.side_effect = convert
+        self.register_revision.side_effect = register
+        with patch.object(gateway, "_protect_upload", lease), self.assertRaises(StorageError):
+            await gateway.accept_upload(self._input())
+        self.assertFalse(active)
+        self.remove_staged_upload.assert_not_awaited()
+
     async def test_converter_business_rejection_and_model_failure_are_distinct(self):
         self.convert_document.side_effect = StepError("unsupported_format", False)
         self.assertEqual((await gateway.accept_upload(self._input())).code, "unsupported_format")
@@ -103,6 +133,44 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             await gateway.accept_upload(self._input())
         self.stage_upload.assert_not_awaited()
         self.register_revision.assert_not_awaited()
+
+    async def test_indivisible_chunk_rejection_is_permanent_without_registration(self):
+        self.prepare_chunks.side_effect = StepError("chunk_too_large", False)
+        result = await gateway.accept_upload(self._input())
+        self.assertEqual(result, UploadRejected(kind="rejected", code="conversion_failed"))
+        self.register_revision.assert_not_awaited()
+        self.store_document_batch.assert_not_awaited()
+        self.remove_staged_upload.assert_awaited_once_with(f'uploads/{self.revision}')
+        self.prepare_chunks.side_effect = StepError("chunk_too_large", True)
+        with self.assertRaises(StepError):
+            await gateway.accept_upload(self._input())
+
+    async def test_real_chunking_failure_returns_422_through_http(self):
+        from rag.ingestion.worker import prepare_chunks
+
+        self.converted.markdown = 'x' * 2100 + '\n\n' + self.markdown
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'converted.md'
+            path.write_text(self.converted.markdown, encoding='utf-8')
+            self.open_staged_upload.return_value = self.staged.model_copy(update={'path': path})
+            self.prepare_chunks.side_effect = prepare_chunks
+            application.app.state.ingestion_settings = self.settings
+            try:
+                with patch.dict('os.environ', INGESTION_CHUNK_CHARACTERS='2000',
+                                INGESTION_CHUNK_OVERLAP='200',
+                                INGESTION_EMBEDDING_INPUT_CHARACTERS='4000'):
+                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application.app),
+                                                 base_url='http://test') as client:
+                        response = await client.post(
+                            '/admin/ingestion/upload?filename=manual.pdf&access_level=employees',
+                            content=b'document', headers={'Authorization': 'Bearer test-secret',
+                                                          'Content-Type': 'application/pdf'})
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.json(), {'kind': 'rejected', 'code': 'conversion_failed'})
+                self.register_revision.assert_not_awaited()
+            finally:
+                del application.app.state.ingestion_settings
+
 
     async def test_non_utf8_image_bytes_reach_s3_without_json_encoding(self):
         self.converted.images[0].content.data = b"\x89PNG\r\n\x1a\n\xff\x00"
@@ -138,6 +206,19 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.register_revision.side_effect = wait_forever
         with self.assertRaises(StorageError):
             await gateway.accept_upload(self._input())
+        self.remove_staged_upload.assert_not_awaited()
+
+    async def test_registration_cancellation_preserves_unknown_commit_materials(self):
+        entered = asyncio.Event()
+        async def register(*args):
+            entered.set()
+            await asyncio.Event().wait()
+        self.register_revision.side_effect = register
+        task = asyncio.create_task(gateway.accept_upload(self._input()))
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
         self.remove_staged_upload.assert_not_awaited()
 
     async def test_conversion_timeout_cancels_work_and_does_not_register(self):
@@ -187,6 +268,7 @@ class HttpUploadTests(unittest.IsolatedAsyncioTestCase):
             transport=httpx.ASGITransport(app=application.app), base_url="http://test",
         )
         self.addAsyncCleanup(self.client.aclose)
+        self.enterContext(patch.object(gateway, "_protect_upload", _test_upload_lease))
         self.mock = AsyncMock(return_value=AcceptedUpload(
             kind="accepted", job_id=uuid4(), document_id=uuid4(),
         ))
@@ -211,6 +293,17 @@ class HttpUploadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["kind"], "accepted")
         self.assertEqual(response.headers["cache-control"], "no-store")
+
+    async def test_markdown_upload_preserves_bytes_and_source_name(self):
+        async def accept(upload):
+            self.assertEqual(upload.source.filename, "manual.md")
+            self.assertEqual(b"".join([part async for part in upload.content]), b"# Manual")
+            return self.mock.return_value
+        self.mock.side_effect = accept
+        response = await self.client.post(self.url.replace("manual.pdf", "manual.md"),
+            headers={"Authorization": "Bearer test-secret", "Content-Type": "text/markdown"},
+            content=b"# Manual")
+        self.assertEqual(response.status_code, 202)
 
     async def test_authentication_runs_before_body_and_metadata(self):
         for authorization in (None, "Bearer wrong", "Basic test-secret", "Bearer "):
@@ -286,6 +379,8 @@ class HttpUploadTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConfigurationTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.enterContext(patch.object(application, '_sweep_orphans', AsyncMock(return_value=0)))
     async def test_lifespan_opens_and_closes_runtime_without_unused_models(self):
         settings = _GatewaySettings(_env_file=None, token="test-secret")
         with patch.object(application, "_GatewaySettings", return_value=settings), \

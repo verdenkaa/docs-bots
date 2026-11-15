@@ -96,6 +96,7 @@ async def handle_rag_result(event: DeliveryRef) -> ConsumeDecision:
                     if result.kind == "sent":
                         if not await _call("record_delivery_part", repository.record_delivery_part,
                                            attempt, index, result.message_id, result.variant,
+                                           result.delivered_text,
                                            _fields={"message_id": result.message_id, "variant": result.variant}):
                             decision, outcome = "ack", "stale_attempt"
                             return decision

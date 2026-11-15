@@ -137,7 +137,9 @@ class StartupTests(unittest.TestCase):
                     backend.scenario(mode)
                 self.assertIn("s3", start.call_args_list[0].args[0])
                 if mode != "infra":
-                    self.assertEqual(start.call_args_list[1].args[0], manager.APP)
+                    # сервисы моделей поднимаются до приложения: core проверяет роли моделей при старте
+                    self.assertEqual(start.call_args_list[1].args[0], manager.GROUPS["models"])
+                    self.assertEqual(start.call_args_list[2].args[0], manager.APP)
 
     def test_s3_requires_health_and_reports_api_and_console(self):
         container = manager.Container("test", "running", "starting", 0, "now", 0)
@@ -164,7 +166,7 @@ class ComposeTests(unittest.TestCase):
                         RABBITMQ_USER="custom-rabbit", RABBITMQ_PUBLISHED_PORT="15672",
                         GRAFANA_PASSWORD="test-grafana", S3_ACCESS_KEY="test-access",
                         S3_SECRET_KEY="test-secret", S3_PORT="19000", S3_CONSOLE_PORT="19001",
-                        CORE_IMAGE="", WORKER_IMAGE="")
+                        CORE_IMAGE="", WORKER_IMAGE="", DETECTOR_IMAGE="", DETECTOR_PORT="")
 
     def config(self, local=False, scaffold=False):
         command = [*COMPOSE_COMMAND, "--env-file", str(self.env_file), "-f", str(MANAGER_DIR / "compose.yaml")]
@@ -201,6 +203,14 @@ class ComposeTests(unittest.TestCase):
                     })
                 else:
                     self.assertFalse(s3.get("ports"))
+                detector = config["services"]["detector"]
+                self.assertEqual(detector["image"], "localhost/rag-detector:scaffold")
+                self.assertIn("healthcheck", detector)
+                if local:
+                    self.assertEqual({(p["host_ip"], p["published"], p["target"]) for p in detector["ports"]},
+                                     {("127.0.0.1", "8090", 8080)})
+                else:
+                    self.assertFalse(detector.get("ports"))
                 for role in manager.APP:
                     app = config["services"][role]
                     self.assertEqual(app['environment']['RAG_CORE_MAX_ATTEMPTS'], '7')
@@ -224,6 +234,8 @@ class ComposeTests(unittest.TestCase):
         result = self.config(scaffold=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         services = json.loads(result.stdout)['services']
+        self.assertEqual(Path(services['detector']['build']['context']),
+                         MANAGER_DIR.parent / 'app' / 'injection_detector')
         for role in manager.APP:
             service = services[role]
             self.assertEqual(service['image'], self.env[role.upper() + '_IMAGE'])

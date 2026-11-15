@@ -9,6 +9,8 @@ services:
     ports:
       - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
       - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+  detector:
+    ports: ["127.0.0.1:${DETECTOR_PORT:-8090}:8080"]
   s3:
     ports:
       - "127.0.0.1:${S3_PORT:-9000}:9000"

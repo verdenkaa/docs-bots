@@ -25,18 +25,23 @@ PROJECT = "rag-hackathon"
 # Groups are started in order and stopped in reverse order.
 GROUPS = {
     "infra": ("postgres", "redis", "rabbitmq", "qdrant", "s3"),
+    # Inference services start before the application: core probes its model roles at startup.
+    "models": ("detector",),
     "app": ("core", "worker"),
     "monitoring": ("loki", "alloy", "grafana"),
     "load": ("locust",),
 }
 SERVICES = tuple(service for group in GROUPS.values() for service in group)
-SCENARIOS = {"infra": ("infra",), "app": ("infra", "app"), "full": tuple(GROUPS)}
+SCENARIOS = {"infra": ("infra",), "app": ("infra", "models", "app"), "full": tuple(GROUPS)}
 APP = GROUPS["app"]
+# Images rebuilt or pulled by `update`: the application and the inference services it calls.
+UPDATABLE = (*GROUPS["models"], *APP)
 SCAFFOLD_IMAGES = {
+    "detector": "localhost/rag-detector:scaffold",
     "core": "localhost/rag-core:scaffold",
     "worker": "localhost/rag-worker:scaffold",
 }
-REQUIRED_HEALTH = {"postgres", "redis", "rabbitmq", "qdrant", "s3", "core"}
+REQUIRED_HEALTH = {"postgres", "redis", "rabbitmq", "qdrant", "s3", "detector", "core"}
 # Container TCP ports and optional browser paths.
 ENDPOINTS = {
     "postgres": {5432: None},
@@ -44,6 +49,7 @@ ENDPOINTS = {
     "rabbitmq": {5672: None},
     "qdrant": {6333: "/dashboard", 6334: None},
     "s3": {9000: "/", 9001: "/"},
+    "detector": {8080: "/health/ready"},
     "core": {8000: "/health/ready"},
     "loki": {3100: "/ready"},
     "alloy": {12345: "/"},
@@ -573,8 +579,8 @@ class Manager:
 
     def update(self, source):
         self.validate()
-        scaffold = self.scaffold_services(APP)
-        registry = [service for service in APP if service not in scaffold]
+        scaffold = self.scaffold_services(UPDATABLE)
+        registry = [service for service in UPDATABLE if service not in scaffold]
         if source == "registry" and not registry:
             raise ManagerError("No registry images configured. Use update local to rebuild the scaffold.")
         self.wait_ready(GROUPS["infra"], timeout=0)
@@ -583,8 +589,8 @@ class Manager:
                 self.progress("Downloading application images")
             self.compose("pull", *registry)
         self.build_scaffold(scaffold, rebuild=source in ("auto", "local"))
-        self.compose("up", "-d", "--no-deps", "--pull", "never", *APP)
-        self.wait_ready(APP)
+        self.compose("up", "-d", "--no-deps", "--pull", "never", *UPDATABLE)
+        self.wait_ready(UPDATABLE)
         self.status()
 
     def execute(self, action, value):

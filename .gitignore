@@ -34,6 +34,10 @@ node_modules/
 /docs/.docusaurus/
 /docs/build/
 
+# Injection detector: downloaded model weights; local threshold tuning tools and data
+/app/injection_detector/model/
+/app/evals/
+
 # Local logs and OS metadata
 *.log
 .DS_Store

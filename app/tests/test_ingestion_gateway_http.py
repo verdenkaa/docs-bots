@@ -95,6 +95,30 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 self.stage_upload.assert_not_awaited()
                 self.register_revision.assert_not_awaited()
 
+    async def test_upload_lease_covers_conversion_and_unknown_registration(self):
+        active = False
+        @asynccontextmanager
+        async def lease(revision_id):
+            nonlocal active
+            self.assertEqual(revision_id, self.revision)
+            active = True
+            try:
+                yield
+            finally:
+                active = False
+        async def convert(upload, revision):
+            self.assertTrue(active)
+            return await self._convert(upload, revision)
+        async def register(*args):
+            self.assertTrue(active)
+            raise StorageError("unknown commit")
+        self.convert_document.side_effect = convert
+        self.register_revision.side_effect = register
+        with patch.object(gateway, "_protect_upload", lease), self.assertRaises(StorageError):
+            await gateway.accept_upload(self._input())
+        self.assertFalse(active)
+        self.remove_staged_upload.assert_not_awaited()
+
     async def test_converter_business_rejection_and_model_failure_are_distinct(self):
         self.convert_document.side_effect = StepError("unsupported_format", False)
         self.assertEqual((await gateway.accept_upload(self._input())).code, "unsupported_format")

@@ -22,13 +22,13 @@ class SettingsTests(unittest.TestCase):
             "INGESTION_TOPIC_INPUT_CHARACTERS": "4000",
             "INGESTION_GENERATION_MAX_OUTPUT_TOKENS": "128",
         }
-        with patch.dict(os.environ, values, clear=True):
+        with patch.dict(os.environ, {**values, "RAG_ENV_FILE": "__absent_test_env__"}, clear=True):
             settings = _Settings.from_environment()
         self.assertEqual(settings.embedding_dimensions, 2)
         self.assertEqual(settings.generation_profile, "generation-test")
 
     def test_missing_profiles_do_not_select_a_default_model(self):
-        with patch.dict(os.environ, {}, clear=True), self.assertRaises(StepError) as result:
+        with patch.dict(os.environ, {"RAG_ENV_FILE": "__absent_test_env__"}, clear=True), self.assertRaises(StepError) as result:
             _Settings.from_environment()
         self.assertEqual(result.exception.code, "ingestion_configuration_error")
         self.assertFalse(result.exception.retryable)

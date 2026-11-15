@@ -3,7 +3,7 @@
 import asyncio
 import base64
 from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import io
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -14,7 +14,7 @@ import httpx
 from rag.contracts import StorageError
 from rag.rag_api import access, application, support
 from rag.rag_api.contracts import (
-    AccessRecord, Principal, RateLimited, SupportCase, TicketMessage, TicketView, TextPart,
+    AccessRecord, MetricsSnapshot, Principal, RateLimited, SupportCase, TicketMessage, TicketView, TextPart,
 )
 from rag.rag_api.delivery import sender
 from rag.rag_api.delivery._texts import FALLBACK_TEXT
@@ -81,6 +81,32 @@ class AdminResourceTests(unittest.IsolatedAsyncioTestCase):
             append.assert_awaited_with(Principal(login='admin'), self.case_id, self.client_id, 'Help')
             await self.client.post(f'/tickets/{self.case_id}/messages', headers=self.auth, json=self.body)
             append.assert_awaited_with(None, self.case_id, self.client_id, 'Help')
+
+    async def test_admin_can_list_close_and_read_metrics(self):
+        created = datetime.now(timezone.utc)
+        case = SupportCase(case_id=self.case_id, request_id=1, user_id=1, state='open',
+                           reason='no_evidence', ticket_url=f'https://bot.example/tickets/{self.case_id}',
+                           created_at=created)
+        closed = case.model_copy(update={'state': 'closed'})
+        metrics = MetricsSnapshot(from_at=created, to_at=created + timedelta(days=1),
+                                  requests=1, answered=0, escalated=1, dissatisfied=0,
+                                  reply_duration_ms=[], ticket_duration_ms=[])
+        actor = Principal(login='admin')
+        with patch.object(support.repository, 'read_ticket_list', AsyncMock(return_value=[case])) as read, \
+             patch.object(support.repository, 'close_ticket_record', AsyncMock(return_value=closed)) as close, \
+             patch.object(support.repository, 'read_metrics', AsyncMock(return_value=metrics)) as stats:
+            response = await self.client.get('/tickets?limit=10', headers=self.auth)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()[0]['case_id'], str(self.case_id))
+            read.assert_awaited_once_with(actor, 10)
+            response = await self.client.post(f'/tickets/{self.case_id}/close', headers=self.auth)
+            self.assertEqual((response.status_code, response.json()['state']), (200, 'closed'))
+            close.assert_awaited_once_with(actor, self.case_id)
+            response = await self.client.get('/admin/metrics', headers=self.auth, params={
+                'from_at': metrics.from_at.isoformat(), 'to_at': metrics.to_at.isoformat()})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['escalated'], 1)
+            stats.assert_awaited_once_with(actor, metrics.from_at, metrics.to_at)
 
     async def test_body_limit_applies_to_declared_and_chunked_bodies(self):
         with patch.object(support.repository, 'append_ticket_message', AsyncMock()) as append:

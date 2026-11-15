@@ -1,6 +1,6 @@
 """Contracts: docs/documents/telegram/module/service-entrypoints.md.
 
-Support через Runtime; административные операции исключены из текущего этапа.
+Support и административные операции через Runtime.
 """
 
 
@@ -88,8 +88,6 @@ async def run_support_batch(limit: int) -> int:
 async def list_tickets(actor: Principal, limit: int=50) -> list[SupportCase]:
     """Получить список тикетов админ-панели с ограничением числа записей.
 
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
-
     Args:
         actor: Проверенный администратор.
         limit: Предел выдачи.
@@ -97,20 +95,23 @@ async def list_tickets(actor: Principal, limit: int=50) -> list[SupportCase]:
     Returns:
         Список SupportCase.
     """
-    raise NotImplementedError
+    with _operation("list_tickets"):
+        return await _call("read_ticket_list", repository.read_ticket_list, actor, limit)
 
 
-async def get_ticket(case_id: UUID) -> TicketView:
+async def get_ticket(case_id: UUID, limit: int=50, before_message_id: int | None=None) -> TicketView:
     """Получить доступный тикет, исходный контекст и дальнейшие сообщения.
 
     Args:
         case_id: Идентификатор из URL.
+        limit: Размер страницы сообщений (1..100).
+        before_message_id: Исключающий курсор предыдущей страницы.
 
     Returns:
         TicketView.
     """
     with _operation("get_ticket", case_id=str(case_id)) as trace:
-        result = await _call("read_ticket", repository.read_ticket, case_id)
+        result = await _call("read_ticket", repository.read_ticket, case_id, limit, before_message_id)
         trace.fields["outcome"] = result.case.state
         return result
 
@@ -137,8 +138,6 @@ async def add_ticket_message(actor: Principal | None, case_id: UUID, client_mess
 async def close_ticket(actor: Principal, case_id: UUID) -> SupportCase:
     """Идемпотентно закрыть тикет с проверкой полномочий администратора.
 
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
-
     Args:
         actor: Проверенный оператор и тикет.
         case_id: Проверенный оператор и тикет.
@@ -146,13 +145,12 @@ async def close_ticket(actor: Principal, case_id: UUID) -> SupportCase:
     Returns:
         SupportCase.
     """
-    raise NotImplementedError
+    with _operation("close_ticket", case_id=str(case_id)):
+        return await _call("close_ticket_record", repository.close_ticket_record, actor, case_id)
 
 
 async def get_metrics(actor: Principal, from_at: datetime, to_at: datetime) -> MetricsSnapshot:
     """Прочитать наблюдаемые счётчики и длительности за период.
-
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
 
     Args:
         actor: Проверенный admin.
@@ -162,4 +160,5 @@ async def get_metrics(actor: Principal, from_at: datetime, to_at: datetime) -> M
     Returns:
         MetricsSnapshot.
     """
-    raise NotImplementedError
+    with _operation("get_metrics"):
+        return await _call("read_metrics", repository.read_metrics, actor, from_at, to_at)

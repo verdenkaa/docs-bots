@@ -5,11 +5,9 @@ from rag.contracts import StepError
 from rag.rag_api._observability import _call, _part_scope
 from rag.rag_api.contracts import DeliveryPart, SendFailed, Sent
 from rag.rag_api.delivery.limiter import limiter
+from rag.rag_api.delivery._texts import FALLBACK_TEXT
 from rag.rag_api.telegram import adapter
 from rag.runtime import media, s3
-
-FALLBACK_TEXT = 'Ответ не удалось показать целиком. Нажмите «Ответ не помог», если нужна помощь.'
-
 
 def keyboard(actions):
     return {'inline_keyboard': [[a.model_dump(exclude_none=True) for a in actions]]}
@@ -41,7 +39,7 @@ async def _send(chat_id: int, part: DeliveryPart):
                    'entities': [e.model_dump(exclude_none=True) for e in part.entities]}
         if part.actions:
             payload['reply_markup'] = keyboard(part.actions)
-    variant = 'normal'
+    variant = part.variant if part.kind == 'text' else 'normal'
     for attempt in range(2):
         try:
             fields = {'variant': variant}
@@ -58,7 +56,8 @@ async def _send(chat_id: int, part: DeliveryPart):
             message_id = result.get('message_id') if isinstance(result, dict) else None
             if type(message_id) is not int or message_id <= 0:
                 return failure(retryable=True, uncertain=True)
-            return Sent(kind='sent', message_id=message_id, variant=variant)
+            return Sent(kind='sent', message_id=message_id, variant=variant,
+                        delivered_text=payload['text'] if part.kind == 'text' else None)
         code = body.get('error_code')
         if status == 429 or code == 429:
             parameters = body.get('parameters')

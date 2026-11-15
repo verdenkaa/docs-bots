@@ -1,6 +1,6 @@
 """Contracts: docs/documents/telegram/module/service-entrypoints.md.
 
-Допуск через Runtime; административная операция остаётся заглушкой.
+Допуск и административное управление через Runtime.
 """
 
 
@@ -34,8 +34,6 @@ async def check_access(username: str | None) -> AccessRecord | None:
 async def set_user_access(actor: Principal, record: AccessRecord) -> AccessRecord:
     """Изменить допуск Telegram username от имени проверенного администратора.
 
-    Заглушка: реализация прикладной операции пока отсутствует (NotImplementedError).
-
     Args:
         actor: Проверенный администратор.
         record: Нормализованный username и enabled.
@@ -43,4 +41,4 @@ async def set_user_access(actor: Principal, record: AccessRecord) -> AccessRecor
     Returns:
         AccessRecord.
     """
-    raise NotImplementedError
+    return await repository.write_user_access(actor, record)

@@ -2,7 +2,7 @@
 
 CPU parsing runs in _convert_worker. Parsers do not call models, access S3,
 download linked images or persist the original. PDF tags enrich the structure;
-untagged content and scanned-page images follow the same conversion pipeline.
+untagged text is accepted, image pages without a text layer are unsupported.
 """
 
 from __future__ import annotations

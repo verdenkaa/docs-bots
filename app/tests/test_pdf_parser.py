@@ -1,4 +1,4 @@
-"""Real PDFs: optional tags, orphan content, scans and every displayed raster."""
+"""Real PDFs: optional tags, orphan content, illustrations and scan refusals."""
 
 from copy import deepcopy
 import importlib.util
@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import sample_pdf
-from rag.ingestion._parsers import PARSERS
+from rag.ingestion._parsers import PARSERS, ParseRefused
 
 
 HAS_PDF_LIBS = all(importlib.util.find_spec(name) for name in ("pdfplumber", "pypdf"))
@@ -83,7 +83,8 @@ class PdfParserTests(unittest.TestCase):
 
     def test_one_figure_with_multiple_rasters_keeps_each_occurrence(self):
         structure = ("Document", {}, [("P", {}, [("Figure", {}, [17])])])
-        content = b"/Figure <</MCID 17>> BDC q 20 0 0 20 50 600 cm /Im1 Do Q q 20 0 0 20 50 500 cm /Im1 Do Q EMC"
+        content = (b"BT /F1 11 Tf 50 700 Td (Pictures) Tj ET\n"
+                   b"/Figure <</MCID 17>> BDC q 20 0 0 20 50 600 cm /Im1 Do Q q 20 0 0 20 50 500 cm /Im1 Do Q EMC")
         with patch.object(sample_pdf, "_STRUCTURE", structure):
             data = sample_pdf.build_sample_pdf(page_content=content)
         text, images = self.parse(data)
@@ -103,9 +104,10 @@ class PdfParserTests(unittest.TestCase):
     def test_inline_and_artifact_images_are_extracted_without_figure_tags(self):
         from PIL import Image
 
-        content = b"/Artifact BMC q 20 0 0 20 50 500 cm BI /W 1 /H 1 /CS /RGB /BPC 8 ID \xff\x00\x00 EI Q EMC"
+        content = (b"BT /F1 11 Tf 50 700 Td (Picture) Tj ET\n"
+                   b"/Artifact BMC q 20 0 0 20 50 500 cm BI /W 1 /H 1 /CS /RGB /BPC 8 ID \xff\x00\x00 EI Q EMC")
         text, images = self.parse(sample_pdf.build_sample_pdf(tagged=False, page_content=content))
-        self.assertEqual(text.strip(), "IMAGE-0")
+        self.assertEqual(text.strip(), "Picture\n\nIMAGE-0")
         self.assertEqual(len(images), 1)
         with Image.open(BytesIO(images[0])) as image:
             self.assertEqual(image.convert("RGB").getpixel((image.width // 2, image.height // 2)), (255, 0, 0))
@@ -130,18 +132,18 @@ class PdfParserTests(unittest.TestCase):
         page = writer.pages[0]
         page["/Resources"]["/XObject"][NameObject("/Fm")] = writer._add_object(form)
         content = DecodedStreamObject()
-        content.set_data(b"q 20 0 0 20 50 500 cm /Fm Do Q")
+        content.set_data(b"BT /F1 11 Tf 50 700 Td (Picture) Tj ET\nq 20 0 0 20 50 500 cm /Fm Do Q")
         page[NameObject("/Contents")] = writer._add_object(content)
         output = BytesIO()
         writer.write(output)
         text, images = self.parse(output.getvalue())
-        self.assertEqual(text.strip(), "IMAGE-0")
+        self.assertEqual(text.strip(), "Picture\n\nIMAGE-0")
         self.assertEqual(len(images), 1)  # unused red /Im1 in the page's resources is not a displayed image
         with Image.open(BytesIO(images[0])) as image:
             self.assertEqual(image.size, (4, 4))
             self.assertEqual(image.convert("RGB").getpixel((0, 0)), (0, 0, 255))
 
-    def test_mixed_text_and_scanned_pages_preserve_order_and_images(self):
+    def test_mixed_text_and_scanned_pages_are_refused_before_image_extraction(self):
         from pypdf import PdfReader, PdfWriter
 
         writer = PdfWriter()
@@ -152,8 +154,21 @@ class PdfParserTests(unittest.TestCase):
             writer.add_page(PdfReader(BytesIO(data)).pages[0])
         output = BytesIO()
         writer.write(output)
+        images = []
+        with self.assertRaises(ParseRefused) as caught:
+            PARSERS["pdf"].parse(output.getvalue(), images.append)
+        self.assertEqual(caught.exception.code, "unsupported_format")
+        self.assertEqual(images, [])
+
+    def test_blank_pages_do_not_make_a_text_pdf_unsupported(self):
+        from pypdf import PdfReader, PdfWriter
+
+        writer = PdfWriter()
+        writer.add_blank_page(width=600, height=800)
+        writer.add_page(PdfReader(BytesIO(sample_pdf.build_sample_pdf(tagged=False))).pages[0])
+        output = BytesIO()
+        writer.write(output)
         text, images = self.parse(output.getvalue())
+        self.assertIn("Getting started", text)
         self.assertEqual(len(images), 1)
-        self.assertLess(text.index("First page"), text.index("IMAGE-0"))
-        self.assertLess(text.index("IMAGE-0"), text.index("Last page"))
 

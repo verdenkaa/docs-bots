@@ -2,7 +2,8 @@
 
 Использует дерево структуры для заголовков, списков и таблиц, если оно есть.
 Текст вне дерева добавляет по координатам; изображения извлекает независимо от
-тегов, включая картинки страниц сканированного PDF. Покрытие тегами не ограничено.
+тегов. Страницы с растровыми изображениями без текстового слоя не поддерживаются.
+Покрытие тегами не ограничено.
 
 Документ читается из памяти и на диск не пишется. Картинки отдаются в add_image как PNG;
 строка, которую вернул add_image, ставится в том же месте текста, где картинка стоит в документе.
@@ -80,6 +81,9 @@ class TaggedPdfConverter:
         self._plumber = pdfplumber.open(BytesIO(data))
         try:
             for i, page in enumerate(self._plumber.pages):
+                if page.images and not any(
+                        char["text"].strip() and char.get("tag") != "Artifact" for char in page.chars):
+                    raise ParseRefused("unsupported_format", "PDF image page has no text layer")
                 for c in page.chars:
                     if c.get("mcid") is not None:
                         position = (c["x0"], c["x1"], c["top"], i, c["bottom"])

@@ -1,8 +1,8 @@
-"""In-memory parsing for DOCX, tagged PDF and UTF-8 Markdown.
+"""In-memory parsing for DOCX, PDF and UTF-8 Markdown.
 
 CPU parsing runs in _convert_worker. Parsers do not call models, access S3,
-download linked images or persist the original. Untagged/scanned PDF is outside
-this profile; there is deliberately no Docling fallback.
+download linked images or persist the original. PDF tags enrich the structure;
+untagged content and scanned-page images follow the same conversion pipeline.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from io import BytesIO
 from typing import Protocol
-import unicodedata
 
 
 AddImage = Callable[[bytes], str]
@@ -38,13 +37,9 @@ class MarkdownParser:
 
 class PdfParser:
     def parse(self, data: bytes, add_image: AddImage) -> str:
-        from rag.ingestion._tagged_pdf import TaggedPdfConverter, UntaggedPdfError
+        from rag.ingestion._tagged_pdf import TaggedPdfConverter
 
-        _check_pdf_text(data)
-        try:
-            return TaggedPdfConverter(data, add_image).convert()
-        except UntaggedPdfError:
-            raise ParseRefused("unsupported_format", "PDF requires complete structural tags") from None
+        return TaggedPdfConverter(data, add_image).convert()
 
 
 class DocxParser:
@@ -55,19 +50,6 @@ class DocxParser:
 
 
 PARSERS: dict[str, DocumentParser] = {"md": MarkdownParser(), "pdf": PdfParser(), "docx": DocxParser()}
-
-
-def _check_pdf_text(data: bytes) -> None:
-    import pdfplumber
-
-    with pdfplumber.open(BytesIO(data)) as pdf:
-        texts = [char["text"] for page in pdf.pages[:5] for char in page.chars if char["text"].strip()]
-    if not texts:
-        raise ParseRefused("unsupported_format", "PDF has no text layer")
-    broken = sum(text.startswith("(cid:") or text == "�"
-                 or unicodedata.category(text[0]) in ("Co", "Cn", "Cc") for text in texts)
-    if broken / len(texts) > 0.1:
-        raise ParseRefused("unsupported_format", "PDF text layer is unreadable")
 
 
 def to_png(data: bytes) -> bytes:

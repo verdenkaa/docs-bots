@@ -1,8 +1,8 @@
-"""Tagged PDF -> Markdown: внутренняя часть Document Converter.
+"""PDF -> Markdown: внутренняя часть Document Converter.
 
-Читает дерево структуры PDF (заголовки, списки, таблицы, картинки), а не угадывает
-разметку по внешнему виду страницы. Работает только для PDF с тегами (например,
-экспорт из Word); для остальных бросает UntaggedPdfError.
+Использует дерево структуры для заголовков, списков и таблиц, если оно есть.
+Текст вне дерева добавляет по координатам; изображения извлекает независимо от
+тегов, включая картинки страниц сканированного PDF. Покрытие тегами не ограничено.
 
 Документ читается из памяти и на диск не пишется. Картинки отдаются в add_image как PNG;
 строка, которую вернул add_image, ставится в том же месте текста, где картинка стоит в документе.
@@ -30,19 +30,9 @@ BULLET_RE = re.compile(r"^[•o▪■□◦·\-–]\s+")
 ORDERED_RE = re.compile(r"^(\*\*)?(\d+)[.)]\s*")
 RENDER_DPI = 216
 LINE_BREAK_SLACK = 3.0  # пункты: запас на пробел перед словом
-MIN_TAG_COVERAGE = 0.95  # доля видимого текста, до которой дотягиваются теги
-MIN_CHARS_FOR_STRUCTURE = 3000  # документ длиннее этого без единого заголовка, списка или таблицы — подозрителен
 FIGURE = "figure"  # метка сегмента-картинки на месте признака жирности
 POSITION_SLACK = 10.0  # пункты: рамка блока начинается чуть выше текста своей строки
 HARD_BREAK = "  \n"  # два пробела в конце строки
-
-
-class UntaggedPdfError(ValueError):
-    """В PDF нет дерева структуры, читать нечего."""
-
-
-class PoorTagsError(UntaggedPdfError):
-    """Теги есть, но полагаться на них нельзя: они покрывают не весь текст или не несут структуры."""
 
 
 class Leaf:
@@ -74,35 +64,43 @@ class TaggedPdfConverter:
         self._reader = PdfReader(BytesIO(data))
         root = self._reader.trailer["/Root"].get("/StructTreeRoot")
         root = root.get_object() if root is not None else None
-        # у части программ (например, FineReader) корень дерева есть, но пустой
-        kids = root["/K"].get_object() if hasattr(root, "get") and "/K" in root else None
-        if not isinstance(kids, (list, dict)):
-            raise UntaggedPdfError("в PDF нет тегов структуры")
-        self._rolemap = {str(k)[1:]: str(v)[1:] for k, v in root.get("/RoleMap", {}).items()}
+        root = root if hasattr(root, "get") else {}
+        rolemap = root.get("/RoleMap", {})
+        rolemap = rolemap.get_object() if hasattr(rolemap, "get_object") else rolemap
+        self._rolemap = {str(k)[1:]: str(v)[1:] for k, v in rolemap.items()} if isinstance(rolemap, dict) else {}
         self._page_index = {p.indirect_reference.idnum: i for i, p in enumerate(self._reader.pages)}
 
         # (страница, mcid) -> символы с признаком жирности / графические объекты
         self._chars: dict[tuple[int, int], list] = collections.defaultdict(list)
         self._graphics: dict[tuple[int, int], list] = collections.defaultdict(list)
+        self._rasters: dict[tuple[int, int], list] = collections.defaultdict(list)
+        self._raster_segments: dict[tuple[int, int], tuple] = {}
+        self._image_paths: dict[int, dict[int, str | list[str]]] = {}
+        self._synthetic_mcid = -1
         self._plumber = pdfplumber.open(BytesIO(data))
-        unmarked = 0  # видимые символы вне тегов; колонтитулы (Artifact) не считаются
-        for i, page in enumerate(self._plumber.pages):
-            for c in page.chars:
-                if c.get("mcid") is None:
-                    unmarked += bool(c["text"].strip()) and c.get("tag") != "Artifact"
-                    continue
-                position = (c["x0"], c["x1"], c["top"], i, c["bottom"])
-                self._chars[(i, c["mcid"])].append((c["text"], "bold" in c["fontname"].lower(), position))
-            for kind in ("images", "curves", "lines", "rects"):
-                for o in getattr(page, kind):
-                    if o.get("mcid") is not None:
-                        bbox = (o["x0"], o["top"], o["x1"], o["bottom"])
-                        self._graphics[(i, o["mcid"])].append((kind, bbox, o.get("name")))
-
         try:
-            self._tree = Elem("Root", kids=self._build(root["/K"], None))
-            self._check_tags(unmarked)
+            for i, page in enumerate(self._plumber.pages):
+                for c in page.chars:
+                    if c.get("mcid") is not None:
+                        position = (c["x0"], c["x1"], c["top"], i, c["bottom"])
+                        self._chars[(i, c["mcid"])].append((c["text"], "bold" in c["fontname"].lower(), position))
+                for kind in ("images", "curves", "lines", "rects"):
+                    for o in getattr(page, kind):
+                        if o.get("mcid") is not None:
+                            bbox = (o["x0"], o["top"], o["x1"], o["bottom"])
+                            self._graphics[(i, o["mcid"])].append((kind, bbox, o.get("name")))
+                for number, image in enumerate(page.images):
+                    if image.get("mcid") is not None:
+                        self._rasters[(i, image["mcid"])].append((number, image))
+
+            try:
+                kids = self._build(root["/K"], None) if "/K" in root else []
+            except (KeyError, TypeError, ValueError, AttributeError, RecursionError):
+                # Broken optional structure must not discard readable page content.
+                kids = []
+            self._tree = Elem("Root", kids=kids)
             self._spans: dict[int, tuple | None] = {}
+            self._complete_content()
             self._merge_split_tables(self._tree)
             self._reflow(self._tree)
         except BaseException:
@@ -116,31 +114,80 @@ class TaggedPdfConverter:
         finally:
             self._plumber.close()
 
-    def _check_tags(self, unmarked: int) -> None:
-        """Отказывается от PDF, в котором теги формальные, чтобы файл ушёл в запасной конвертер."""
+    def _complete_content(self) -> None:
+        """Добавить текст и каждое вхождение картинки, не представленные деревом."""
         reachable = {(leaf.page, leaf.mcid) for leaf in self._leaves(self._tree)}
-        covered = sum(
-            bool(text.strip()) for key, chars in self._chars.items() if key in reachable for text, _, _ in chars
-        )
-        orphaned = sum(
-            bool(text.strip()) for key, chars in self._chars.items() if key not in reachable for text, _, _ in chars
-        )
-        total = covered + orphaned + unmarked
-        if not covered:
-            raise PoorTagsError("теги не ссылаются на текст страниц")
-        coverage = covered / total
-        if coverage < MIN_TAG_COVERAGE:
-            raise PoorTagsError(f"теги покрывают только {coverage:.0%} текста")
-        tags = {elem.tag for elem in self._elems(self._tree)}
-        structural = {tag for tag in tags if re.fullmatch(r"H[1-6]?", tag)} | (tags & {"L", "Table"})
-        if covered > MIN_CHARS_FOR_STRUCTURE and not structural:
-            raise PoorTagsError("в тегах нет ни заголовков, ни списков, ни таблиц")
+        pictured = set()
 
-    def _elems(self, elem: Elem):
-        yield elem
+        def figures(elem):
+            if elem.tag in SKIP_TAGS:
+                return
+            if elem.tag == "Figure":
+                for leaf in self._leaves(elem):
+                    pictured.update((leaf.page, number) for number, _ in self._rasters.get((leaf.page, leaf.mcid), []))
+            for kid in elem.kids:
+                if isinstance(kid, Elem):
+                    figures(kid)
+
+        figures(self._tree)
+        additions = []
+        for page_no, page in enumerate(self._plumber.pages):
+            missing = {id(char) for char in page.chars
+                       if char.get("tag") != "Artifact" and (page_no, char.get("mcid")) not in reachable}
+            if missing:
+                # pdfplumber restores spaces/reading order from glyph coordinates.
+                text_page = page.filter(lambda obj: id(obj) in missing)
+                for line in text_page.extract_text_lines():
+                    leaf = self._new_leaf(page_no)
+                    position = (line["x0"], line["x1"], line["top"], page_no, line["bottom"])
+                    self._chars[(page_no, leaf.mcid)] = [(line["text"], False, position)]
+                    additions.append(Elem("P", kids=[leaf]))
+            for number, image in enumerate(page.images):
+                if (page_no, number) not in pictured:
+                    leaf = self._new_leaf(page_no)
+                    key = (page_no, leaf.mcid)
+                    bbox = (image["x0"], image["top"], image["x1"], image["bottom"])
+                    self._graphics[key] = [("images", bbox, image.get("name"))]
+                    self._rasters[key] = [(number, image)]
+                    additions.append(Elem("Figure", kids=[leaf]))
+        ordered = sorted(additions, key=lambda node: self._span(node)[0])
+        if self._span(self._tree) is None:
+            # Entirely untagged pages need only a single ordered assembly pass.
+            self._tree.kids = ordered
+        else:
+            for block in ordered:
+                self._insert_content(self._tree, block)
+        self._spans.clear()
+
+    def _new_leaf(self, page: int) -> Leaf:
+        while (page, self._synthetic_mcid) in self._chars or (page, self._synthetic_mcid) in self._graphics:
+            self._synthetic_mcid -= 1
+        leaf = Leaf(page, self._synthetic_mcid)
+        self._synthetic_mcid -= 1
+        return leaf
+
+    def _insert_content(self, elem: Elem, block: Elem) -> bool:
+        """Вставить содержимое рядом с ближайшим абзацем/ячейкой по странице и y."""
+        point = self._span(block)[0]
         for kid in elem.kids:
-            if isinstance(kid, Elem):
-                yield from self._elems(kid)
+            if not isinstance(kid, Elem) or kid.tag in SKIP_TAGS | {"Figure"}:
+                continue
+            span = self._span(kid)
+            if span and self._not_after(span[0], point) and self._not_after(point, span[1]):
+                if self._insert_content(kid, block):
+                    self._spans.pop(id(elem), None)
+                    return True
+        if elem.tag not in {"Root", "Document", "Part", "Art", "Sect", "Div", "P", "LBody", "LI", "TD", "TH"}:
+            return False
+        for index, kid in enumerate(elem.kids):
+            span = self._span(kid)
+            if span and span[0] > point:
+                elem.kids.insert(index, block)
+                break
+        else:
+            elem.kids.append(block)
+        self._spans.pop(id(elem), None)
+        return True
 
     # ---------- дерево структуры ----------
 
@@ -326,7 +373,14 @@ class TaggedPdfConverter:
         if node.tag in SKIP_TAGS:
             return []
         if node.tag == "Figure":
-            return [self._figure(node)]
+            images = [(leaf.page, number, image) for leaf in self._leaves(node)
+                      for number, image in self._rasters.get((leaf.page, leaf.mcid), [])]
+            if images:
+                text = [segment for leaf in self._leaves(node)
+                        for segment in self._chars.get((leaf.page, leaf.mcid), [])]
+                return text + [self._raster(page, number, image) for page, number, image in images]
+            if any(self._graphics.get((leaf.page, leaf.mcid)) for leaf in self._leaves(node)):
+                return [self._figure(node)]
         segments = [s for kid in node.kids for s in self._segments(kid)]
         if node.tag == "Link" and node.uri:
             text = "".join(t for t, _, _ in segments).strip()
@@ -469,12 +523,13 @@ class TaggedPdfConverter:
         # подпись из /Alt (имя файла картинки) не нужна: описание даёт Model Gateway
         return (self._add_image(png), FIGURE, (bbox[0], bbox[2], bbox[1], page, bbox[3]))
 
-    def _original_png(self, page: int, xobject_name: str | None) -> bytes | None:
+    def _original_png(self, page: int, xobject_name: str | list[str] | None) -> bytes | None:
         """Достаёт исходное изображение из PDF без перерисовки страницы."""
         if not xobject_name:
             return None
         try:
-            image = self._reader.pages[page].images[f"/{xobject_name}"].image
+            key = xobject_name if isinstance(xobject_name, list) else "/" + xobject_name.lstrip("/")
+            image = self._reader.pages[page].images[key].image
             if image.mode not in ("RGB", "RGBA", "L", "LA", "P"):
                 image = image.convert("RGB")
             target = BytesIO()
@@ -483,6 +538,45 @@ class TaggedPdfConverter:
             return None
         self.stats["images_original"] += 1
         return target.getvalue()
+
+    def _raster_path(self, page: int, image: dict) -> str | list[str] | None:
+        """Разрешить объект, включая Form XObject с повторяющимися локальными именами."""
+        object_id = getattr(image.get("stream"), "objid", None)
+        if object_id is None:
+            return None  # inline image: render its visible rectangle
+        if page not in self._image_paths:
+            paths = {}
+            source = self._reader.pages[page]
+            try:
+                for path in source.images.keys():
+                    if isinstance(path, str) and path.startswith("~"):
+                        continue
+                    obj = source
+                    for name in path if isinstance(path, list) else [path]:
+                        obj = obj["/Resources"]["/XObject"][name]
+                    reference = getattr(obj, "indirect_reference", None)
+                    if reference is not None:
+                        paths[reference.idnum] = path
+            except (KeyError, TypeError, ValueError, AttributeError):
+                # The page renderer can still handle an image the resource walker cannot.
+                pass
+            self._image_paths[page] = paths
+        return self._image_paths[page].get(object_id)
+
+    def _raster(self, page: int, number: int, image: dict) -> tuple:
+        """Отдельный плейсхолдер для каждого нарисованного вхождения изображения."""
+        key = (page, number)
+        if key not in self._raster_segments:
+            bbox = (image["x0"], image["top"], image["x1"], image["bottom"])
+            png = self._original_png(page, self._raster_path(page, image))
+            if png is None:
+                target = BytesIO()
+                self._plumber.pages[page].crop(bbox, strict=False).to_image(resolution=RENDER_DPI).save(target, format="PNG")
+                png = target.getvalue()
+                self.stats["images_rendered"] += 1
+            self._raster_segments[key] = (self._add_image(png), FIGURE,
+                                          (bbox[0], bbox[2], bbox[1], page, bbox[3]))
+        return self._raster_segments[key]
 
     # ---------- блоки ----------
 

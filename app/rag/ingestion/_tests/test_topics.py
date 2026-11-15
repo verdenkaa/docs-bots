@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from rag.ingestion._execution import _Budget, _Trace
+from rag.ingestion._execution import _Budget
 from rag.ingestion._indexing import _Indexer
 from rag.ingestion._tests._support import _FakeDependencies, _Fixtures
 from rag.ingestion._topics import _Topics
@@ -21,7 +21,7 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         return await _Indexer(self.settings, self.deps).handle(JobRef(job_id=_Fixtures.revision))
 
     def _portion_limit(self):
-        topics = _Topics(self.settings, self.deps, _Trace("test", self.deps),
+        topics = _Topics(self.settings, self.deps,
                          _Budget.for_seconds(30, self.deps))
         return max(sum(len(message.content) for message in topics._messages(
             self.deps.batch.source.filename, [chunk.text])) for chunk in self.deps.batch.chunks)

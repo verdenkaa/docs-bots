@@ -123,3 +123,11 @@ Core различает `cache_hit`/`cache_miss`, `fragments_found`/`no_fragment
 4. Для сквозной задержки возьмите время от первого приёма принятого update до успешного ответа Telegram. Сравнивайте отдельно обычный путь, попадания в кеш и запросы с повторами.
 
 Пример выше иллюстративный, не измерение. Для изображения перед load_revision_ids дополнительно видны получение файла, recognize_text и save_prepared_question. Для topic gate внутри check_question — embedding и find_topic_matches. Для принятого кеш-попадания основные Searcher/Answer Generator отсутствуют, но фильтр темы уже выполнен. Превышение целевых 20 секунд фиксируется метрикой, не outcome эскалации.
+
+
+Core и Ingestion используют общий контекст шагов Runtime. Конвертер и Worker
+открывают свои операции через `_operation_trace`; Ingestion Gateway использует
+`_trace_context`, `_event_context` и `emit_event`. Модельные вызовы автоматически
+вкладываются в текущий `_span`. Каждый обработчик владеет
+своим деревом шагов и связан с соседними операциями по job_id/revision_id и
+message_id. Сценарий задаёт бизнес-исход, Runtime измеряет и оформляет событие.

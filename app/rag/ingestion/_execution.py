@@ -1,11 +1,9 @@
-"""Attempt budgets, sanitized boundary validation and structured tracing."""
+"""Attempt budgets and sanitized boundary validation."""
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -16,14 +14,17 @@ from rag.ingestion._dependencies import _Dependencies
 
 class _AttemptExpired(Exception):
     """No new operation may start with this attempt's remaining budget."""
+    code = "attempt_expired"
 
 
 class _DatabaseUnknown(Exception):
     """An operation's database state or commit cannot be established."""
+    code = "storage_unconfirmed"
 
 
 class _LostAttempt(Exception):
     """PostgreSQL confirmed that this consumer no longer owns the work."""
+    code = "attempt_lost"
 
 
 class _Boundary:
@@ -66,56 +67,3 @@ class _Budget:
         if remaining <= 0:
             raise _AttemptExpired
         return min(remaining, step_limit)
-
-
-class _Trace:
-    def __init__(self, job_id: str, deps: _Dependencies) -> None:
-        self.deps = deps
-        self.run_id = str(uuid4())
-        self.started = deps.monotonic()
-        self.started_at = deps.now().isoformat()
-        self.fields: dict[str, Any] = {"job_id": job_id, "revision_id": job_id}
-        self.steps: list[dict[str, Any]] = []
-        self.deps.emit("ingestion_worker", "handle_ingestion_job", "started",
-                       self.run_id, started_at=self.started_at, **self.fields)
-
-    async def call(self, name: str, budget: _Budget, limit: float,
-                   function: Any, *args: Any, **kwargs: Any) -> Any:
-        seconds = budget.remaining(limit)
-        started = self.deps.monotonic()
-        step: dict[str, Any] = {
-            "name": name,
-            "offset_ms": round((started - self.started) * 1000),
-            "outcome": "error",
-        }
-        self.steps.append(step)
-        try:
-            async with asyncio.timeout(seconds):
-                result = await function(*args, **kwargs)
-            step["outcome"] = "completed"
-            return result
-        except StepError as error:
-            step["error_code"] = error.code
-            raise
-        except TimeoutError:
-            step["error_code"] = "step_timeout"
-            raise
-        except asyncio.CancelledError:
-            step["outcome"] = "cancelled"
-            raise
-        finally:
-            step["duration_ms"] = round((self.deps.monotonic() - started) * 1000)
-
-    def finish(self, outcome: str, decision: str | None,
-               error_code: str | None = None) -> None:
-        fields = dict(self.fields)
-        if decision is not None:
-            fields["consume_decision"] = decision
-        if error_code is not None:
-            fields["error_code"] = error_code
-        self.deps.emit(
-            "ingestion_worker", "handle_ingestion_job", "finished", self.run_id,
-            started_at=self.started_at, finished_at=self.deps.now().isoformat(),
-            duration_ms=round((self.deps.monotonic() - self.started) * 1000),
-            outcome=outcome, steps=self.steps, **fields,
-        )

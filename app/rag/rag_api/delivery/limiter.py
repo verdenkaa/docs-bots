@@ -16,16 +16,19 @@ class TelegramLimiter:
         self._chat_at = {}
 
     async def wait(self, chat_id=None):
-        async with self._lock:
-            now = monotonic()
-            self._chat_at = {key: at for key, at in self._chat_at.items() if at > now}
-            delay = max(0, self._bot_at - now, self._chat_at.get(chat_id, 0) - now)
-            if delay:
-                await asyncio.sleep(delay)
-            now = monotonic()
-            self._bot_at = now + self.bot_interval
-            if chat_id is not None:
-                self._chat_at[chat_id] = now + self.chat_interval
+        while True:
+            async with self._lock:
+                now = monotonic()
+                self._chat_at = {key: at for key, at in self._chat_at.items() if at > now}
+                delay = max(0, self._bot_at - now, self._chat_at.get(chat_id, 0) - now)
+                if delay <= 0:
+                    self._bot_at = now + self.bot_interval
+                    if chat_id is not None:
+                        self._chat_at[chat_id] = now + self.chat_interval
+                    return
+            # Other chats and retry_after updates must not wait for this chat.
+            # Recheck after waking: another sender or defer() may move the slot.
+            await asyncio.sleep(delay)
 
     async def defer(self, chat_id, seconds):
         async with self._lock:

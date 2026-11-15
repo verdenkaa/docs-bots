@@ -62,11 +62,12 @@ async def handle_rag_result(event: DeliveryRef) -> ConsumeDecision:
             attempt = delivery.attempt
             trace.fields.update(request_id=delivery.request_id, purpose=delivery.purpose,
                                 attempt_no=attempt.attempt_no)
-            if attempt.attempt_no > 5:
+            parts = delivery.parts
+            fully_sent = bool(parts) and delivery.next_part == len(parts)
+            if attempt.attempt_no > 5 and not fully_sent:
                 saved = await _call("complete_delivery", repository.complete_delivery, attempt, False, False)
                 decision, outcome = "ack", "retry_limit" if saved else "stale_attempt"
                 return decision
-            parts = delivery.parts
             if parts is None:
                 with _step("build_delivery_parts", error_code="delivery_plan_invalid"):
                     parts = build_delivery_parts(delivery, get_settings().public_url)

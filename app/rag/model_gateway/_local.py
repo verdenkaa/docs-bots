@@ -77,8 +77,10 @@ class _Worker:
             "TORCH_HOME",
             "TRANSFORMERS_CACHE",
         }
+        from rag._configuration import environment_values
+
         environment = {
-            name: value for name, value in os.environ.items() if name.upper() in allowed
+            name: value for name, value in environment_values().items() if name.upper() in allowed
         }
         if self.binding.credential_env is not None:
             environment[self.binding.credential_env] = os.environ[

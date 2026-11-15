@@ -16,15 +16,27 @@ sys.path.insert(0, str(MANAGER_DIR))
 import manager
 
 
+COMPOSE_COMMAND = (
+    ['docker', 'compose'] if shutil.which('docker') else
+    ['docker-compose'] if shutil.which('docker-compose') else
+    ['podman', 'compose'] if shutil.which('podman') else None
+)
+
+
 class EnvironmentTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="rag-manager-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.path = self.root / ".env"
-        root_patch = patch.object(manager, "ROOT", self.root)
+        self.manager_root = self.root / "container-manager"
+        self.manager_root.mkdir()
+        root_patch = patch.object(manager, "ROOT", self.manager_root)
         root_patch.start()
         self.addCleanup(root_patch.stop)
+        config_patch = patch.object(manager, "ENV_FILE", self.path)
+        config_patch.start()
+        self.addCleanup(config_patch.stop)
         env_patch = patch.dict(os.environ, {}, clear=True)
         env_patch.start()
         self.addCleanup(env_patch.stop)
@@ -35,14 +47,14 @@ class EnvironmentTests(unittest.TestCase):
         original = self.path.read_bytes()
         settings = dict(line.split("=", 1) for line in original.decode().splitlines() if "=" in line)
         self.assertGreaterEqual(len(settings["S3_SECRET_KEY"]), 32)
-        self.assertNotEqual(settings["S3_SECRET_KEY"], settings["POSTGRES_PASSWORD"])
+        self.assertNotEqual(settings["S3_SECRET_KEY"], settings["PGPASSWORD"])
         manager.initialize_env(["docker"], announce=False)
         self.assertEqual(self.path.read_bytes(), original)
         run.assert_called_once()
 
     @patch.object(manager, "run", return_value="")
     def test_upgrade_preserves_existing_bytes_and_secrets(self, run):
-        original = b"# Existing stand\r\nPOSTGRES_PASSWORD=keep-this\r\nTELEGRAM_BOT_TOKEN=keep-too"
+        original = b"# Existing stand\r\nPGPASSWORD=keep-this\r\nTELEGRAM_BOT_TOKEN=keep-too"
         self.path.write_bytes(original)
         manager.initialize_env(["docker"], announce=False)
         upgraded = self.path.read_bytes()
@@ -65,7 +77,7 @@ class EnvironmentTests(unittest.TestCase):
 
     @patch.object(manager, "run")
     def test_shell_secret_is_respected(self, run):
-        self.path.write_text("POSTGRES_PASSWORD=keep\n", encoding="utf-8")
+        self.path.write_text("PGPASSWORD=keep\n", encoding="utf-8")
         original = self.path.read_bytes()
         os.environ["S3_SECRET_KEY"] = "configured-in-shell"
         manager.initialize_env(["docker"], announce=False)
@@ -74,7 +86,7 @@ class EnvironmentTests(unittest.TestCase):
 
     @patch.object(manager, "run", return_value="rag-hackathon_s3_data\n")
     def test_missing_secret_with_s3_data_requires_restore(self, run):
-        self.path.write_text("POSTGRES_PASSWORD=keep\n", encoding="utf-8")
+        self.path.write_text("PGPASSWORD=keep\n", encoding="utf-8")
         original = self.path.read_bytes()
         with self.assertRaisesRegex(manager.ManagerError, "Restore S3_SECRET_KEY"):
             manager.initialize_env(["docker"], announce=False)
@@ -85,6 +97,33 @@ class EnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(manager.ManagerError, "Restore the original .env"):
             manager.initialize_env(["docker"], announce=False)
         self.assertFalse(self.path.exists())
+
+    @patch.object(manager, "run")
+    def test_legacy_manager_env_is_not_silently_replaced(self, run):
+        (self.manager_root / '.env').write_text('POSTGRES_PASSWORD=old-secret\n', encoding='utf-8')
+        with self.assertRaisesRegex(manager.ManagerError, 'Legacy'):
+            manager.initialize_env(['docker'], announce=False)
+        self.assertFalse(self.path.exists())
+        run.assert_not_called()
+
+    def test_start_and_build_use_same_root_file_and_project(self):
+        self.path.write_text('RAG_COMPOSE_PROJECT=custom-project\n', encoding='utf-8')
+        backend = manager.Manager(['docker'], local=True)
+        for command in (backend.prefix, backend.scaffold_prefix):
+            self.assertEqual(command[command.index('--env-file') + 1], str(self.path.resolve()))
+            self.assertEqual(command[command.index('-p') + 1], 'custom-project')
+        self.assertIn(str(self.manager_root / 'compose.scaffold.yaml'), backend.scaffold_prefix)
+
+    def test_explicit_file_is_used_for_interpolation_and_service_env_file(self):
+        alternate = self.root / 'selected.env'
+        alternate.write_text('RAG_COMPOSE_PROJECT=selected-project\n', encoding='utf-8')
+        os.environ['RAG_ENV_FILE'] = str(alternate)
+        backend = manager.Manager(['docker'], local=False)
+        self.assertEqual(backend.project, 'selected-project')
+        with patch.object(manager.subprocess, 'run') as process:
+            process.return_value.returncode = 0
+            manager.run(['docker', 'compose', 'config'])
+        self.assertEqual(process.call_args.kwargs['env']['RAG_ENV_FILE'], str(alternate.resolve()))
 
 
 class StartupTests(unittest.TestCase):
@@ -113,22 +152,26 @@ class StartupTests(unittest.TestCase):
         ])
 
 
-@unittest.skipUnless(shutil.which("docker"), "Docker CLI is required to validate Compose")
+@unittest.skipUnless(COMPOSE_COMMAND, "A Compose provider is required to validate Compose")
 class ComposeTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="rag-compose-test-")
         self.addCleanup(temporary.cleanup)
         self.env_file = Path(temporary.name) / "test.env"
-        self.env_file.write_text("", encoding="utf-8")
-        self.env = dict(os.environ, POSTGRES_PASSWORD="test-postgres", RABBITMQ_PASSWORD="test-rabbit",
+        self.env_file.write_text("RAG_CORE_MAX_ATTEMPTS=7\nINGESTION_CHUNK_CHARACTERS=1234\n", encoding="utf-8")
+        self.env = dict(os.environ, RAG_ENV_FILE=str(self.env_file), PGPASSWORD="test-postgres", RABBITMQ_PASSWORD="test-rabbit",
+                        GRAFANA_USER="custom-admin", PGUSER="custom-pg", PGDATABASE="custom-db",
+                        RABBITMQ_USER="custom-rabbit", RABBITMQ_PUBLISHED_PORT="15672",
                         GRAFANA_PASSWORD="test-grafana", S3_ACCESS_KEY="test-access",
                         S3_SECRET_KEY="test-secret", S3_PORT="19000", S3_CONSOLE_PORT="19001",
                         CORE_IMAGE="", WORKER_IMAGE="")
 
-    def config(self, local=False):
-        command = ["docker", "compose", "--env-file", str(self.env_file), "-f", str(MANAGER_DIR / "compose.yaml")]
+    def config(self, local=False, scaffold=False):
+        command = [*COMPOSE_COMMAND, "--env-file", str(self.env_file), "-f", str(MANAGER_DIR / "compose.yaml")]
         if local:
             command += ["-f", str(MANAGER_DIR / "compose.local.yaml")]
+        if scaffold:
+            command += ["-f", str(MANAGER_DIR / "compose.scaffold.yaml")]
         command += ["--profile", "*", "config", "--format", "json"]
         return subprocess.run(command, env=self.env, capture_output=True, text=True, encoding="utf-8", timeout=30)
 
@@ -139,6 +182,14 @@ class ComposeTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 config = json.loads(result.stdout)
                 self.assertEqual(set(config["services"]), set(manager.SERVICES))
+                postgres = config['services']['postgres']['environment']
+                self.assertEqual(postgres['POSTGRES_USER'], 'custom-pg')
+                self.assertEqual(postgres['POSTGRES_DB'], 'custom-db')
+                self.assertEqual(postgres['POSTGRES_PASSWORD'], 'test-postgres')
+                self.assertEqual(config['services']['rabbitmq']['environment']['RABBITMQ_DEFAULT_USER'], 'custom-rabbit')
+                self.assertEqual(config['services']['grafana']['environment']['GF_SECURITY_ADMIN_USER'], 'custom-admin')
+                if local:
+                    self.assertEqual(config['services']['rabbitmq']['ports'][0]['published'], '15672')
                 s3 = config["services"]["s3"]
                 self.assertEqual(s3["image"], "docker.io/rustfs/rustfs:1.0.5")
                 self.assertEqual(s3["volumes"][0]["source"], "s3_data")
@@ -152,6 +203,10 @@ class ComposeTests(unittest.TestCase):
                     self.assertFalse(s3.get("ports"))
                 for role in manager.APP:
                     app = config["services"][role]
+                    self.assertEqual(app['environment']['RAG_CORE_MAX_ATTEMPTS'], '7')
+                    self.assertEqual(app['environment']['INGESTION_CHUNK_CHARACTERS'], '1234')
+                    self.assertEqual(app['environment']['PGUSER'], postgres['POSTGRES_USER'])
+                    self.assertEqual(app['environment']['PGPASSWORD'], postgres['POSTGRES_PASSWORD'])
                     self.assertEqual(app["depends_on"]["s3"]["condition"], "service_healthy")
                     self.assertEqual(app["environment"]["S3_ENDPOINT_URL"], "http://s3:9000")
                     self.assertEqual(app["environment"]["S3_ACCESS_KEY"], s3["environment"]["RUSTFS_ACCESS_KEY"])
@@ -162,6 +217,21 @@ class ComposeTests(unittest.TestCase):
         result = self.config()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("S3_SECRET_KEY", result.stderr)
+
+    def test_build_uses_selected_images_and_does_not_embed_env_as_build_args(self):
+        self.env.update(CORE_IMAGE='localhost/config-test-core:local',
+                        WORKER_IMAGE='localhost/config-test-worker:local')
+        result = self.config(scaffold=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        services = json.loads(result.stdout)['services']
+        for role in manager.APP:
+            service = services[role]
+            self.assertEqual(service['image'], self.env[role.upper() + '_IMAGE'])
+            self.assertEqual(Path(service['build']['context']), MANAGER_DIR.parent / 'app')
+            self.assertEqual(service['build']['target'], role)
+            self.assertFalse(service['build'].get('args'))
+            self.assertFalse(service['build'].get('secrets'))
+            self.assertEqual(service['environment']['RAG_CORE_MAX_ATTEMPTS'], '7')
 
 
 if __name__ == "__main__":

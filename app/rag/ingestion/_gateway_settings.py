@@ -1,12 +1,13 @@
 """Private settings for upload admission; no resources are opened on import."""
 
 from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from rag._configuration import ProjectSettings
 
 
-class _GatewaySettings(BaseSettings):
+class _GatewaySettings(ProjectSettings):
     model_config = SettingsConfigDict(
-        env_prefix="RAG_INGESTION_", env_file=".env", env_file_encoding="utf-8",
+        env_prefix="RAG_INGESTION_", env_file_encoding="utf-8-sig",
         extra="ignore", hide_input_in_errors=True, allow_inf_nan=False,
     )
 

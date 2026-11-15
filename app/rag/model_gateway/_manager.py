@@ -10,6 +10,7 @@ from time import monotonic
 from uuid import uuid4
 
 from rag.contracts import StepError
+from rag._configuration import environment_values
 from rag.model_gateway import providers
 from rag.model_gateway._config import _Settings
 from rag.model_gateway._streams import _collect
@@ -35,6 +36,7 @@ class _Manager:
         self.roles = {}
         self.ready = False
         self.closers = {}
+        self.file_credentials = {}
         self.coordinator = providers._coordinator or _MemoryCoordinator(settings)
 
 
@@ -101,6 +103,12 @@ async def _shutdown(manager):
             for task in manager.closers.values()
         ):
             raise StepError("model_unavailable", True)
+    # Only values introduced for this model lifecycle are removed. Keep any
+    # explicit changes made by the caller while the models were running.
+    for name, value in manager.file_credentials.items():
+        if os.environ.get(name) == value:
+            os.environ.pop(name, None)
+    manager.file_credentials.clear()
 
 
 async def _start(value):
@@ -144,11 +152,15 @@ async def _start(value):
                         raise StepError("model_configuration_error", False) from None
                 providers._freeze(True)
                 factories = providers._snapshot()
+                environment = environment_values()
                 for role, binding in bindings.items():
-                    if binding.credential_env is not None and not os.environ.get(
-                        binding.credential_env
-                    ):
-                        raise StepError("model_configuration_error", False)
+                    name = binding.credential_env
+                    if name is not None:
+                        if not environment.get(name):
+                            raise StepError("model_configuration_error", False)
+                        if name not in os.environ:
+                            os.environ[name] = environment[name]
+                            manager.file_credentials[name] = environment[name]
                     if binding.provider == "local_process":
                         from rag.model_gateway._local import _LocalAdapter
 

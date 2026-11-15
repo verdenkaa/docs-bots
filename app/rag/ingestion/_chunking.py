@@ -1,8 +1,9 @@
 """Deterministic Markdown splitting; image placeholders and code/tables stay whole."""
 
 import asyncio
-import os
 import re
+
+from rag._configuration import environment_values
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -29,13 +30,14 @@ class _ChunkSettings(BaseModel):
     @classmethod
     def from_environment(cls):
         try:
-            values = {key: os.environ[env] for key, env in (
+            environment = environment_values()
+            values = {key: environment[env] for key, env in (
                 ("characters", "INGESTION_CHUNK_CHARACTERS"),
                 ("overlap", "INGESTION_CHUNK_OVERLAP"),
                 ("max_markdown_bytes", "RAG_MAX_MARKDOWN_BYTES"),
-            ) if env in os.environ}
+            ) if env in environment}
             result = cls.model_validate(values)
-            embedding = os.environ.get("INGESTION_EMBEDDING_INPUT_CHARACTERS")
+            embedding = environment.get("INGESTION_EMBEDDING_INPUT_CHARACTERS")
             if embedding is not None and result.characters > int(embedding):
                 raise ValueError("Chunk budget exceeds the embedding input budget")
             return result

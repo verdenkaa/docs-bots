@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+from rag._configuration import environment_values
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -55,9 +55,10 @@ class _Settings(BaseModel):
     @classmethod
     def from_environment(cls) -> _Settings:
         try:
-            values = {name: os.environ["INGESTION_" + name.upper()]
+            environment = environment_values()
+            values = {name: environment["INGESTION_" + name.upper()]
                       for name in cls.model_fields
-                      if "INGESTION_" + name.upper() in os.environ}
+                      if "INGESTION_" + name.upper() in environment}
             return cls.model_validate(values)
         except ValidationError:
             raise StepError("ingestion_configuration_error", False) from None

@@ -19,6 +19,8 @@ from urllib.request import ProxyHandler, build_opener
 
 
 ROOT = Path(__file__).resolve().parent
+ENV_FILE = ROOT.parent / ".env"
+ENV_TEMPLATE = ROOT.parent / ".env.example"
 PROJECT = "rag-hackathon"
 # Groups are started in order and stopped in reverse order.
 GROUPS = {
@@ -49,7 +51,7 @@ ENDPOINTS = {
     "locust": {8089: "/"},
 }
 PASSWORD_KEYS = {
-    "postgres": ("POSTGRES_PASSWORD", "POSTGRES_PASSWORD"),
+    "postgres": ("PGPASSWORD", "POSTGRES_PASSWORD"),
     "rabbitmq": ("RABBITMQ_PASSWORD", "RABBITMQ_DEFAULT_PASS"),
     "grafana": ("GRAFANA_PASSWORD", "GF_SECURITY_ADMIN_PASSWORD"),
     "s3": ("S3_SECRET_KEY", "RUSTFS_SECRET_KEY"),
@@ -64,11 +66,29 @@ class CommandTimeout(ManagerError):
     pass
 
 
+def configuration_file():
+    return Path(os.environ.get("RAG_ENV_FILE") or ENV_FILE).resolve()
+
+
+def project_name():
+    value = os.environ.get("RAG_COMPOSE_PROJECT")
+    path = configuration_file()
+    if value is None and path.is_file():
+        match = re.search(r"(?m)^\s*RAG_COMPOSE_PROJECT\s*=\s*([^\r\n]*)", path.read_text(encoding="utf-8-sig"))
+        if match:
+            value = match[1].strip().strip("\"'")
+    value = value or PROJECT
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", value):
+        raise ManagerError("Invalid RAG_COMPOSE_PROJECT in the root .env.")
+    return value
+
+
 def run(command, *, capture=False, timeout=None):
     try:
         result = subprocess.run(
             command,
             cwd=ROOT,
+            env=dict(os.environ, RAG_ENV_FILE=str(configuration_file())),
             check=False,
             capture_output=capture,
             text=capture,
@@ -228,7 +248,9 @@ class Manager:
         self.progress = progress
         self.rss_samples = {}
         self.next_rss_sample = 0
-        self.prefix = [*engine, "compose", "-p", PROJECT, "-f", str(ROOT / "compose.yaml")]
+        self.project = project_name()
+        self.prefix = [*engine, "compose", "--env-file", str(configuration_file()), "-p", self.project,
+                       "-f", str(ROOT / "compose.yaml")]
         if local:
             self.prefix += ["-f", str(ROOT / "compose.local.yaml")]
         self.scaffold_prefix = [*self.prefix, "-f", str(ROOT / "compose.scaffold.yaml"), "--profile", "*"]
@@ -239,7 +261,7 @@ class Manager:
 
     def containers(self):
         ids = run(
-            [*self.engine, "ps", "-a", "-q", "--filter", f"label=com.docker.compose.project={PROJECT}"],
+            [*self.engine, "ps", "-a", "-q", "--filter", f"label=com.docker.compose.project={self.project}"],
             capture=True, timeout=20,
         ).splitlines()
         if not ids:
@@ -519,8 +541,8 @@ class Manager:
         return self.compose(*args, service)
 
     def passwords(self):
-        if not (ROOT / ".env").is_file():
-            raise ManagerError(".env is missing. Restore the original file to view its passwords.")
+        if not configuration_file().is_file():
+            raise ManagerError("Root .env is missing. Restore the original file to view its passwords.")
         try:
             config = json.loads(self.compose("config", "--format", "json", capture=True, timeout=15))
             return {service: config["services"][service]["environment"][env_key]
@@ -672,7 +694,7 @@ def prompt_service():
 
 
 def confirm_stop():
-    return input(f"Stop all containers of {PROJECT}? [y/N] ").strip().lower() == "y"
+    return input(f"Stop all containers of {project_name()}? [y/N] ").strip().lower() == "y"
 
 
 def show_passwords(manager):
@@ -686,14 +708,15 @@ def password_lines(passwords):
 
 
 def initialize_env(engine, announce=True):
-    path = ROOT / ".env"
+    path = configuration_file()
+    project = project_name()
     if path.exists():
         # Upgrade an existing stand without replacing any of its credentials.
         existing = path.read_text(encoding="utf-8-sig")
         if re.search(r"(?m)^[ \t]*(?:export[ \t]+)?S3_SECRET_KEY[ \t]*=", existing) or os.environ.get("S3_SECRET_KEY"):
             return
         volumes = run(
-            [*engine, "volume", "ls", "-q", "--filter", f"label=com.docker.compose.project={PROJECT}",
+            [*engine, "volume", "ls", "-q", "--filter", f"label=com.docker.compose.project={project}",
              "--filter", "label=com.docker.compose.volume=s3_data"],
             capture=True, timeout=20,
         )
@@ -706,14 +729,19 @@ def initialize_env(engine, announce=True):
         if announce:
             print(f"Added S3_SECRET_KEY to {path}; existing settings were preserved.")
         return
+    if (ROOT / ".env").is_file():
+        raise ManagerError("Legacy container-manager/.env exists. Restore its settings into the root .env before starting.")
     volumes = run(
-        [*engine, "volume", "ls", "-q", "--filter", f"label=com.docker.compose.project={PROJECT}"],
+        [*engine, "volume", "ls", "-q", "--filter", f"label=com.docker.compose.project={project}"],
         capture=True, timeout=20,
     )
     if volumes.strip():
         raise ManagerError("Project volumes already exist. Restore the original .env before starting.")
-    settings = [f"{key}={secrets.token_urlsafe(32)}" for key, _ in PASSWORD_KEYS.values()]
-    settings.extend(("CORE_IMAGE=", "WORKER_IMAGE="))
+    settings = ENV_TEMPLATE.read_text(encoding="utf-8")
+    for key, _ in PASSWORD_KEYS.values():
+        settings, count = re.subn(rf"(?m)^{key}=.*$", f"{key}={secrets.token_urlsafe(32)}", settings)
+        if count != 1:
+            raise ManagerError(f"Root .env.example must contain exactly one {key} setting.")
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
@@ -721,8 +749,7 @@ def initialize_env(engine, announce=True):
     except OSError as exc:
         raise ManagerError(f"Could not create {path}: {exc}") from exc
     with os.fdopen(fd, "w", encoding="utf-8") as file:
-        file.write("# Generated on first run. Keep this file private.\n")
-        file.write("\n".join(settings) + "\n")
+        file.write(settings)
     if announce:
         print(f"Created {path} with passwords for PostgreSQL, RabbitMQ, Grafana and S3.")
 
@@ -765,7 +792,7 @@ def main():
             if interactive(args, sys.modules[__name__]):
                 return 0
         engine = select_engine(args)
-        print(f"{PROJECT} via {' '.join(engine)}")
+        print(f"{project_name()} via {' '.join(engine)}")
         if args.action in (None, "up"):
             initialize_env(engine)
         manager = Manager(engine, args.local)

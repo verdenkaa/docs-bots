@@ -206,7 +206,8 @@ class Dashboard:
             return color(text, level) if level else text
 
         engine = " ".join(self.manager.engine) if self.manager else "setup"
-        rows = [line(f"RAG / CONTAINER MANAGER   {self.backend.PROJECT}   {engine}", "blue")]
+        project = self.manager.project if self.manager else self.backend.PROJECT
+        rows = [line(f"RAG / CONTAINER MANAGER   {project}   {engine}", "blue")]
         if self.job:
             spinner = "|/-\\"[int(time.monotonic() * 8) % 4]
             rows.append(line(f"{spinner} {self.phase}", "yellow"))

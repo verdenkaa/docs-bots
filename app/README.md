@@ -40,7 +40,7 @@ DTO наследуют Pydantic-базу `rag.dto.DTO`; поля читаютс�
 
 ## Запустить локально
 
-Ingestion HTTP запускается отдельно из `app/`: `python -m uvicorn rag.ingestion.application:app --host 127.0.0.1 --port 8001 --no-access-log`. Настройки загрузки — в [`.env.example`](.env.example); задайте непустой `RAG_INGESTION_TOKEN` в локальном `.env`. Единственная бизнес-ручка — `POST /admin/ingestion/upload`, [HTTP-контракт и пример запроса](../docs/documents/ingestion/http-upload.md). Приём использует существующие конвертер, разбиение и Runtime; пока они содержат заглушки, ручка возвращает 503. Сквозная индексация требует отдельно запущенных Queue Relay и Worker, миграций и готовых расширений Runtime.
+Ingestion HTTP запускается отдельно из `app/`: `python -m uvicorn rag.ingestion.application:app --host 127.0.0.1 --port 8001 --no-access-log`. Настройки загрузки — в [корневом `.env.example`](../.env.example); задайте непустой `RAG_INGESTION_TOKEN` в `.env` в корне репозитория. Единственная бизнес-ручка — `POST /admin/ingestion/upload`, [HTTP-контракт и пример запроса](../docs/documents/ingestion/http-upload.md). Приём использует существующие конвертер, разбиение и Runtime; пока они содержат заглушки, ручка возвращает 503. Сквозная индексация требует отдельно запущенных Queue Relay и Worker, миграций и готовых расширений Runtime.
 
 Используйте Python 3.12.x (`.python-version` и `pyproject.toml`). Из папки `app` установите проект: `python -m pip install -c requirements.lock -e .`. Прямые зависимости заданы в `pyproject.toml`, точные базовые версии — в `requirements.lock`. Проверка контрактов: `python -m unittest discover -s tests -v`. Затем выполните из папки `app` по одной команде в двух терминалах.
 
@@ -65,7 +65,7 @@ python -m rag worker --port 8001
 
 Обе роли пишут `started` при запуске и `finished` при штатной остановке. Общий [`emit_event`](rag/runtime/events.py) принимает поля из [спецификации логов](../docs/documents/faq/logging.md). При реализации передавайте в него реальные ID, исходы и замеры из обработчиков.
 
-Допуск бота задаётся списком Telegram username в БД; User ID остаётся владельцем вопроса. Админ-панель использует статичные ADMIN_LOGIN/ADMIN_PASSWORD из окружения/.env; реальные секреты не коммитятся. Runtime реализует новый список допуска, публичное чтение/реплики тикета и операторские операции для доверенного Principal; HTTP-аутентификацию выполняет будущий web-адаптер. Callback сверяется с сохранённой кнопкой и квитанцией; гонка с сохранением квитанции требует повтора. prepare_telegram_photo готовит JPEG-копию в отдельном процессе. Для новой БД примените миграции и заполните список username: [создание и применение миграций](../docs/documents/infrastructure/runtime-entrypoints.md#создание-миграций).
+Допуск бота задаётся списком Telegram username в БД; User ID остаётся владельцем вопроса. Админ-панель использует статичные ADMIN_LOGIN/ADMIN_PASSWORD из окружения/корневого `.env`; реальные секреты не коммитятся. Runtime реализует новый список допуска, публичное чтение/реплики тикета и операторские операции для доверенного Principal; HTTP-аутентификацию выполняет будущий web-адаптер. Callback сверяется с сохранённой кнопкой и квитанцией; гонка с сохранением квитанции требует повтора. prepare_telegram_photo готовит JPEG-копию в отдельном процессе. Для новой БД примените миграции и заполните список username: [создание и применение миграций](../docs/documents/infrastructure/runtime-entrypoints.md#создание-миграций).
 
 Партия `DocumentBatch` содержит полное разбиение одного документа и общие `UploadSource.filename/access_level`. Gateway сохраняет её через `store_document_batch` до регистрации задания. Worker читает `load_document_batch`, вызывает `read_document_version` и `reserve_document_version`, затем готовит оба индекса. Первая версия документа — 0, повтор задания сохраняет назначенный номер. RabbitMQ по-прежнему передаёт только JobRef. Новые операции Runtime остаются контрактными заглушками.
 
@@ -79,7 +79,7 @@ Searcher реализован через существующие Model Gateway 
 Роль `questions` проверяет готовность этих шагов до открытия ресурсов; при наличии заглушек
 запуск завершается с `business_handler_not_implemented`.
 
-Политика Core читается из окружения при вызове (префикс `RAG_CORE_`):
+Политика Core читается из корневого `.env` и окружения при вызове (префикс `RAG_CORE_`):
 
 | Переменная | По умолчанию | Назначение |
 | --- | --- | --- |
@@ -139,5 +139,5 @@ python -m alembic check
 ```
 
 Проверьте созданный файл перед применением. Alembic использует те же
-PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, `RAG_PG_SCHEMA` и локальный `.env`,
+PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, `RAG_PG_SCHEMA` и корневой `.env`,
 что и Runtime. Начальная ревизия — `001_initial`; старая неиспользованная история удалена.

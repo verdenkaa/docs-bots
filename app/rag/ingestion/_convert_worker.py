@@ -1,7 +1,7 @@
 """One memory-bounded parse. stdin: original; stdout: framed Markdown and PNGs.
 
 The process never creates a local original or image directory. Its parent owns
-the lifetime of the process group and uploads the returned image bytes to S3.
+the lifetime of the process group. Gateway stores the returned images in S3.
 """
 
 import json

@@ -12,7 +12,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 
 from rag.contracts import StepError, StorageError
-from rag.ingestion.contracts import UploadSource
+from rag.ingestion.contracts import IngestionAttempt, UploadSource
 from rag.runtime.postgresql import ingestion as pg
 from rag.runtime._migrations.versions import ingestion_documents as migration
 
@@ -134,6 +134,78 @@ class IngestionDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await pg.claim_ingestion_job(self.revision))
         self.one.side_effect = [self._row(), None, {"revision_id": uuid4()}]
         self.assertIsNone(await pg.claim_ingestion_job(self.revision))
+        self.execute.assert_not_awaited()
+
+
+    def _attempt(self):
+        return IngestionAttempt(job_id=self.revision, attempt_no=1,
+                                deadline_at=self.now + timedelta(seconds=120))
+
+    def _indexing_row(self, **changes):
+        return self._row(state="indexing", attempt_no=1,
+                         resume_at=self._attempt().deadline_at, **changes)
+
+    async def test_read_version_zero_is_a_result(self):
+        self.one.return_value = {"document_id": self.document, "current_version": 0}
+        result = await pg.read_document_version(self.source.filename)
+        self.assertEqual(result.document_version, 0)
+        for row in (None, {"current_version": None}):
+            self.one.return_value = row
+            self.assertIsNone(await pg.read_document_version(self.source.filename))
+
+    async def test_reserve_zero_and_repeat_are_idempotent(self):
+        self.one.side_effect = [{"document_id": self.document}, {"current_version": None},
+                                self._indexing_row(), None]
+        result = await pg.reserve_document_version(self._attempt(), None)
+        self.assertEqual(result.document_version, 0)
+        self.execute.assert_awaited_once()
+        self.execute.reset_mock()
+        self.one.side_effect = [{"document_id": self.document}, {"current_version": None},
+                                self._indexing_row(document_version=0), None]
+        self.assertEqual(await pg.reserve_document_version(self._attempt(), None), result)
+        self.execute.assert_not_awaited()
+
+    async def test_reserve_checks_current_base_and_stored_reservation(self):
+        for version, expected, retryable in ((None, None, True), (2, 0, False)):
+            self.one.side_effect = [{"document_id": self.document}, {"current_version": 1},
+                                    self._indexing_row(document_version=version, base_version=1), None]
+            with self.assertRaises(StepError) as caught:
+                await pg.reserve_document_version(self._attempt(), expected)
+            self.assertEqual(caught.exception.code, "document_version_conflict")
+            self.assertEqual(caught.exception.retryable, retryable)
+        self.execute.assert_not_awaited()
+
+    async def test_lost_or_pending_attempt_cannot_reserve(self):
+        for row in (None, self._indexing_row(qdrant_write_pending=True), self._row()):
+            self.one.side_effect = [{"document_id": self.document}, {"current_version": None}, row]
+            self.assertIsNone(await pg.reserve_document_version(self._attempt(), None))
+        self.execute.assert_not_awaited()
+
+    async def test_begin_requires_reserved_version_before_sql_write(self):
+        self.one.return_value = self._indexing_row()
+        with self.assertRaisesRegex(StepError, "document_version_missing"):
+            await pg.begin_revision_write(self._attempt(), 1, 1)
+        self.execute.assert_not_awaited()
+
+    async def test_publish_updates_document_and_corpus_in_same_transaction(self):
+        self.stack.enter_context(patch.object(pg, "_corpus", new=AsyncMock(return_value={"generation": 7})))
+        self.stack.enter_context(patch.object(pg, "_wake_ingestion", new=AsyncMock()))
+        self.one.side_effect = [{"document_id": self.document}, self._indexing_row(
+            document_version=1, base_version=0, expected_chunk_count=2, expected_topic_count=1,
+            qdrant_write_pending=True), {"current_version": 0}]
+        self.assertEqual(await pg.publish_revision(self._attempt()), 8)
+        registry = self.execute.await_args_list[-1].args[1]
+        self.assertEqual(registry.table.name, "documents")
+        self.assertEqual(registry.compile().params["current_version"], 1)
+        self.assertEqual(registry.compile().params["current_revision_id"], self.revision)
+
+    async def test_stale_publish_base_does_not_retire_current_revision(self):
+        self.stack.enter_context(patch.object(pg, "_corpus", new=AsyncMock(return_value={"generation": 7})))
+        self.one.side_effect = [{"document_id": self.document}, self._indexing_row(
+            document_version=1, base_version=0, expected_chunk_count=2, expected_topic_count=1,
+            qdrant_write_pending=True), {"current_version": 1}]
+        with self.assertRaisesRegex(StepError, "document_version_conflict"):
+            await pg.publish_revision(self._attempt())
         self.execute.assert_not_awaited()
 
 

@@ -10,7 +10,7 @@ from uuid import uuid4
 from pydantic import TypeAdapter, ValidationError
 
 from rag.contracts import ImageRef, StepError, StorageError
-from rag.ingestion.contracts import ConvertedDocument, StagedUpload, UploadSource
+from rag.ingestion.contracts import ConvertedDocument, DocumentBatch, StagedUpload, UploadSource
 from rag.runtime._state import _get
 from rag.runtime._validation import _staging_revision
 
@@ -185,6 +185,42 @@ def _prepared(ref, value=None):
         _atomic(path,content)
 
 
+def _check_batch(batch, upload):
+    if upload is None:
+        raise StorageError("Accepted Markdown is missing")
+    if batch.source != upload.source:
+        raise StepError("document_batch_conflict", False)
+    allowed = {image.image_id: image for image in upload.images}
+    actual = {image.image_id: image for chunk in batch.chunks for image in chunk.images}
+    if actual != allowed:
+        raise StepError("document_batch_conflict", False)
+
+
+def _batch(ref, value=None):
+    with _guard(ref) as target:
+        path = target / "chunks.json"
+        existing = (DocumentBatch.model_validate_json(
+            _read_file(path, _get().settings.max_prepared_bytes)) if path.exists() else None)
+        upload = _open(target)
+        if existing is not None:
+            try:
+                _check_batch(existing, upload)
+            except StepError:
+                raise StorageError("Stored document batch does not match its manifest") from None
+        if value is None:
+            return existing
+        value = DocumentBatch.model_validate_json(value.model_dump_json())
+        _check_batch(value, upload)
+        if existing is not None:
+            if existing != value:
+                raise StepError("document_batch_conflict", False)
+            return None
+        content = value.model_dump_json().encode("utf-8")
+        if len(content) > _get().settings.max_prepared_bytes:
+            raise StorageError("Document batch exceeds configured limit")
+        _atomic(path, content)
+
+
 def _check_prepared(ref, prepared, upload):
     settings=_get().settings
     if upload is None:
@@ -198,10 +234,21 @@ def _check_prepared(ref, prepared, upload):
         if len(point.dense)!=settings.embedding_dimensions:
             raise StepError("embedding_profile_mismatch",False)
     for point in prepared.points:
-        if point.source_name!=upload.source.filename or point.source_url is not None:
+        if (point.source_name!=upload.source.filename or point.source_url is not None
+                or point.access_level != upload.source.access_level):
             raise StepError("prepared_revision_conflict",False)
         if any(allowed.get(image.image_id)!=image for image in point.images):
             raise StepError("prepared_revision_conflict",False)
+    batch_path = upload.path.parent / "chunks.json"
+    if batch_path.exists():
+        batch = DocumentBatch.model_validate_json(_read_file(batch_path, settings.max_prepared_bytes))
+        _check_batch(batch, upload)
+        if len(prepared.points) != len(batch.chunks):
+            raise StepError("prepared_revision_conflict", False)
+        for point, chunk in zip(prepared.points, batch.chunks, strict=True):
+            if (point.access_level != batch.source.access_level or point.text != chunk.text
+                    or point.locator != chunk.locator or point.images != chunk.images):
+                raise StepError("prepared_revision_conflict", False)
 
 
 def _call(function,*args):

@@ -1,90 +1,20 @@
-"""Raw PDF/DOCX adapter: original stream -> Markdown with confirmed S3 images.
-
-Select with INGESTION_CONVERTER_CALLABLE=
-rag.ingestion._document_parser:_convert_to_markdown.
-OCR/VLM and image:// placeholders belong to the existing outer convert_document.
-"""
+"""Private bounded parser process; no S3 or model calls."""
 
 from __future__ import annotations
 
 import asyncio
-from io import BytesIO
 import json
 import os
-import re
-import secrets
 import signal
 import struct
 import sys
-import zipfile
-from uuid import UUID, uuid4, uuid5
 
-from rag.contracts import ImageContent, StepError
-from rag.ingestion._conversion import _ConversionSettings, _validate_upload
-from rag.ingestion._image_markdown import _image_links
-from rag.ingestion.contracts import UploadInput
-from rag.runtime import s3
-from rag.runtime._state import _get
-from rag.runtime.events import _event_context, emit_event
-
+from rag.contracts import StepError
 
 _WORKER_ENV = {"PATH", "PYTHONPATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP",
                "SYSTEMROOT", "WINDIR"}
 _EXIT_ERRORS = {2: "conversion_failed", 3: "unsupported_format", 5: "too_large",
                 6: "ingestion_configuration_error"}
-
-
-async def _convert_to_markdown(upload: UploadInput, revision_id: UUID) -> str:
-    upload = _validate_upload(upload, revision_id)
-    settings = _ConversionSettings.from_environment()
-    run_id, outcome, error_code = str(uuid4()), "failed", None
-    with _event_context(job_id=str(revision_id), revision_id=str(revision_id)):
-        emit_event("ingestion_gateway", "parse_document", "started", run_id)
-        try:
-            async with asyncio.timeout(settings.timeout_s):
-                data = bytearray()
-                async for part in upload.content:
-                    if not isinstance(part, bytes):
-                        raise StepError("invalid_upload", False)
-                    if len(data) + len(part) > settings.max_upload_bytes:
-                        raise StepError("too_large", False)
-                    data.extend(part)
-                if not data:
-                    raise StepError("invalid_upload", False)
-                kind = _detect_format(data, upload.source.filename)
-                marker = "@@IMG-" + secrets.token_hex(16) + "-{}@@"
-                markdown, images = await _run_worker(kind, bytes(data), marker, settings)
-                del data
-                result = await _upload_images(markdown, marker, images, revision_id, settings)
-            outcome = "completed"
-            return result
-        except TimeoutError:
-            error_code = "converter_unavailable"
-            raise StepError(error_code, True) from None
-        except StepError as error:
-            error_code = error.code
-            raise
-        except asyncio.CancelledError:
-            outcome = "cancelled"
-            raise
-        finally:
-            emit_event("ingestion_gateway", "parse_document", "finished", run_id,
-                       outcome=outcome, error_code=error_code)
-
-
-def _detect_format(data, filename):
-    if b"%PDF-" in data[:1024]:
-        return "pdf"
-    if data.startswith(b"PK\x03\x04"):
-        try:
-            with zipfile.ZipFile(BytesIO(data)) as archive:
-                if "word/document.xml" in archive.namelist():
-                    return "docx"
-        except zipfile.BadZipFile:
-            raise StepError("conversion_failed", False) from None
-    elif filename.lower().endswith((".md", ".markdown")) and b"\0" not in data:
-        return "md"
-    raise StepError("unsupported_format", False)
 
 
 async def _read_bounded(stream, maximum):
@@ -223,32 +153,3 @@ def _decode_output(output, settings):
         return parts[0].decode("utf-8"), parts[1:]
     except (ValueError, KeyError, TypeError, struct.error):
         raise StepError("converter_unavailable", True) from None
-
-
-async def _upload_images(markdown, marker, images, revision_id, settings):
-    if not markdown.strip() or "image://" in markdown:
-        raise StepError("conversion_failed", False)
-    pattern = re.compile(re.escape(marker).replace(r"\{\}", r"(\d+)"))
-    order = list(dict.fromkeys(int(match[1]) for match in pattern.finditer(markdown)))
-    if any(number >= len(images) for number in order):
-        raise StepError("conversion_failed", False)
-    if len(order) > settings.max_images or any(len(images[number]) > settings.max_image_bytes for number in order):
-        raise StepError("too_large", False)
-    if any(not images[number].startswith(b"\x89PNG\r\n\x1a\n") for number in order):
-        raise StepError("conversion_failed", False)
-    bucket = _get().settings.s3_bucket
-    identifiers = {number: uuid5(revision_id, "image:" + str(index)) for index, number in enumerate(order)}
-    result = pattern.sub(lambda match: f"![Image](s3://{bucket}/images/{identifiers[int(match[1])]})", markdown)
-    if len(result.encode("utf-8")) > settings.max_markdown_bytes:
-        raise StepError("too_large", False)
-    # Validate the complete result before the first external write.
-    links = _image_links(result, revision_id, bucket, settings.max_images)
-    if {link[2] for link in links} != set(identifiers.values()):
-        raise StepError("conversion_failed", False)
-    for number, image_id in identifiers.items():
-        try:
-            async with asyncio.timeout(settings.image_timeout_s):
-                await s3.put_image(image_id, ImageContent(data=images[number], mime_type="image/png"))
-        except TimeoutError:
-            raise StepError("image_timeout", True) from None
-    return result

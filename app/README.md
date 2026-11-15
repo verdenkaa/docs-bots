@@ -1,7 +1,9 @@
 # Каркас RAG-приложения
 
 > [!WARNING]
-> Бизнес-сценарии ещё содержат `NotImplementedError`. Runtime, Model Gateway, RAG Core и Searcher реализованы; конкретные модельные backend и веса подключаются отдельно. Health checks каркаса подтверждают запуск процессов.
+
+> Бизнес-сценарии ещё содержат `NotImplementedError`. HTTP-адаптер и последовательность приёма Ingestion Gateway реализованы; конвертер, разбиение и расширения Runtime для DocumentBatch и версий реализованы по согласованным контрактам. Базовые адаптеры Runtime, Model Gateway и RAG Core реализованы; конкретные модельные backend и веса подключаются отдельно. Health checks каркаса подтверждают запуск процессов.
+
 
 Для локальной проверки есть [адаптер Ollama и небольшой текстовый профиль](../docs/documents/model-gateway/ollama.md); OCR/vision можно добавить явно. После скачивания моделей: `python -m rag.model_gateway.ollama_setup --smoke`. Основной .env и существующий поисковый индекс команда не меняет.
 
@@ -20,9 +22,9 @@
 
 Модельные вызовы находятся в `rag/model_gateway/`; `runtime/qdrant.py` получает готовые векторы и не загружает модели. Runtime реализует адаптеры хранилищ, миграции и запуск фоновых ролей; прикладные обработчики API, Guardrails и части Ingestion пока содержат `NotImplementedError`. Bootstrap не вызывает их и не подтверждает готовность моделей. [Команды Runtime, окружение и интеграционные тесты](../docs/documents/infrastructure/runtime-entrypoints.md).
 
-Model Gateway проверяет все шесть ролей, ограничивает очередь и сроки, собирает stream и предоставляет local_process с управляемыми исполнителями. Для выбранных моделей нужно установить SDK и реализовать фабрики LocalModel; [интерфейс, настройки и проверка check-models](../docs/documents/model-gateway/providers.md). Runtime сохраняет результаты модельных шагов в PostgreSQL для защиты от повторного inference при retry/перезапуске. Перед запуском новой версии примените migrate до 003_model_calls. Тестовые backend не подключаются в production.
+Model Gateway проверяет все шесть ролей, ограничивает очередь и сроки, собирает stream и предоставляет local_process с управляемыми исполнителями. Для выбранных моделей нужно установить SDK и реализовать фабрики LocalModel; [интерфейс, настройки и проверка check-models](../docs/documents/model-gateway/providers.md). Runtime сохраняет результаты модельных шагов в PostgreSQL для защиты от повторного inference при retry/перезапуске. Перед запуском новой версии примените migrate до 004_ingestion_documents. Тестовые backend не подключаются в production.
 
-Контракты синхронизированы с текущей документацией: вопрос (RequestRef) отделён от доставки (DeliveryRef), вход поддерживает текст и изображение, итог различает ответ/эскалацию/уведомление. Gateway конвертирует документ и сохраняет полную DocumentBatch до регистрации задания; Worker индексирует готовые чанки с сохранением PreparedRevision. `convert_document` реализован для PDF, DOCX и готового Markdown ([профиль](../docs/documents/ingestion/converter.md#реализованный-профиль)); описания картинок он запрашивает у Model Gateway (роли ocr и vision). Адаптеры Runtime выполняют операции хранилищ и загрузку Telegram-медиа. Расширения Runtime для готовых партий и новой модели версий Ingestion пока требуют реализации; выбранные модельные провайдеры и остальные бизнес-сценарии подключаются отдельно.
+Контракты синхронизированы с текущей документацией: вопрос (RequestRef) отделён от доставки (DeliveryRef), вход поддерживает текст и изображение, итог различает ответ/эскалацию/уведомление. Gateway конвертирует документ и сохраняет полную DocumentBatch до регистрации задания; Worker индексирует готовые чанки с сохранением PreparedRevision. `convert_document` реализован для PDF, DOCX и готового Markdown ([профиль](../docs/documents/ingestion/converter.md#реализованный-профиль)); описания картинок он запрашивает у Model Gateway (роли ocr и vision). Адаптеры Runtime выполняют операции хранилищ и загрузку Telegram-медиа. Расширения Runtime для готовых партий и новой модели версий Ingestion реализованы; выбранные модельные провайдеры и остальные бизнес-сценарии подключаются отдельно.
 
 DTO наследуют Pydantic-базу `rag.dto.DTO`; поля читаются через атрибуты (`result.answer_text`). Правила валидации, JSON и технических потоков — в [справке](../docs/documents/faq/dto.md).
 
@@ -34,9 +36,11 @@ DTO наследуют Pydantic-базу `rag.dto.DTO`; поля читаютс�
 
 ## Python и зависимости
 
-Базовый стек: Pydantic/Settings, FastAPI/Uvicorn, SQLAlchemy/asyncpg/Alembic, aio-pika, Redis, Qdrant Client и HTTPX. Модельные SDK и парсеры пока не входят в базовое окружение. Gunicorn и uvicorn-worker доступны опцией `production` для Linux. [Установка и обновление зависимостей](../docs/documents/faq/python-environment.md).
+Базовый стек: Pydantic/Settings, FastAPI/Uvicorn, SQLAlchemy/asyncpg/Alembic, aio-pika, Redis, Qdrant Client и HTTPX. Базовые парсеры PDF/DOCX входят в окружение; модельные SDK подключаются для выбранных backend отдельно. Gunicorn и uvicorn-worker доступны опцией `production` для Linux. [Установка и обновление зависимостей](../docs/documents/faq/python-environment.md).
 
 ## Запустить локально
+
+Ingestion HTTP запускается отдельно из `app/`: `python -m uvicorn rag.ingestion.application:app --host 127.0.0.1 --port 8001 --no-access-log`. Настройки загрузки — в [`.env.example`](.env.example); задайте непустой `RAG_INGESTION_TOKEN` в локальном `.env`. Единственная бизнес-ручка — `POST /admin/ingestion/upload`, [HTTP-контракт и пример запроса](../docs/documents/ingestion/http-upload.md). Приём использует существующие конвертер, разбиение и Runtime; пока они содержат заглушки, ручка возвращает 503. Сквозная индексация требует отдельно запущенных Queue Relay и Worker, миграций и готовых расширений Runtime.
 
 Используйте Python 3.12.x (`.python-version` и `pyproject.toml`). Из папки `app` установите проект: `python -m pip install -c requirements.lock -e .`. Прямые зависимости заданы в `pyproject.toml`, точные базовые версии — в `requirements.lock`. Проверка контрактов: `python -m unittest discover -s tests -v`. Затем выполните из папки `app` по одной команде в двух терминалах.
 

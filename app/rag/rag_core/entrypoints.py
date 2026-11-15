@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import ExitStack
 from time import monotonic
-from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 from rag.contracts import (
@@ -15,30 +14,31 @@ from rag.searcher import entrypoints as searcher
 from rag.model_gateway import entrypoints as models
 from rag.runtime.postgresql import rag_core as storage
 from rag.runtime import media
-from rag.runtime.events import emit_event, _event_context, _context
+from rag.runtime.events import emit_event, _event_context, _context, _span, _trace_context, _utc_now
 from . import exact_cache, answer_generator
 from ._settings import _Settings
 
-_trace = ContextVar("rag_core_trace", default=None)
+def _step_outcome(name, result):
+    if name == "claim_question":
+        return "claimed" if result is not None else "not_claimed"
+    if name == "load_revision_ids":
+        return "loaded" if result else "empty_corpus"
+    if name == "get_answer":
+        return "cache_hit" if result is not None else "cache_miss"
+    if name == "search":
+        return "fragments_found" if result else "no_fragments"
+    if name in ("complete_question", "save_prepared_question", "schedule_question_retry"):
+        return ({"complete_question": "committed", "save_prepared_question": "saved",
+                 "schedule_question_retry": "retry_scheduled"}[name] if result else "stale_attempt")
+    return getattr(result, "kind", "completed")
+
 
 async def _step(name, operation):
-    trace = _trace.get()
-    started = monotonic()
-    record = {"name": name, "outcome": "completed"}
-    if trace is not None:
-        origin, steps = trace
-        record["offset_ms"] = round((started - origin) * 1000, 3)
-        steps.append(record)
-    try:
+    with _span(name) as record:
         result = await operation
-        record["outcome"] = getattr(result, "kind", "completed")
+        if record["outcome"] == "completed":
+            record["outcome"] = _step_outcome(name, result)
         return result
-    except BaseException as exc:
-        record["outcome"] = "failed"
-        record["error_code"] = getattr(exc, "code", type(exc).__name__)
-        raise
-    finally:
-        record["duration_ms"] = round((monotonic() - started) * 1000, 3)
 
 _NOTICES = {
     "blocked": "Не удалось принять этот вопрос. Переформулируйте его.",
@@ -102,19 +102,22 @@ async def _pipeline(question, settings):
 async def handle_rag_question(event: RequestRef) -> ConsumeDecision:
     """Process a pinned question, persist one outcome and ACK only durable transitions."""
     event = RequestRef.model_validate(event)
-    settings = _Settings()
     run_id = str(uuid4())
     started = monotonic()
     decision = "ack"
     status = None
+    handler_outcome, error_code = "completed", None
+    started_at = _utc_now()
     steps = []
-    trace_token = _trace.set((started, steps))
     with ExitStack() as contexts:
+        contexts.enter_context(_trace_context(started, steps))
         contexts.enter_context(_event_context(**{**_context.get(), "request_id": event.request_id}))
-        emit_event("rag_core", "handle_rag_question", "started", run_id)
+        emit_event("rag_core", "handle_rag_question", "started", run_id, started_at=started_at)
         try:
+            settings = _Settings()
             question = await _step("claim_question", storage.claim_question(event.request_id))
             if question is None:
+                handler_outcome = "not_claimed"
                 return "ack"
             attempt = question.attempt
             contexts.enter_context(_event_context(**{**_context.get(), "attempt_no": attempt.attempt_no}))
@@ -129,26 +132,39 @@ async def handle_rag_question(event: RequestRef) -> ConsumeDecision:
                     outcome, query = await _pipeline(question, settings)
             except (StepError, TimeoutError) as exc:
                 retryable = isinstance(exc, TimeoutError) or exc.retryable
+                error_code = getattr(exc, "code", "question_timeout")
                 emit_event("rag_core", "question_step", "finished", run_id,
                     error_code=getattr(exc, "code", "question_timeout"), retryable=retryable)
                 if retryable and attempt.attempt_no < settings.max_attempts:
-                    await _step("schedule_question_retry", storage.schedule_question_retry(attempt,
+                    scheduled = await _step("schedule_question_retry", storage.schedule_question_retry(attempt,
                         datetime.now(timezone.utc) + timedelta(seconds=settings.retry_delay_s)))
+                    handler_outcome = "retry_scheduled" if scheduled else "stale_attempt"
                     return "ack"
                 outcome, query = _notice("technical_error"), None
             if outcome is None:
+                handler_outcome = "stale_attempt"
                 return "ack"
             committed = await _step("complete_question", storage.complete_question(attempt, outcome))
+            handler_outcome = "completed" if committed else "stale_attempt"
             if committed:
                 status = outcome.kind
             if committed and query is not None:
                 await _step("store_answer", exact_cache.store_answer(query, question.corpus_generation, outcome.result))
             return "ack"
         except StorageError:
+            handler_outcome, error_code = "failed", "StorageError"
             decision = "retry_broker"
             return decision
+        except asyncio.CancelledError:
+            decision = None
+            handler_outcome, error_code = "cancelled", "cancelled"
+            raise
+        except Exception as exc:
+            decision = None  # The broker adapter decides after the exception escapes.
+            handler_outcome, error_code = "failed", getattr(exc, "code", type(exc).__name__)
+            raise
         finally:
             emit_event("rag_core", "handle_rag_question", "finished", run_id,
                 consume_decision=decision, result_status=status,
+                outcome=handler_outcome, error_code=error_code, started_at=started_at,
                 duration_ms=round((monotonic() - started) * 1000, 3), steps=steps)
-            _trace.reset(trace_token)

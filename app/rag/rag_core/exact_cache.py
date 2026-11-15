@@ -2,7 +2,7 @@
 import asyncio
 from rag.contracts import RagResult
 from rag.runtime import redis
-from rag.runtime.events import emit_event
+from rag.runtime.events import emit_event, _parent_step
 from ._settings import _Settings
 
 def _validate(query, corpus_generation):
@@ -24,6 +24,9 @@ async def get_answer(query: str, corpus_generation: int) -> RagResult | None:
             elif entry.value.corpus_generation == corpus_generation and entry.value.sources:
                 return RagResult.model_validate(entry.value.model_dump(exclude={"corpus_generation"}))
     except (redis.CacheUnavailable, TimeoutError):
+        record = _parent_step.get()
+        if record is not None and record["name"] == "get_answer":
+            record["outcome"] = "unavailable"
         emit_event("exact_cache", "get_answer", "finished", "cache", outcome="unavailable")
     return None
 
@@ -38,4 +41,7 @@ async def store_answer(query: str, corpus_generation: int, result: RagResult) ->
         async with asyncio.timeout(_Settings().cache_timeout_s):
             await redis.write_cached_answer_if_not_older(query, value)
     except (redis.CacheUnavailable, TimeoutError):
+        record = _parent_step.get()
+        if record is not None and record["name"] == "store_answer":
+            record["outcome"] = "unavailable"
         emit_event("exact_cache", "store_answer", "finished", "cache", outcome="unavailable")

@@ -22,7 +22,7 @@ from aio_pika.exceptions import AMQPException
 from pamqp.commands import Basic
 from pydantic import TypeAdapter, ValidationError
 from rag.runtime._state import _get
-from rag.runtime.events import emit_event, _event_context
+from rag.runtime.events import emit_event, _event_context, _utc_now
 from rag.runtime import _watchdog
 
 
@@ -116,6 +116,7 @@ async def _consume(route, handler, stop):
     active = set()
 
     async def receive(message):
+        received_at = _utc_now()
         task = asyncio.current_task()
         active.add(task)
         run_id = str(uuid4())
@@ -132,13 +133,15 @@ async def _consume(route, handler, stop):
             try:
                 if route == "ingestion.jobs":
                     _watchdog._begin(state.settings.io_timeout_s, event.job_id)
-                with _event_context(message_id=message.message_id, route=route, **event.model_dump(mode="json")):
+                with _event_context(message_id=message.message_id, route=route, received_at=received_at, **event.model_dump(mode="json")):
                     decision = await handler(event)
                 if decision not in ("ack","retry_broker"):
                     raise ValueError("Invalid ConsumeDecision")
             except Exception:
                 # Handler state is unknown; do not expose exception text or body.
-                emit_event("rabbitmq","consume","finished",run_id,route=route,outcome="handler_failed")
+                emit_event("rabbitmq","consume","finished",run_id,route=route,
+                    message_id=message.message_id, received_at=received_at,
+                    **event.model_dump(mode="json"), outcome="handler_failed", consume_decision="retry_broker")
                 decision = "retry_broker"
             finally:
                 if route == "ingestion.jobs":

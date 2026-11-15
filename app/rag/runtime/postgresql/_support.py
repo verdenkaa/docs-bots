@@ -81,6 +81,8 @@ async def _history(session, request):
              for receipt in _data(delivery["receipts"])
              if receipt.get("delivered_text") is not None]
     answer_text = "\n\n".join(texts) if texts else None
+    if request.get("channel", "telegram") == "web":
+        answer_text = outcome.result.answer_text if outcome.kind == "answered" else outcome.text if outcome.kind == "notice" else None
     return [
         HistoryEntry(
             request_id=request["request_id"],

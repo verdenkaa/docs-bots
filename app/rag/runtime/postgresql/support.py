@@ -310,6 +310,8 @@ async def queue_support_confirmation(case_id: UUID, now: datetime) -> bool:
         request = await _one(
             session, select(_Request.chat_id).where(_Request.request_id == row["request_id"])
         )
+        if request["chat_id"] is None:
+            return True  # Web clients read the persisted confirmation state.
         await _delivery(
             session,
             user_id=row["user_id"],
@@ -364,6 +366,8 @@ async def create_support_ticket(case_id: UUID, ticket_url: str) -> SupportCase:
             .returning(*_SupportCase.__table__.c),
         )
         automatic = request["state"] == "awaiting_support"
+        if request.get("channel", "telegram") == "web":
+            return _case(row)
         await _delivery(
             session,
             user_id=row["user_id"],
@@ -559,43 +563,47 @@ async def read_metrics(actor: Principal, from_at: datetime, to_at: datetime) -> 
         raise ValueError("Invalid metrics period")
     async with _transaction() as session:
         await _actor(session, actor)
-        from sqlalchemy import case, cast, DateTime, BigInteger, String, true, type_coerce
-        from sqlalchemy.dialects.postgresql import JSONB
+        return await _metrics_snapshot(session, from_at, to_at)
 
-        receipt = func.jsonb_array_elements(_Delivery.receipts).table_valued('value').alias('receipt')
-        payload = type_coerce(receipt.c.value, JSONB)
-        reply_at = select(func.min(cast(payload['confirmed_at'].as_string(), DateTime(timezone=True)))).select_from(
-            _Delivery).join(receipt, true()).where(
-                _Delivery.request_id == _Request.request_id, _Delivery.purpose == 'answer',
-                payload['variant'].as_string() == 'normal',
-                payload['delivered_text'].as_string().is_not(None)).correlate(_Request).scalar_subquery()
-        reaction = select(_TelegramUpdate.update_id).where(
-            _TelegramUpdate.action['kind'].as_string() == 'offer',
-            _TelegramUpdate.action['reason'].as_string() == 'dissatisfied',
-            _TelegramUpdate.action['request_id'].as_string() == cast(_Request.request_id, String),
-            _TelegramUpdate.result['kind'].as_string() == 'handled').correlate(_Request).exists()
-        facts = select(
-            _Request.result['kind'].as_string().label('kind'),
-            or_(_Request.result['kind'].as_string() == 'support',
-                _SupportCase.state.in_(('creating', 'open', 'closed'))).label('escalated'),
-            reaction.label('dissatisfied'), _Request.received_at.label('received_at'),
-            reply_at.label('reply_at'), _SupportCase.closed_at.label('closed_at')
-        ).select_from(_Request).outerjoin(_SupportCase, _SupportCase.request_id == _Request.request_id).where(
-            _Request.received_at >= from_at, _Request.received_at < to_at).subquery()
-        reply_ms = cast(func.greatest(0, func.floor(func.extract('epoch',
-            facts.c.reply_at - facts.c.received_at) * 1000)), BigInteger)
-        ticket_ms = cast(func.greatest(0, func.floor(func.extract('epoch',
-            facts.c.closed_at - facts.c.received_at) * 1000)), BigInteger)
-        row = await _one(session, select(
-            func.count().label('requests'),
-            func.coalesce(func.sum(case((facts.c.kind == 'answered', 1), else_=0)), 0).label('answered'),
-            func.coalesce(func.sum(case((facts.c.escalated, 1), else_=0)), 0).label('escalated'),
-            func.coalesce(func.sum(case((facts.c.dissatisfied, 1), else_=0)), 0).label('dissatisfied'),
-            func.array_agg(reply_ms).filter(facts.c.reply_at.is_not(None)).label('reply_duration_ms'),
-            func.array_agg(ticket_ms).filter(facts.c.closed_at.is_not(None)).label('ticket_duration_ms')
-        ).select_from(facts))
-        return MetricsSnapshot(from_at=from_at, to_at=to_at,
-                               requests=row['requests'], answered=row['answered'],
-                               escalated=row['escalated'], dissatisfied=row['dissatisfied'],
-                               reply_duration_ms=row['reply_duration_ms'] or [],
-                               ticket_duration_ms=row['ticket_duration_ms'] or [], topics=None)
+
+async def _metrics_snapshot(session, from_at, to_at):
+    from sqlalchemy import case, cast, DateTime, BigInteger, String, true, type_coerce
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    receipt = func.jsonb_array_elements(_Delivery.receipts).table_valued('value').alias('receipt')
+    payload = type_coerce(receipt.c.value, JSONB)
+    reply_at = select(func.min(cast(payload['confirmed_at'].as_string(), DateTime(timezone=True)))).select_from(
+        _Delivery).join(receipt, true()).where(
+            _Delivery.request_id == _Request.request_id, _Delivery.purpose == 'answer',
+            payload['variant'].as_string() == 'normal',
+            payload['delivered_text'].as_string().is_not(None)).correlate(_Request).scalar_subquery()
+    reaction = select(_TelegramUpdate.update_id).where(
+        _TelegramUpdate.action['kind'].as_string() == 'offer',
+        _TelegramUpdate.action['reason'].as_string() == 'dissatisfied',
+        _TelegramUpdate.action['request_id'].as_string() == cast(_Request.request_id, String),
+        _TelegramUpdate.result['kind'].as_string() == 'handled').correlate(_Request).exists()
+    facts = select(
+        _Request.result['kind'].as_string().label('kind'),
+        or_(_Request.result['kind'].as_string() == 'support',
+            _SupportCase.state.in_(('creating', 'open', 'closed'))).label('escalated'),
+        reaction.label('dissatisfied'), _Request.received_at.label('received_at'),
+        reply_at.label('reply_at'), _SupportCase.closed_at.label('closed_at')
+    ).select_from(_Request).outerjoin(_SupportCase, _SupportCase.request_id == _Request.request_id).where(
+        _Request.received_at >= from_at, _Request.received_at < to_at).subquery()
+    reply_ms = cast(func.greatest(0, func.floor(func.extract('epoch',
+        facts.c.reply_at - facts.c.received_at) * 1000)), BigInteger)
+    ticket_ms = cast(func.greatest(0, func.floor(func.extract('epoch',
+        facts.c.closed_at - facts.c.received_at) * 1000)), BigInteger)
+    row = await _one(session, select(
+        func.count().label('requests'),
+        func.coalesce(func.sum(case((facts.c.kind == 'answered', 1), else_=0)), 0).label('answered'),
+        func.coalesce(func.sum(case((facts.c.escalated, 1), else_=0)), 0).label('escalated'),
+        func.coalesce(func.sum(case((facts.c.dissatisfied, 1), else_=0)), 0).label('dissatisfied'),
+        func.array_agg(reply_ms).filter(facts.c.reply_at.is_not(None)).label('reply_duration_ms'),
+        func.array_agg(ticket_ms).filter(facts.c.closed_at.is_not(None)).label('ticket_duration_ms')
+    ).select_from(facts))
+    return MetricsSnapshot(from_at=from_at, to_at=to_at,
+                           requests=row['requests'], answered=row['answered'],
+                           escalated=row['escalated'], dissatisfied=row['dissatisfied'],
+                           reply_duration_ms=row['reply_duration_ms'] or [],
+                           ticket_duration_ms=row['ticket_duration_ms'] or [], topics=None)

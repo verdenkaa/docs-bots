@@ -366,6 +366,11 @@ sidebar_position: 1.1
 
 ## Партия чанков и версия документа
 
+**Telegram Mini App:** отдельный frontend/backend, который передаёт подписанный
+initData и текстовые вопросы в прежний RAG API; контекст RAG-диалога не создаётся.
+Веб-результат доступен после commit, без Telegram-доставки.
+[Контракт и роли](../telegram/mini-app.md).
+
 | Термин | Значение | Контракт |
 | --- | --- | --- |
 | DocumentBatch / chunks.json | Полное непустое разбиение одного документа; общие source.filename/access_level задаются один раз. | [DTO Ingestion](../ingestion/contracts.md) |

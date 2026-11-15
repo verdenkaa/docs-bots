@@ -477,6 +477,7 @@ async def queue_waiting_statuses(now: datetime, limit: int) -> int:
             session,
             select(_Request.request_id)
             .where(
+                _Request.channel == "telegram",
                 _Request.result.is_(None),
                 _Request.received_at <= now - timedelta(seconds=10),
                 ~select(_Delivery.delivery_id)
@@ -493,7 +494,7 @@ async def queue_waiting_statuses(now: datetime, limit: int) -> int:
             from ._db import _question_row
 
             row = await _question_row(session, item["request_id"])
-            if row is not None and row["result"] is None:
+            if row is not None and row.get("channel", "telegram") == "telegram" and row["result"] is None:
                 exists = await _one(
                     session,
                     select(_Delivery.delivery_id).where(

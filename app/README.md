@@ -1,5 +1,10 @@
 # Каркас RAG-приложения
 
+Добавлен отдельный текстовый канал [Telegram Mini App](../docs/documents/telegram/mini-app.md):
+новые HTTP-ручки RAG API, миграция 003_mini_app и поддержка web-жизненного цикла
+во внутреннем Runtime. Общие DTO и entrypoints остальных модулей сохранены.
+Frontend/backend находятся в соседнем репозитории docs-bots_TG_mini_app.
+
 > [!WARNING]
 
 > Бизнес-сценарии ещё содержат `NotImplementedError`. HTTP-адаптер и последовательность приёма Ingestion Gateway реализованы; конвертер, разбиение и расширения Runtime для DocumentBatch и версий реализованы по согласованным контрактам. Базовые адаптеры Runtime, Model Gateway и RAG Core реализованы; конкретные модельные backend и веса подключаются отдельно. Health checks каркаса подтверждают запуск процессов.

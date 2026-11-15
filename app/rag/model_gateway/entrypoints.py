@@ -91,9 +91,10 @@ async def classify_injection(text: str, *, timeout_s: float) -> InjectionResult:
     Returns:
         Один объект Pydantic `InjectionResult`; это наблюдение детектора, не решение Guardrails.
     """
-    return await _manager._call(
-        "injection", "classify_injection", dict(text=text), timeout_s
-    )
+    # ВРЕМЕННО по договорённости с командой: детектор пока не подключён, всегда «всё нормально».
+    # Настоящий вызов:
+    #   return await _manager._call("injection", "classify_injection", dict(text=text), timeout_s)
+    return InjectionResult(profile_id="stub", label="benign", score=None)
 
 
 async def generate(

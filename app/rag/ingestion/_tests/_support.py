@@ -60,6 +60,7 @@ class _FakeDependencies(_Dependencies):
         self.reservation = None
         self.prepared = None
         self.pending = False
+        self.attempt_released = False
         self.state = "indexing"
         self.chunk_points = []
         self.topic_points = []
@@ -172,6 +173,12 @@ class _FakeDependencies(_Dependencies):
         if self.publish_commit_unknown:
             raise StorageError("lost commit acknowledgement")
         return 42
+
+    async def _release_pending_attempt(self, attempt):
+        self._enter("release_pending")
+        assert self.pending
+        self.attempt_released = True
+        return True
 
     async def schedule_ingestion_retry(self, attempt, retry_at):
         self._enter("retry")

@@ -439,6 +439,57 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await ingestion.begin_revision_write(retry.attempt, 1, 2)
         self.assertTrue(await ingestion.fail_ingestion_job(retry.attempt))
 
+    async def test_returned_pending_attempt_immediately_allows_other_documents(self):
+        first, second, next_revision = uuid4(), uuid4(), uuid4()
+        source = UploadSource(filename="Pending A", access_level="employees")
+        accepted = await ingestion.register_revision(first, None, f"uploads/{first}", source, [])
+        await ingestion.register_revision(
+            second, None, f"uploads/{second}",
+            UploadSource(filename="Independent B", access_level="employees"), [],
+        )
+        await ingestion.register_revision(
+            next_revision, accepted.document_id, f"uploads/{next_revision}", source, [],
+        )
+        job = await ingestion.claim_ingestion_job(first)
+        await ingestion.reserve_document_version(job.attempt, None)
+        self.assertTrue(await ingestion.begin_revision_write(job.attempt, 2, 3))
+
+        # pending=true also exists during a live write: it must still exclude B.
+        self.assertGreater(job.attempt.deadline_at, now())
+        self.assertIsNone(await ingestion.claim_ingestion_job(second))
+        self.assertTrue(await ingestion._release_pending_attempt(job.attempt))
+        async with _transaction() as connection:
+            row = await _one(connection,
+                "SELECT state, resume_at, qdrant_write_pending, attempt_no, "
+                "staging_ref, expected_chunk_count, expected_topic_count "
+                "FROM document_revisions WHERE revision_id=:id", id=first)
+        self.assertEqual(row["state"], "indexing")
+        self.assertTrue(row["qdrant_write_pending"])
+        self.assertLessEqual(row["resume_at"], now())
+        self.assertEqual(row["attempt_no"], job.attempt.attempt_no)
+        self.assertEqual(row["staging_ref"], f"uploads/{first}")
+        self.assertEqual((row["expected_chunk_count"], row["expected_topic_count"]), (2, 3))
+
+        # No clock manipulation or reconciliation is needed to start document B.
+        other = await ingestion.claim_ingestion_job(second)
+        self.assertIsNotNone(other)
+        self.assertLess(now(), job.attempt.deadline_at)
+        self.assertIsNone(await ingestion.claim_ingestion_job(first))
+        self.assertFalse(await ingestion.schedule_ingestion_retry(job.attempt, now()))
+        self.assertFalse(await ingestion.fail_ingestion_job(job.attempt))
+        self.assertIsNone(await ingestion.publish_revision(job.attempt))
+        self.assertFalse(await ingestion._release_pending_attempt(job.attempt))
+        self.assertEqual(await cleanup.list_finished_staging(20), [])
+        self.assertEqual(await cleanup.claim_revision_cleanup(20), [])
+
+        # Finishing B doesn't unblock a later revision of A or recreate A's notice.
+        self.assertTrue(await ingestion.fail_ingestion_job(other.attempt))
+        self.assertIsNone(await ingestion.claim_ingestion_job(next_revision))
+        self.assertEqual(await outbox.recover_pending_work("ingestion.jobs", 20), 0)
+        pending = await ingestion.list_pending_revision_writes(20)
+        self.assertEqual([(item.revision_id, item.attempt_no) for item in pending],
+                         [(first, job.attempt.attempt_no)])
+
     async def test_redis_compare_token_and_exact_large_generations(self):
         result = answer()
         value = redis.CachedAnswer(**result.model_dump(), corpus_generation=2**53 + 2)

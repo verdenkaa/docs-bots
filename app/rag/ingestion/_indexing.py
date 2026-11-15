@@ -185,7 +185,14 @@ class _Indexer:
             raise _DatabaseUnknown
         if self.writing_started:
             # begin_revision_write was confirmed and no successful publication
-            # followed. Only the documented reconciliation may clear pending.
+            # followed. End this handler's lease so other documents can run;
+            # only the documented reconciliation may clear the pending flag.
+            released = await self._db(
+                "release_pending_attempt", self.deps.jobs._release_pending_attempt,
+                bool, job.attempt,
+            )
+            if not released:
+                raise _LostAttempt
             return "reconciliation_required"
         if error.retryable and job.attempt.attempt_no < self.settings.max_attempts:
             delay = min(self.settings.retry_max_s,

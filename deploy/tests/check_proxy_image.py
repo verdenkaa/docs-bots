@@ -87,11 +87,18 @@ def main():
         os.environ["SSL_CERT_FILE"] = str(certificate)
         assert proxy.health(host)
         client = connection(context)
-        client.request("POST", "/telegram/webhook", body=b"{}", headers={"X-Telegram-Bot-Api-Secret-Token": "synthetic"})
+        for path in ("/telegram/webhook", "/internal/telegram/updates"):
+            client.request("POST", path, body=b"{}", headers={"X-Telegram-Intake-Secret": "synthetic"})
+            response = client.getresponse()
+            response.read()
+            assert response.status == 404, "Telegram intake must never be public"
+            client.close()
+            client = connection(context)
+        client.request("GET", "/api/v1/me")
         response = client.getresponse()
         payload = json.loads(response.read())
         assert response.status == 200 and payload["port"] == 18000
-        assert payload["telegram_secret"] == "synthetic" and payload["scheme"] == "https"
+        assert payload["scheme"] == "https"
         client.close()
         client = connection(context)
         client.request("POST", "/admin/ingestion/upload?filename=test.md&access_level=employees", body=b"a" * (2 * 1024 * 1024),

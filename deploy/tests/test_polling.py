@@ -17,17 +17,16 @@ from deploy import polling
 
 
 class PollingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_polling_mode_never_registers_a_webhook(self):
+    async def test_webhook_command_is_removed(self):
         from deploy.__main__ import main
-        with patch('sys.argv', ['deploy', 'webhook']), patch('deploy.config.validate'), \
-                patch('rag._configuration.environment_values', return_value={'TELEGRAM_UPDATE_MODE': 'polling'}), \
-                patch('deploy.webhook.register', side_effect=AssertionError('Unexpected registration')):
-            self.assertEqual(main(), 0)
+        with patch('sys.argv', ['deploy', 'webhook']), self.assertRaises(SystemExit) as error:
+            main()
+        self.assertEqual(error.exception.code, 2)
 
     async def asyncSetUp(self):
         self.calls = []
         self.settings = SimpleNamespace(telegram_url='https://telegram.test/bot123:private-token',
-                                        webhook_secret='private-secret')
+                                        intake_secret='private-secret')
         self.output = StringIO()
         redirect = redirect_stdout(self.output)
         redirect.__enter__()
@@ -38,9 +37,10 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
             payload = json.loads(request.content)
             self.calls.append((request.url.host, request.url.path.rsplit('/', 1)[-1], payload))
             if request.url.host == 'core':
-                self.assertEqual(request.headers['X-Telegram-Bot-Api-Secret-Token'], 'private-secret')
+                self.assertEqual(request.headers['X-Telegram-Intake-Secret'], 'private-secret')
+                self.assertEqual(request.url.path, '/internal/telegram/updates')
             else:
-                self.assertNotIn('X-Telegram-Bot-Api-Secret-Token', request.headers)
+                self.assertNotIn('X-Telegram-Intake-Secret', request.headers)
             return handler(request, payload)
         return httpx.AsyncClient(transport=httpx.MockTransport(wrapped))
 

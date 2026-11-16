@@ -1,6 +1,6 @@
 """Start real core/worker and stores in an isolated Compose project with fake model transport.
 
-Uses only synthetic credentials, does not start nginx/webhook and never contacts Telegram.
+Uses only synthetic credentials, does not start nginx and never contacts Telegram.
 All test containers and volumes are removed on completion.
 """
 
@@ -28,8 +28,8 @@ def main():
                               model_revision="sha256:" + "a" * 64, endpoint="http://ollama:11434",
                               credential_env=None, max_concurrency=1,
                               embedding_dimensions=768 if role == "embedding" else None)
-    values = dict(PUBLIC_HOST="176.53.246.245", TELEGRAM_WEBHOOK_URL="https://176.53.246.245",
-                  TELEGRAM_BOT_TOKEN="123:synthetic", TELEGRAM_WEBHOOK_SECRET="synthetic",
+    values = dict(PUBLIC_HOST="176.53.246.245", RAG_PUBLIC_URL="https://176.53.246.245",
+                  TELEGRAM_BOT_TOKEN="123:synthetic", TELEGRAM_INTAKE_SECRET="synthetic",
                   PGUSER="rag", PGDATABASE="rag", PGPASSWORD="synthetic-postgres",
                   RABBITMQ_USER="rag", RABBITMQ_PASSWORD="synthetic-rabbit",
                   S3_ACCESS_KEY="rag", S3_SECRET_KEY="synthetic-s3-secret", S3_REGION="us-east-1",
@@ -43,7 +43,7 @@ def main():
                   INGESTION_CHUNK_CHARACTERS="500", INGESTION_CHUNK_OVERLAP="50",
                   MODEL_GATEWAY_PROVIDER_MODULES='["rag.model_gateway.ollama"]',
                   OLLAMA_GATEWAY_KEEP_ALIVE="-1", OLLAMA_GATEWAY_TEXT_CONTEXT_LENGTH="16384",
-                  TELEGRAM_UPDATE_MODE="polling", COMPOSE_PROFILES="polling",
+                  COMPOSE_PROFILES="",
                   RAG_TELEGRAM_BASE_URL="http://ollama:11434",
                   RAG_MODEL_BINDINGS=json.dumps(bindings), RAG_STARTUP_TIMEOUT_S="60",
                   MODEL_GATEWAY_STARTUP_TIMEOUT_S="60", API_WORKERS="1", INGESTION_HTTP_WORKERS="1")

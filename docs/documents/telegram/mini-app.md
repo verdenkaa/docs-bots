@@ -188,15 +188,11 @@ callbacks и maintenance; новая ручка их не подменяет.
 Новая ручка метрик учитывает веб-реакцию «Ответ не помог» через причину обращения.
 Старые метрики и публичные контракты не меняют свою форму и определения.
 
-## Webhook и интерфейс
+## Telegram-вход и интерфейс
 
-При `MINI_APP_ENABLED=true` прежний `POST /telegram/webhook` принимает команды
-и обычные личные сообщения, сохраняет ignored update и отвечает навигационной
-кнопкой `web_app`. Вопрос в Core не регистрируется. Legacy callbacks продолжают
-идти в прежний `handle_telegram_update`; прежние доставки выполняет results.
-При выключенном флаге HTTP webhook работает как раньше. Сам Python entrypoint
-не меняет поведение. Ответ Bot API внутри webhook не имеет квитанции:
-навигационная кнопка при повторе update может быть показана повторно.
+Telegram использует только long polling. Внешняя регистрация webhook удалена. Poller передаёт updates по Docker-сети на `/internal/telegram/updates` с `X-Telegram-Intake-Secret`; публичный nginx закрывает эту ручку. `/start`, `/help` и обычные личные сообщения получают приглашение открыть Mini App через notice/Outbox. Прочие slash-команды молча пропускаются. Такое поведение не зависит от MINI_APP_ENABLED; флаг управляет доступностью `/api/v1/*`. Старые callback и ранее созданные доставки сохраняют прежний путь.
+
+Отдельный backend Mini App обращается напрямую к `/api/v1/*`; этот контракт не изменён. Авторизация initData использует TELEGRAM_BOT_TOKEN и не требует intake-secret. RAG_PUBLIC_URL остаётся публичным адресом для ссылок. Старые env-имена URL/secret читаются как совместимые алиасы. Изменения отдельного репозитория Mini App выполняет его владелец.
 
 Frontend подключает официальный Telegram SDK, использует ready/expand/themeChanged.
 Пользователь видит чат и свои тикеты. Администратор дополнительно видит все
@@ -216,7 +212,7 @@ source_url внутри result.sources: клиент использует это
    очередь и незавершённые работы. Не включать веб-приём при старых workers.
 2. В корневом `.env` docs-bots задать `MINI_APP_ENABLED=true`,
    `MINI_APP_URL=https://mini.example.org`, `MINI_APP_ADMIN_IDS=123456789`,
-   `MINI_APP_AUTH_MAX_AGE_S=3600`. Сохранить прежние токен, webhook secret,
+   `MINI_APP_AUTH_MAX_AGE_S=3600`. Сохранить прежний токен, настроить TELEGRAM_INTAKE_SECRET и RAG_PUBLIC_URL,
    ADMIN_LOGIN/PASSWORD и модельные/инфраструктурные настройки.
 3. Присоединить RAG API и Mini App к одной сети; задать RAG API DNS alias `rag-api`.
    В отдельном репозитории настроить `.env` по `.env.example`, затем
@@ -225,7 +221,7 @@ source_url внутри result.sources: клиент использует это
    backend имеют один browser origin. Публичный RAG API сохраняет свой домен и
    прежние пути; новые ручки доступны только с проверенным initData.
 5. В BotFather для этого же бота задать Main Mini App и Menu Button на HTTPS URL
-   frontend. Проверить открытие меню, /start и ранее отправленные callbacks.
+   frontend. Проверить открытие меню, /start и ранее отправленные callbacks через polling.
 6. Первый admin открывает приложение, добавляет разрешённые username через
    «Допуск»; затем выполнить текстовый вопрос, повтор POST, закрытие/открытие,
    ручной и автоматический тикеты, ответ оператора и закрытие.

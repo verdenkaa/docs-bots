@@ -20,7 +20,7 @@ from rag.rag_api.contracts import ClaimedDelivery, DeliveryPart, IntakeResult, S
 
 
 async def handle_telegram_update(update: Mapping[str, object]) -> IntakeResult:
-    """Проверить Telegram update и идемпотентно зарегистрировать вопрос с outbox.
+    """Проверить Telegram update и сохранить навигационное notice либо старое действие Support.
 
     Args:
         update: Декодированный Telegram Update.

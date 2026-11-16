@@ -9,6 +9,10 @@ sidebar_position: 1.1
 
 В основных таблицах приведены названия и значения из текущей документации. В конце отдельно собраны [прежние обозначения](#old-names) и [термины возможных расширений](#extensions). При обновлении документации используем текущие имена. Сигнатуры и состав полей берём из связанных контрактов.
 
+## Shortcut Interceptor
+
+[Shortcut Interceptor](../telegram/module/shortcuts.md) — локальный компонент RAG API для точного сопоставления нормализованного текста с реестром типовых фраз без побочных эффектов. Интеграцию в отдельный Mini App выполняет его владелец; Telegram использует только навигационные ответы. Возвращает `reply` (готовый ответ), `operator` (передача в текущий Support) либо `None`/`miss` (обычный RAG). Сам не отправляет сообщения и не меняет состояние.
+
 ## Дополнения после получения кейса {#case-decisions}
 
 Здесь зафиксированы значения из [чек-листа кейса](./case-checklist.md) и [обновлённой архитектуры](../architecture/index.md); реализация в разделах модулей ещё требует согласования.
@@ -222,8 +226,8 @@ sidebar_position: 1.1
 | Термин | Что означает у нас | Где подробнее |
 | --- | --- | --- |
 | **Telegram Update / Bot API** | Входящее событие Telegram / интерфейс получения обновлений и отправки сообщений ботом. | [RAG API](../telegram/module/index.md) |
-| **Webhook / long polling / offset** | Telegram присылает Update по HTTPS / RAG API читает `getUpdates` / позиция подтверждённых обновлений при polling. Выбираем один режим. | [Приём обновлений](../telegram/module/queue-processing.md#приём-и-постановка-вопроса) |
-| **`TELEGRAM_BOT_TOKEN` / секрет webhook** | Выданный BotFather ключ доступа к Bot API / отдельный секрет проверки входящего webhook. | [Настройка токена](./container-manager.md#как-подключить-или-обновить-приложение) |
+| **Webhook / long polling / offset** | Telegram присылает Update по HTTPS / RAG API читает `getUpdates` / позиция подтверждённых обновлений при polling. В текущем срезе поддерживается только polling, webhook удалён. | [Приём обновлений](../telegram/module/queue-processing.md#приём-и-постановка-вопроса) |
+| **`TELEGRAM_BOT_TOKEN` / `TELEGRAM_INTAKE_SECRET`** | Выданный BotFather ключ доступа к Bot API / секрет внутреннего polling intake; Mini App проверяет initData только по токену. | [Настройка токена](./container-manager.md#как-подключить-или-обновить-приложение) |
 | **`retry_after` / rate limit** | Предписанная Telegram задержка повтора / ограничение частоты вызовов. | [Доставка](../telegram/module/queue-processing.md#сбои-и-повторы) |
 | **UTF-16** | Единицы представления текста, в которых локально консервативно проверяем длину сообщения вместе с источниками. | [Оформление ответа](../telegram/module/entrypoints.md#send-answer) |
 | **PostgreSQL / ORM / миграция** | Хранилище состояния / доступ через модели кода / версионированное изменение схемы БД отдельно от запуска обработчиков. | [PostgreSQL](../infrastructure/postgresql/index.md) · [Обновление](./production-update.md) |

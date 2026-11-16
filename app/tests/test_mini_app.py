@@ -228,31 +228,15 @@ class MiniAppHttpTests(unittest.IsolatedAsyncioTestCase):
             405,
         )
 
-    async def test_webhook_redirect_preserves_callbacks_and_legacy_switch(self):
-        from rag.rag_api._mini_app_webhook import _redirect
+    async def test_mini_app_auth_and_question_contract_work_without_intake_secret(self):
+        with patch.dict(os.environ, TELEGRAM_INTAKE_SECRET='', TELEGRAM_WEBHOOK_SECRET=''), \
+             patch.object(mini_app.storage, '_me', AsyncMock(return_value={'user_id': 7})), \
+             patch.object(mini_app.storage, '_register', AsyncMock(return_value={'request_id': 17})):
+            self.assertEqual((await self.client.get('/api/v1/me', headers=self.headers)).status_code, 200)
+            response = await self.client.post('/api/v1/questions',
+                headers={**self.headers, 'Idempotency-Key': 'unchanged-contract'}, json={'text': 'Q'})
+            self.assertEqual((response.status_code, response.json()), (202, {'request_id': 17}))
 
-        update = {
-            "update_id": 100,
-            "message": {
-                "from": {"id": 7, "is_bot": False},
-                "chat": {"id": 7, "type": "private"},
-                "text": "/start",
-            },
-        }
-        with patch(
-            "rag.rag_api._mini_app_webhook.record_update", new=AsyncMock()
-        ) as record:
-            result = await _redirect(update)
-            self.assertEqual(
-                json.loads(result.body)["reply_markup"]["inline_keyboard"][0][0][
-                    "web_app"
-                ]["url"],
-                "https://mini.example.org",
-            )
-            record.assert_awaited_once()
-            self.assertIsNone(await _redirect({"callback_query": {}, **update}))
-            with patch.dict(os.environ, {"MINI_APP_ENABLED": "false"}):
-                self.assertIsNone(await _redirect(update))
 
 
 if __name__ == "__main__":

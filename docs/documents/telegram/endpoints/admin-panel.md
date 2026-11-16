@@ -9,7 +9,7 @@ hide_title: true
 ## Назначение и доступ
 
 Административная панель Support. Вход HTTP Basic по ADMIN_LOGIN/ADMIN_PASSWORD
-через HTTPS; публичный origin задаётся TELEGRAM_WEBHOOK_URL. Credentials и
+через HTTPS; публичный origin задаётся RAG_PUBLIC_URL. Credentials и
 Origin проверяются сервером, Principal не принимается из JSON.
 
 ## Что принимает

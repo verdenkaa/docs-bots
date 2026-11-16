@@ -1,6 +1,6 @@
 """Contracts: docs/documents/telegram/module/http-adapter-entrypoints.md.
 
-Telegram HTTP boundary with one final request event and timed steps."""
+Internal polling intake with one final request event and timed steps."""
 import hmac
 import json
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -10,24 +10,24 @@ from rag.rag_api.config import get_settings
 from rag.rag_api._observability import _operation, _step, _utc_now
 
 
-router = APIRouter(prefix="/telegram", tags=["Telegram"])
+router = APIRouter(prefix="/internal/telegram", tags=["Internal Telegram"])
 # Updates contain metadata and Telegram file IDs, not uploaded media bytes.
 # Leave ample room for supported updates while bounding memory and JSON work.
 _MAX_UPDATE_BYTES = 1024 * 1024
 
-@router.post("/webhook")
-async def telegram_webhook(request: Request) -> Response:
+@router.post("/updates")
+async def telegram_updates(request: Request) -> Response:
     with _operation("handle_telegram_update", received_at=_utc_now()) as trace:
         trace.operation = "handle_telegram_update"
         trace.fields.setdefault("received_at", _utc_now())
         status, outcome, error = 503, "retry_later", None
         try:
-            with _step("validate_webhook_secret") as step:
-                secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-                valid = hmac.compare_digest(secret.encode(), get_settings().webhook_secret.encode())
+            with _step("validate_intake_secret") as step:
+                secret = request.headers.get("X-Telegram-Intake-Secret", "")
+                valid = hmac.compare_digest(secret.encode(), get_settings().intake_secret.encode())
                 step["outcome"] = "allowed" if valid else "denied"
             if not valid:
-                status, outcome, error = 403, "denied", "invalid_webhook_secret"
+                status, outcome, error = 403, "denied", "invalid_intake_secret"
             else:
                 with _step("validate_content_type") as step:
                     valid = request.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "application/json"
@@ -45,11 +45,6 @@ async def telegram_webhook(request: Request) -> Response:
                         status, outcome, error = 400, "invalid_update", "invalid_update_id"
                     else:
                         trace.fields["update_id"] = update["update_id"]
-                        from rag.rag_api._mini_app_webhook import _redirect
-                        redirect = await _redirect(update)
-                        if redirect is not None:
-                            status, outcome = 200, "handled"
-                            return redirect
                         result = await entrypoints.handle_telegram_update(update)
                         outcome = result.kind
                         trace.fields.update(request_id=result.request_id, delivery_id=result.delivery_id,
@@ -69,5 +64,5 @@ async def telegram_webhook(request: Request) -> Response:
             if error == "retry_later":
                 error = trace.fields.get("error_code", error)
             trace.fields.update(outcome=outcome, error_code=error, http_status=status,
-                                method="POST", route="/telegram/webhook")
+                                method="POST", route="/internal/telegram/updates")
         return Response(status_code=status)

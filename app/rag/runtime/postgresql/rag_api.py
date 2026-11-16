@@ -39,6 +39,71 @@ from sqlalchemy import func, insert, or_, select, update
 from ._models import _Delivery, _Employee, _Request, _SupportCase
 
 
+async def _check_message(session, question):
+    previous = await _prior_update(session, question.update_id)
+    if previous is not None:
+        return previous
+    if question.username is not None:
+        await _lock(session, "username", question.username)
+    access = await _one(session, select(_Employee.enabled).where(
+        _Employee.username == question.username))
+    await _lock(session, "user", question.user_id)
+    if access is not None and access["enabled"]:
+        return None
+    delivery = await _delivery(session, user_id=question.user_id, chat_id=question.chat_id,
+                               purpose="denied", key="update:" + str(question.update_id))
+    result = IntakeResult(kind="denied", delivery_id=delivery)
+    await _save_update(session, question.update_id, question.user_id, question.chat_id,
+                       question.received_at, result)
+    return result
+
+
+async def check_message(question: NewQuestion) -> IntakeResult | None:
+    """Read the durable outcome and check access before local classification.
+
+    None permits classification, but does not reserve admission. The operation
+    that records the chosen action must repeat these checks in its transaction.
+    """
+    question = NewQuestion.model_validate_json(question.model_dump_json())
+    async with _transaction() as session:
+        return await _check_message(session, question)
+
+
+async def register_shortcut_reply(question: NewQuestion, response: str) -> IntakeResult:
+    """Atomically record a local notice and its update without a RAG request."""
+    question = NewQuestion.model_validate_json(question.model_dump_json())
+    content = RagResult(answer_text=response, sources=[])
+    async with _transaction() as session:
+        previous = await _check_message(session, question)
+        if previous is not None:
+            return previous
+        delivery = await _delivery(session, user_id=question.user_id, chat_id=question.chat_id,
+                                   purpose="notice", content=content,
+                                   key="update:" + str(question.update_id))
+        result = IntakeResult(kind="handled", delivery_id=delivery)
+        await _save_update(session, question.update_id, question.user_id, question.chat_id,
+                           question.received_at, result)
+        return result
+
+
+async def register_bot_notice(question: NewQuestion, response: str) -> IntakeResult:
+    """Persist public Mini App navigation without admission or a RAG request."""
+    question = NewQuestion.model_validate_json(question.model_dump_json())
+    content = RagResult(answer_text=response, sources=[])
+    async with _transaction() as session:
+        previous = await _prior_update(session, question.update_id)
+        if previous is not None:
+            return previous
+        await _lock(session, "user", question.user_id)
+        delivery = await _delivery(session, user_id=question.user_id, chat_id=question.chat_id,
+                                   purpose="notice", content=content,
+                                   key="update:" + str(question.update_id))
+        result = IntakeResult(kind="handled", delivery_id=delivery)
+        await _save_update(session, question.update_id, question.user_id, question.chat_id,
+                           question.received_at, result)
+        return result
+
+
 async def check_admission_ready() -> bool:
     """Проверить ёмкость и реальные записи вопроса/outbox, откатив пробу.
 

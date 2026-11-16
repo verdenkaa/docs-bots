@@ -52,7 +52,7 @@ def run(args, config, client):
         raise RuntimeError("Заполните RAG_INGESTION_TOKEN, ADMIN_LOGIN, ADMIN_PASSWORD в .env")
     from rag.rag_api.config import trusted_base_url
 
-    public = urlsplit(trusted_base_url(config.get("TELEGRAM_WEBHOOK_URL", "")))
+    public = urlsplit(trusted_base_url(config.get("RAG_PUBLIC_URL", config.get("TELEGRAM_WEBHOOK_URL", ""))))
     origin = f"{public.scheme}://{public.netloc}"
     api, ingestion = base_url(args.api_url), base_url(args.ingestion_url)
     state = json.loads(args.state.read_text(encoding="utf-8")) if args.state.exists() else {}

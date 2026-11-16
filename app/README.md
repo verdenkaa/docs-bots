@@ -17,6 +17,7 @@ Frontend/backend находятся в соседнем репозитории d
 | Модуль | Код | Контракт |
 | --- | --- | --- |
 | RAG API | [`handle_telegram_update`, `handle_rag_result`, `build_delivery_parts`, `send_answer`, `run_api_maintenance`](rag/rag_api/entrypoints.py) | [Точки входа](../docs/documents/telegram/module/entrypoints.md) |
+| Shortcut Interceptor внутри RAG API | [`intercept_message`](rag/rag_api/shortcuts/interceptor.py), [реестр фраз](rag/rag_api/shortcuts/registry.py) | [Точное сопоставление и маршрут reply/operator/miss](../docs/documents/telegram/module/shortcuts.md) |
 | Access / Support внутри RAG API | [Допуск](rag/rag_api/access.py), [тикеты и ожидания](rag/rag_api/support.py), [DTO](rag/rag_api/contracts.py) | [Контракты компонентов](../docs/documents/telegram/module/service-entrypoints.md) |
 | RAG Core | [`handle_rag_question`](rag/rag_core/entrypoints.py), [Exact Cache](rag/rag_core/exact_cache.py), [Answer Generator](rag/rag_core/answer_generator.py) | [Порядок вызовов](../docs/documents/rag-core/flow.md) |
 | Guardrails | [`check_question`](rag/guardrails/entrypoints.py) | [Точка входа](../docs/documents/guardrails/entrypoints.md) |
@@ -64,7 +65,7 @@ python -m rag worker --port 8001
 
 Для запуска настоящих процессов поверх существующей инфраструктуры есть `scripts/live_services.py`: из `app/` выполните `.venv\Scripts\python.exe scripts/live_services.py api relay results maintenance recovery questions`. Скрипт пересоздаёт только перечисленные контейнеры `rag-live-*`, читает общий `.env` с правильным разбором кавычек и подключает текущий код. Перед первым запуском API остановите старый контейнер каркаса, занимающий порт 8000. По умолчанию используется локальный образ зависимостей `localhost/rag-runtime-tests:local`, сеть `rag-hackathon_default` и spool `rag-hackathon_worker_spool`; параметры можно заменить флагами. Для вопросов предварительно настройте и проверьте модельный профиль. Это локальный стенд разработки, а не production-развёртывание.
 
-Из `app/`: `.venv\Scripts\python.exe scripts/load_demo_documents.py`. Скрипт включает допуск `@verdenkaa` через административный API и отправляет три PDF из `~/Downloads` в Ingestion. Секреты `ADMIN_LOGIN`, `ADMIN_PASSWORD`, `RAG_INGESTION_TOKEN` и публичный URL `TELEGRAM_WEBHOOK_URL` берутся из общего `.env`; окружение процесса имеет приоритет.
+Из `app/`: `.venv\Scripts\python.exe scripts/load_demo_documents.py`. Скрипт включает допуск `@verdenkaa` через административный API и отправляет три PDF из `~/Downloads` в Ingestion. Секреты `ADMIN_LOGIN`, `ADMIN_PASSWORD`, `RAG_INGESTION_TOKEN` и публичный URL `RAG_PUBLIC_URL` (совместимый алиас TELEGRAM_WEBHOOK_URL) берутся из общего `.env`; окружение процесса имеет приоритет.
 
 По умолчанию API доступен на `http://127.0.0.1:8000`, Ingestion — на `http://127.0.0.1:8001`; другие адреса задаются через `--api-url` и `--ingestion-url`. Папка файлов задаётся через `--downloads`. Оба HTTP-приложения должны быть запущены отдельно: health-сервер каркаса не предоставляет ручку загрузки.
 
@@ -164,9 +165,15 @@ PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, `RAG_PG_SCHEMA` и корневой 
 
 
 Панель Support: `/admin` с HTTP Basic по ADMIN_LOGIN/ADMIN_PASSWORD, через HTTPS
-прокси и с публичным origin из TELEGRAM_WEBHOOK_URL. Посетитель по ссылке тикета
+прокси и с публичным origin из RAG_PUBLIC_URL. Посетитель по ссылке тикета
 остаётся анонимным даже после входа администратора; оператор пишет отдельной ручкой.
 Публичные реплики ограничены 4096 символами, телом 32 КиБ и 20 новыми сообщениями
 за минуту на тикет. История выдаётся страницами по 50 реплик.
 Миграция `002_ticket_resources` добавляет ограничения/индексы сообщений;
 примените `python -m rag.runtime migrate` до запуска новой версии.
+
+## Telegram: служебный polling-вход
+
+telegram-poller запускается по умолчанию. Внешний webhook удалён, внутренний POST /internal/telegram/updates защищён TELEGRAM_INTAKE_SECRET и закрыт публичным nginx. /start, /help, обычный текст и изображения получают только приглашение открыть Mini App через notice/Outbox, остальные slash-команды пропускаются молча. Новых RAG-вопросов этот вход не создаёт; старые callback и ранее принятые вопросы сохраняются.
+
+Контракты /api/v1/* Mini App остаются прежними; его авторизация требует токен бота, но не intake-secret. Общий публичный адрес — RAG_PUBLIC_URL. Старые имена TELEGRAM_WEBHOOK_URL/TELEGRAM_WEBHOOK_SECRET читаются как совместимые env-алиасы, без webhook. Изменения отдельного репозитория Mini App выполняет его владелец.

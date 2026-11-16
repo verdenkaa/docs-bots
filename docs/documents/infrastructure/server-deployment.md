@@ -20,39 +20,39 @@ chmod 600 .env
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps -a
-docker compose logs --tail 100 validate migrate models-init prepare nginx webhook
+docker compose logs --tail 100 validate migrate models-init prepare nginx telegram-poller
 ```
 
-`validate`, `migrate`, `models-init`, `prepare`, `webhook` после успеха имеют статус `Exited (0)`: это нормально для подготовительных задач. `core`, `worker`, `nginx` должны стать `healthy`. Первый старт включает скачивание образов и весов и занимает дольше повторного.
+`validate`, `migrate`, `models-init`, `prepare` после успеха имеют статус `Exited (0)`: это нормально для подготовительных задач. `core`, `worker`, `nginx` должны стать `healthy`. Первый старт включает скачивание образов и весов и занимает дольше повторного.
 
-Перед переключением бота с тем же токеном остановите его локальные процессы обработки и доставки. `webhook` проверяет публичный HTTPS и регистрирует новый адрес после готовности сервера; накопленные updates не удаляются. Для независимого теста используйте отдельного бота и отдельное окружение.
+Перед переключением бота с тем же токеном остановите его локальные процессы обработки и доставки. `telegram-poller` удаляет прежнюю регистрацию webhook без потери накопленных updates и запускает getUpdates. Для независимого теста используйте отдельного бота и отдельное окружение.
 
 ## Адрес и сертификат без домена
 
-### Long polling вместо входящих webhook-запросов
+### Telegram: только long polling {#long-polling-вместо-входящих-webhook-запросов}
 
-Если VPS не принимает соединения от Telegram, задайте `TELEGRAM_UPDATE_MODE=polling` и добавьте `polling` в `COMPOSE_PROFILES` (для полного набора моделей: `native,polling`). Обычный `docker compose up -d --build` запускает `telegram-poller`. Задача `webhook` в этом режиме пропускает регистрацию. HTTPS продолжает обслуживать админку, документы и тикеты; `TELEGRAM_WEBHOOK_URL` сохраняет канонический адрес приложения.
+`telegram-poller` запускается обычным `docker compose up -d --build`, отдельный профиль не требуется. Внешняя регистрация webhook и сервис `webhook` удалены. Старое `TELEGRAM_UPDATE_MODE=polling` допустимо, переменную можно убрать. Значение webhook отклоняется проверкой конфигурации. COMPOSE_PROFILES управляет только дополнительными модельными сервисами, например native.
 
-Poller удаляет webhook с `drop_pending_updates=false`, получает `getUpdates` с ожиданием 30 секунд и передаёт обновления по внутреннему HTTP на существующий `/telegram/webhook`, с секретом из env. Вопросы, callback-запросы, доступ сотрудников и сохранение в PostgreSQL обрабатывает прежний RAG API. Только после HTTP 200 увеличивается `offset`; Telegram подтверждает предыдущие обновления при следующем `getUpdates` с новым offset. До успешного приёма обновление не подтверждается. При потере HTTP-ответа или перезапуске возможна повторная доставка: её обрабатывает существующая идемпотентность по `update_id`. [Правила Bot API](https://core.telegram.org/bots/api#getupdates).
+Poller вызывает deleteWebhook с drop_pending_updates=false, получает getUpdates с ожиданием 30 секунд и передаёт Update на внутренний `http://core:8000/internal/telegram/updates` с `X-Telegram-Intake-Secret`. Публичный nginx закрывает `/internal/*` и прежний `/telegram/webhook`. Telegram-вход создаёт только notice с приглашением открыть Mini App для `/start`, `/help`, обычного текста и изображений; прочие slash-команды сохраняются молча. Старые callback сохраняют прежнюю обработку. Новые RAG-вопросы принимает только `/api/v1/questions`, его контракт не изменён.
 
-Сбой сети или HTTP 503 приводит к повтору. HTTP 429 учитывает `retry_after`. Ошибка токена, конфликт другого получателя или постоянный отказ внутреннего API останавливает процесс с безопасной диагностикой; проблемное обновление не подтверждается автоматически. Файл lock в общем spool допускает один poller в пределах проекта Compose. Не запускайте второй экземпляр того же бота в другом проекте или локально. Telegram хранит входящие обновления не более 24 часов; это ограничение источника, а не гарантия бесконечной очереди.
+После HTTP 200 poller увеличивает offset. При потере ответа или рестарте повтор безопасен по ledger update_id. Навигация, ledger и outbox записываются одной транзакцией; старые принятые вопросы не заменяются новым уведомлением. Ошибки сети/503 повторяются; 429 учитывает retry_after; ошибка токена, конкурирующий получатель или постоянный отказ intake останавливают процесс без подтверждения update. Lock в общем spool допускает один poller; второй экземпляр того же бота в другом стенде запускать нельзя.
 
-У `telegram-poller` включены автозапуск и health по живому PID и времени последнего успешного обмена/приёма обновления. Тексты, токен и секрет в его логи не выводятся. Для проверки:
+Настройте `TELEGRAM_INTAKE_SECRET` (внутренний секрет) и `RAG_PUBLIC_URL=https://PUBLIC_HOST` (ссылки, авторизация Origin и публичный HTTPS). Старые TELEGRAM_WEBHOOK_SECRET/TELEGRAM_WEBHOOK_URL читаются как алиасы: существующий секретный .env не требуется переписывать в момент обновления. Mini App проверяет initData по TELEGRAM_BOT_TOKEN и не требует intake-secret; HTTP-контракты Mini App сохранены.
 
 ```bash
-docker compose ps -a telegram-poller webhook
+docker compose ps -a telegram-poller
 docker compose logs --tail=50 telegram-poller
 ```
 
-При переключении транспорта сначала остановите poller: `docker compose --profile polling stop telegram-poller webhook`. Затем измените env. Для возврата к webhook задайте `TELEGRAM_UPDATE_MODE=webhook`, уберите профиль `polling` и выполните `up -d --build`. Для polling измените оба параметра обратно и запустите `up`. `restart` не обновляет окружение контейнеров. Не удаляйте тома и не используйте `drop_pending_updates=true`.
+При обновлении прежнего стека сначала остановите старый poller и webhook-задачу старой версией Compose; затем обновите код и выполните `docker compose up -d --build --remove-orphans`. Удалённый webhook-контейнер не должен оставаться самостоятельным получателем. Данные и тома не удаляйте, drop_pending_updates=true не используйте. Для секретов/нового окружения нужен пересозданный контейнер, restart не перечитывает env. Отдельный репозиторий Mini App обновляет его владелец; его API и адрес RAG_API_BASE_URL остаются прежними.
 
 При сетевой блокировке нужен исходящий доступ к Bot API и загрузке файлов Telegram также из контейнеров доставки и Core. На целевом сервере он обеспечен отдельным Amnezia-туннелем: только TCP/443 к сетям Telegram, основной маршрут и DNS сохранены. Управление: `systemctl status docs-bots-telegram-vpn`; эксплуатационная заметка — `/root/.config/docs-bots-vpn/README.md`. Ключи VPN находятся вне checkout и не входят в Git или Docker-образы. При переносе на другой VPS сетевой туннель настраивается отдельно.
 
-`PUBLIC_HOST` — публичный IPv4 либо DNS-имя. `TELEGRAM_WEBHOOK_URL` должен быть точно `https://PUBLIC_HOST`, без пути и порта. nginx сначала обслуживает только HTTP-проверку ACME, затем получает доверенный сертификат через Certbot и включает HTTPS.
+`PUBLIC_HOST` — публичный IPv4 либо DNS-имя. `RAG_PUBLIC_URL` должен быть точно `https://PUBLIC_HOST`, без пути и порта. nginx сначала обслуживает только HTTP-проверку ACME, затем получает доверенный сертификат через Certbot и включает HTTPS.
 
 Для IPv4 применяется `--ip-address` с профилем `shortlived`: сертификат действует около шести дней. Проверка продления выполняется каждые шесть часов; при ошибке повтор через пять минут. После обновления сертификата nginx перезагружает конфигурацию. Certbot 5.10 закреплён в образе, поэтому поддержка IP не зависит от старого пакета Ubuntu. [Сертификаты IP в Certbot](https://letsencrypt.org/2026/03/11/shorter-certs-certbot.html).
 
-`ACME_EMAIL` необязателен: при пустом значении аккаунт создаётся без email. `ACME_DIRECTORY_URL` по умолчанию указывает на production Let’s Encrypt. Staging выдаёт недоверенный сертификат и не подходит для Telegram.
+`ACME_EMAIL` необязателен: при пустом значении аккаунт создаётся без email. `ACME_DIRECTORY_URL` по умолчанию указывает на production Let’s Encrypt. Staging выдаёт недоверенный сертификат и не подходит для публичного интерфейса.
 
 Откройте TCP 80/443 в firewall провайдера, firewall Ubuntu и, если сервер за NAT, в правилах перенаправления. Порт 80 нужен и для продления. Настройте время сервера; IP должен оставаться закреплённым за сервером.
 
@@ -64,7 +64,7 @@ docker compose logs --tail=50 telegram-poller
 4. Ollama, `native-models` и `injection-detector` загружают выбранные модели. `models-init` ждёт готовности, скачивает недостающие Ollama-веса, сверяет SHA-256 и вызывает `start_models` для настоящих синтетических inference-проб всех ролей через Model Gateway. Несовпадение версии блокирует запуск; профиль автоматически не переписывается.
 5. `prepare` проверяет обе коллекции Qdrant и приватный bucket S3, применяет необязательный первоначальный допуск.
 6. `core` запускает HTTP API и отдельно `relay`, `recovery`, `questions`, `results`, `maintenance`. `worker` запускает Ingestion HTTP и индексатор под супервизором попыток. Оба используют общий spool.
-7. nginx включает HTTPS; `webhook` проверяет настоящий публичный сертификат и регистрирует адрес Telegram.
+7. nginx включает HTTPS для Mini App/API и публичных ссылок; telegram-poller получает updates исходящими getUpdates и использует внутренний intake.
 8. Grafana, Loki и Alloy запускаются по умолчанию; четыре технических дашборда и источник Loki подключаются provisioning. После `migrate` одноразовый `analytics-init` создаёт аналитические представления и ограниченного PostgreSQL-читателя; Grafana ждёт его и дополнительно подключает [бизнес-дашборд](../faq/business-analytics.md). Модели для аналитики не запускаются.
 
 HTTP обслуживается Gunicorn с `uvicorn-worker`. `API_WORKERS` по умолчанию 2, `INGESTION_HTTP_WORKERS` — 1. HTTP workers не запускают потребителей очередей. Контейнерный супервизор завершает роль при потере обязательного процесса, затем Docker её перезапускает. Health проверяет живые PID, heartbeat, HTTP и локальные сигналы готовности потребителей/singleton-ролей. Это не проверка качества ответов или отсутствия задержек очередей.

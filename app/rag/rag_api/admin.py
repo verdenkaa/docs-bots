@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from rag.rag_api import access, support
 from rag.rag_api._http import _message_body
-from rag.rag_api.config import _WebhookSettings, trusted_base_url
+from rag.rag_api.config import _ApiConfig, trusted_base_url
 from rag.rag_api.contracts import AccessRecord, Principal
 from rag.runtime._config import RuntimeSettings
 
@@ -37,7 +37,7 @@ async def _authenticate(request: Request):
     if request.method not in ('GET', 'HEAD'):
         from urllib.parse import urlsplit
         try:
-            configured = urlsplit(trusted_base_url(_WebhookSettings().public_url))
+            configured = urlsplit(trusted_base_url(_ApiConfig().public_url))
         except ValueError:
             raise HTTPException(503, 'auth_not_configured') from None
         expected = f'{configured.scheme}://{configured.netloc}'

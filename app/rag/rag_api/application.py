@@ -1,6 +1,6 @@
 """Contracts: docs/documents/telegram/module/http-adapter-entrypoints.md.
 
-HTTP lifecycle and request logging; background roles belong to Runtime."""
+HTTP lifecycle and request logging; Mini App contracts remain independent of polling."""
 import asyncio
 from contextlib import asynccontextmanager
 

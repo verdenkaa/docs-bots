@@ -16,7 +16,7 @@ from rag.rag_api import config
 def _settings_file(path):
     # Both settings classes read the same optional file, without mutating env.
     with patch.object(config, 'RuntimeSettings', partial(config.RuntimeSettings, _env_file=path)), \
-         patch.object(config, '_WebhookSettings', partial(config._WebhookSettings, _env_file=path)):
+         patch.object(config, '_ApiConfig', partial(config._ApiConfig, _env_file=path)):
         yield
 
 
@@ -34,7 +34,6 @@ def forbid_dotenv(path, *args, **kwargs):
     return read_text(path, *args, **kwargs)
 with patch.dict(os.environ, {}, clear=True), patch.object(Path, 'read_text', forbid_dotenv):
     import rag.rag_api.application
-    import rag.rag_api.telegram.webhook
     import rag.rag_api.telegram.router
 """
         result = subprocess.run([sys.executable, '-B', '-c', script], capture_output=True, text=True, timeout=30)
@@ -52,8 +51,8 @@ with patch.dict(os.environ, {}, clear=True), patch.object(Path, 'read_text', for
                 self.assertEqual(settings.public_url, 'https://example.test')
                 self.assertEqual(settings.telegram_url, 'https://api.telegram.org/bot123:test-token')
                 with patch.dict(os.environ, {'TELEGRAM_WEBHOOK_SECRET': 'invalid secret'}):
-                    with self.assertRaisesRegex(ValueError, 'TELEGRAM_WEBHOOK_SECRET'):
-                        config.get_settings()
+                    with self.assertRaisesRegex(ValueError, 'TELEGRAM_INTAKE_SECRET'):
+                        config.get_settings().intake_secret
                 with patch.dict(os.environ, {'BOT_TOKEN': 'ignored-legacy-token'}):
                     self.assertEqual(config.get_settings().token, '123:test-token')
 
@@ -64,5 +63,5 @@ with patch.dict(os.environ, {}, clear=True), patch.object(Path, 'read_text', for
             with _settings_file(path), patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN': '123:env-token'}, clear=True):
                 settings = config.get_settings()
                 self.assertEqual(settings.token, '123:env-token')
-                self.assertEqual(settings.webhook_secret, 'local_secret')
+                self.assertEqual(settings.intake_secret, 'local_secret')
                 self.assertNotIn('TELEGRAM_WEBHOOK_SECRET', os.environ)

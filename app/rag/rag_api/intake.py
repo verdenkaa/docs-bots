@@ -11,13 +11,11 @@ from rag.rag_api.access import _normalize_username
 from rag.rag_api.contracts import IntakeResult, NewQuestion, SupportAction, SupportCommand
 from rag.rag_api import support
 from rag.rag_api.telegram.adapter import _answer_callback
+from rag.rag_api.telegram.commands import _command_name, _COMMAND_REPLIES, _NAVIGATION_REPLY
 from rag.rag_api._observability import _step, _call
 from rag.runtime.postgresql import rag_api as repository
 
 IMAGE_MIMES = frozenset({'image/jpeg', 'image/png', 'image/webp', 'image/gif'})
-# Explicit phrases only; never infer dissatisfaction from arbitrary question tone.
-HUMAN_REQUESTS = frozenset({'/support', '/operator', 'позвать оператора',
-                            'позови оператора', 'нужен оператор', 'нужна помощь человека'})
 
 
 def positive(value):
@@ -104,10 +102,6 @@ def _parse(update, now):
         command = SupportCommand(**common, action=action, origin='callback',
             callback_message_id=message['message_id']) if action else 'ignored'
         return user_id, chat_id, command
-    text = message.get('text')
-    if isinstance(text, str) and text.strip().lower() in HUMAN_REQUESTS:
-        return user_id, chat_id, SupportCommand(**common, origin='text',
-            action=SupportAction(kind='offer', reason='human_request'))
     question = question_input(message)
     if question is None:
         return user_id, chat_id, 'ignored'
@@ -115,6 +109,10 @@ def _parse(update, now):
     for value in question.model_dump().values():
         if isinstance(value, str):
             value.encode('utf-8')
+    if question.kind == 'text':
+        command = _command_name(question.text)
+        if command is not None and command not in _COMMAND_REPLIES:
+            return user_id, chat_id, 'ignored'
     return user_id, chat_id, NewQuestion(**common, input=question)
 
 
@@ -138,8 +136,11 @@ async def _handle(update: Mapping[str, object]) -> IntakeResult:
         if isinstance(operation, SupportCommand):
             return await support.handle_support_action(operation)
         if isinstance(operation, NewQuestion):
-            # No preliminary Access read: ledger wins over changed admission.
-            return await _call('register_question', repository.register_question, operation)
+            command = _command_name(operation.input.text) if operation.input.kind == 'text' else None
+            # Navigation discloses no protected data and is available without
+            # employee admission. Runtime records the notice and ledger atomically.
+            response = _COMMAND_REPLIES.get(command, _NAVIGATION_REPLY)
+            return await _call('register_bot_notice', repository.register_bot_notice, operation, response)
         return await _call('record_update', repository.record_update, update['update_id'], user_id, chat_id, now, operation)
     finally:
         if isinstance(callback_id, str) and callback_id.strip():

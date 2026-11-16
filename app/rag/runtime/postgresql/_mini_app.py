@@ -183,6 +183,16 @@ async def _start_support(identity, request_id, reason):
             session, select(_SupportCase).where(_SupportCase.request_id == request_id)
         )
         if existing:
+            if (reason == "dissatisfied" and existing["reason"] == "dissatisfied"
+                    and existing["state"] in ("waiting", "awaiting_confirmation")):
+                await _require_admission(session, identity)
+                existing = await _one(
+                    session,
+                    update(_SupportCase)
+                    .where(_SupportCase.case_id == existing["case_id"])
+                    .values(state="creating", check_at=None)
+                    .returning(*_SupportCase.__table__.c),
+                )
             return _case(existing)
         await _require_admission(session, identity)
         if not request["result"] or request["result"]["kind"] != "answered":
@@ -194,9 +204,9 @@ async def _start_support(identity, request_id, reason):
                 case_id=uuid4(),
                 request_id=request_id,
                 user_id=identity.user_id,
-                state="waiting",
+                state="creating" if reason == "dissatisfied" else "waiting",
                 reason=reason,
-                check_at=await _now(session) + timedelta(minutes=10),
+                check_at=None if reason == "dissatisfied" else await _now(session) + timedelta(minutes=10),
             )
             .returning(*_SupportCase.__table__.c),
         )

@@ -9,6 +9,7 @@ import unittest
 from urllib.parse import urlencode
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
+from types import SimpleNamespace
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -122,6 +123,27 @@ class MiniAppHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.addAsyncCleanup(self.client.aclose)
         self.headers = {"Authorization": "tma " + signed()}
+
+    async def test_dissatisfied_opens_ticket_immediately(self):
+        case_id = uuid4()
+        creating = SimpleNamespace(case_id=case_id, state="creating")
+        opened = SimpleNamespace(case_id=case_id, state="open")
+        with patch.object(mini_app.storage, "_start_support", AsyncMock(return_value=creating)), \
+             patch.object(mini_app.support.repository, "create_support_ticket", AsyncMock(return_value=opened)) as create, \
+             patch.object(mini_app.support, "get_settings", return_value=SimpleNamespace(public_url="https://rag.example.org")):
+            response = await self.client.post("/api/v1/questions/1/support", headers=self.headers,
+                                              json={"reason": "dissatisfied"})
+        self.assertEqual(response.json()["state"], "open")
+        create.assert_awaited_once_with(case_id, "https://rag.example.org/tickets/" + str(case_id))
+
+    async def test_human_request_keeps_waiting(self):
+        waiting = SimpleNamespace(case_id=uuid4(), state="waiting")
+        with patch.object(mini_app.storage, "_start_support", AsyncMock(return_value=waiting)), \
+             patch.object(mini_app.support.repository, "create_support_ticket", AsyncMock()) as create:
+            response = await self.client.post("/api/v1/questions/1/support", headers=self.headers,
+                                              json={"reason": "human_request"})
+        self.assertEqual(response.json()["state"], "waiting")
+        create.assert_not_awaited()
 
     async def test_unsigned_requests_rejected(self):
         for header in (

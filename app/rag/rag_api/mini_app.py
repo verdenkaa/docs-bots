@@ -80,7 +80,12 @@ async def _start_support(
     request_id: _RequestId, request: Request, identity=Depends(_identity)
 ):
     body = await _body(request, WebSupportInput)
-    return await storage._start_support(identity, request_id, body.reason)
+    case = await storage._start_support(identity, request_id, body.reason)
+    if body.reason == "dissatisfied" and case.state == "creating":
+        case = await support.repository.create_support_ticket(
+            case.case_id, support.get_settings().public_url + "/tickets/" + str(case.case_id)
+        )
+    return case
 
 
 @router.get("/support/{case_id}")

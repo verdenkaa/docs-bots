@@ -24,7 +24,7 @@ x-app: &app
     QDRANT_URL: http://qdrant:6333
     S3_ENDPOINT_URL: http://s3:9000
   stop_grace_period: 90s
-  volumes: [worker_spool:/var/lib/rag/spool]
+  volumes: [worker_spool:/var/lib/rag/spool, ./deploy/certs:/etc/rag/certs:ro]
 
 x-health: &health
   interval: 5s

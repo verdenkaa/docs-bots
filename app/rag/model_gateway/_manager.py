@@ -139,7 +139,10 @@ async def _start(value):
             emit_event("model_gateway", "start_models", "started", run_id)
         try:
             async with asyncio.timeout(settings.startup_timeout_s):
-                for module_name in settings.provider_modules if bindings else ():
+                modules = list(settings.provider_modules) if bindings else []
+                if any(binding.provider == "gigachat" for binding in bindings.values()):
+                    modules.append("rag.model_gateway.gigachat")
+                for module_name in dict.fromkeys(modules):
                     try:
                         module = await asyncio.to_thread(
                             importlib.import_module, module_name

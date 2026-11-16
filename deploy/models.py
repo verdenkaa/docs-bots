@@ -69,3 +69,11 @@ async def prepare_models():
         print("Model Gateway probes passed for: " + ", ".join(sorted(bindings)), flush=True)
     finally:
         await close_models()
+    if settings.use_gigachat:
+        from rag.runtime.runner import _bindings
+
+        try:
+            await start_models({"generation": _bindings("questions", settings)["generation"]})
+            print("GigaChat answer probe passed", flush=True)
+        finally:
+            await close_models()

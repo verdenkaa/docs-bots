@@ -53,8 +53,10 @@ def _exclusive():
 
 
 class _Poller:
-    def __init__(self, client, settings, heartbeat=_heartbeat):
+    def __init__(self, client, settings, heartbeat=_heartbeat, *,
+                 intake_url='http://core:8000/telegram/webhook'):
         self.client, self.settings, self.heartbeat = client, settings, heartbeat
+        self.intake_url = intake_url
         self.offset = None
 
     async def _api(self, method, payload):
@@ -101,7 +103,7 @@ class _Poller:
             if self.offset is not None and update['update_id'] < self.offset:
                 continue
             try:
-                response = await self.client.post('http://core:8000/telegram/webhook',
+                response = await self.client.post(self.intake_url,
                     json=update, timeout=15,
                     headers={'X-Telegram-Bot-Api-Secret-Token': self.settings.webhook_secret})
             except httpx.HTTPError:

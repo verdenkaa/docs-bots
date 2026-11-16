@@ -116,6 +116,8 @@ class MiniAppHttpTests(unittest.IsolatedAsyncioTestCase):
         auth._windows.clear()
         self.app = FastAPI()
         self.app.include_router(mini_app.router)
+        from rag.rag_api.telegram.router import router
+        self.app.include_router(router)
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.app),
             base_url="https://rag.example.org",
@@ -241,18 +243,90 @@ class MiniAppHttpTests(unittest.IsolatedAsyncioTestCase):
         }
         with patch(
             "rag.rag_api._mini_app_webhook.record_update", new=AsyncMock()
-        ) as record:
+        ) as record, patch(
+            "rag.rag_api._mini_app_webhook.adapter._post",
+            new=AsyncMock(return_value=(200, {"ok": True, "result": {"message_id": 42}})),
+        ) as send:
             result = await _redirect(update)
+            self.assertEqual(result.body, b"")
+            self.assertEqual(result.status_code, 200)
             self.assertEqual(
-                json.loads(result.body)["reply_markup"]["inline_keyboard"][0][0][
+                send.call_args.args[1]["reply_markup"]["inline_keyboard"][0][0][
                     "web_app"
                 ]["url"],
                 "https://mini.example.org",
             )
             record.assert_awaited_once()
+            self.assertEqual(send.call_args.args[0], "sendMessage")
+            self.assertEqual(send.call_args.kwargs, {"chat_id": 7})
             self.assertIsNone(await _redirect({"callback_query": {}, **update}))
             with patch.dict(os.environ, {"MINI_APP_ENABLED": "false"}):
                 self.assertIsNone(await _redirect(update))
+            send.assert_awaited_once()
+
+    async def test_navigation_http_retries_failures_and_replayed_updates(self):
+        update = {"update_id": 100, "message": {
+            "from": {"id": 7, "is_bot": False},
+            "chat": {"id": 7, "type": "private"}, "text": "/start",
+        }}
+        headers = {"X-Telegram-Bot-Api-Secret-Token": "test-secret"}
+        from rag.rag_api._mini_app_webhook import adapter, limiter
+        from rag.rag_api.telegram.router import entrypoints
+
+        with patch("rag.rag_api._mini_app_webhook.record_update", new=AsyncMock()) as record, \
+                patch.object(adapter, "_post", new=AsyncMock()) as send, \
+                patch.object(limiter, "defer", new=AsyncMock()) as defer, \
+                patch.object(entrypoints, "handle_telegram_update", new=AsyncMock()) as legacy:
+            failures = [
+                (503, {"ok": False, "error_code": 503}),
+                (401, {"ok": False, "error_code": 401}),
+                (429, {"ok": False, "error_code": 429, "parameters": {"retry_after": 17}}),
+                (200, {"ok": True, "result": {"message_id": True}}),
+                (200, {}),
+            ]
+            for status, body in failures:
+                with self.subTest(status=status, body=body):
+                    send.return_value = status, body
+                    response = await self.client.post("/telegram/webhook", json=update, headers=headers)
+                    self.assertEqual(response.status_code, 503)
+                    self.assertEqual(response.content, b"")
+                    record.assert_not_awaited()
+            defer.assert_awaited_once_with(7, 17)
+            send.side_effect = httpx.ReadTimeout("token-must-not-leak")
+            response = await self.client.post("/telegram/webhook", json=update, headers=headers)
+            self.assertEqual(response.status_code, 503)
+            record.assert_not_awaited()
+
+            send.side_effect = None
+            send.return_value = 200, {"ok": True, "result": {"message_id": 42}}
+            record.side_effect = RuntimeError("commit unknown")
+            response = await self.client.post("/telegram/webhook", json=update, headers=headers)
+            self.assertEqual(response.status_code, 503)
+            record.side_effect = None
+            send.reset_mock()
+            # Replaying a saved/uncertain update may repeat navigation, but must
+            # never enter RAG or depend on Telegram executing the HTTP body.
+            for _ in range(2):
+                response = await self.client.post("/telegram/webhook", json=update, headers=headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.content, b"")
+            self.assertEqual(send.await_count, 2)
+            legacy.assert_not_awaited()
+
+    async def test_navigation_permanent_chat_rejection_does_not_stall_intake(self):
+        from rag.rag_api._mini_app_webhook import _redirect, adapter
+        update = {"update_id": 100, "message": {
+            "from": {"id": 7, "is_bot": False},
+            "chat": {"id": 7, "type": "private"}, "text": "/start",
+        }}
+        for status in (400, 403):
+            with self.subTest(status=status), \
+                    patch("rag.rag_api._mini_app_webhook.record_update", new=AsyncMock()) as record, \
+                    patch.object(adapter, "_post", new=AsyncMock(return_value=(
+                        status, {"ok": False, "error_code": status},
+                    ))):
+                self.assertEqual((await _redirect(update)).status_code, 200)
+                record.assert_awaited_once()
 
 
 if __name__ == "__main__":

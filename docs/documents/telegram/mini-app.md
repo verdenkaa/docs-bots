@@ -188,15 +188,28 @@ callbacks и maintenance; новая ручка их не подменяет.
 Новая ручка метрик учитывает веб-реакцию «Ответ не помог» через причину обращения.
 Старые метрики и публичные контракты не меняют свою форму и определения.
 
-## Webhook и интерфейс
+## Приём Telegram и интерфейс
 
-При `MINI_APP_ENABLED=true` прежний `POST /telegram/webhook` принимает команды
-и обычные личные сообщения, сохраняет ignored update и отвечает навигационной
-кнопкой `web_app`. Вопрос в Core не регистрируется. Legacy callbacks продолжают
-идти в прежний `handle_telegram_update`; прежние доставки выполняет results.
-При выключенном флаге HTTP webhook работает как раньше. Сам Python entrypoint
-не меняет поведение. Ответ Bot API внутри webhook не имеет квитанции:
-навигационная кнопка при повторе update может быть показана повторно.
+Обновления бота принимаются через long polling: `TELEGRAM_UPDATE_MODE=polling`,
+профиль Compose `polling`. Сам Mini App использует HTTPS независимо от транспорта
+обновлений бота. Poller передаёт updates во внутренний `POST /telegram/webhook`;
+имя маршрута не означает регистрацию webhook в Telegram.
+
+При `MINI_APP_ENABLED=true` этот маршрут принимает команды и обычные личные
+сообщения, отправляет навигационную кнопку `web_app` отдельным `sendMessage`
+через общий Telegram-адаптер и затем сохраняет ignored update. HTTP 200 имеет
+пустое тело: poller не должен исполнять Bot API-методы из HTTP-ответа.
+Вопрос в Core не регистрируется. Legacy callbacks продолжают идти в прежний
+`handle_telegram_update`; прежние доставки выполняет results. При выключенном
+флаге прежняя обработка updates сохраняется. Python entrypoint не меняется.
+
+Временная ошибка отправки, HTTP 429, неизвестная квитанция либо ошибка сохранения
+дают HTTP 503: update остаётся неподтверждённым и повторяется. Для HTTP 429
+учитывается `retry_after` в локальном ограничителе отправки. Подтверждённый
+постоянный отказ Telegram 400/403 (например, пользователь заблокировал бота)
+сохраняется как ignored и подтверждается, чтобы не остановить приём остальных
+updates. При повторе update или неопределённом результате отправки/коммита кнопка
+может быть показана повторно; гарантия единственной отправки не заявляется.
 
 Frontend подключает официальный Telegram SDK, использует ready/expand/themeChanged.
 Пользователь видит чат и свои тикеты. Администратор дополнительно видит все
@@ -214,8 +227,12 @@ Markdown документа (такого постоянного хранили�
    очередь и незавершённые работы. Не включать веб-приём при старых workers.
 2. В корневом `.env` docs-bots задать `MINI_APP_ENABLED=true`,
    `MINI_APP_URL=https://mini.example.org`, `MINI_APP_ADMIN_IDS=123456789`,
-   `MINI_APP_AUTH_MAX_AGE_S=3600`. Сохранить прежние токен, webhook secret,
+   `MINI_APP_AUTH_MAX_AGE_S=3600`, `TELEGRAM_UPDATE_MODE=polling`; добавить `polling`
+   к существующим `COMPOSE_PROFILES` (например, `native,polling`). Сохранить токен, webhook secret,
    ADMIN_LOGIN/PASSWORD и модельные/инфраструктурные настройки.
+   Остановить другие получатели updates того же бота и пересоздать контейнеры:
+   `docker compose up -d --build`. Poller удаляет регистрацию Telegram webhook
+   без удаления накопленных updates. Проверить `docker compose logs --tail=50 telegram-poller`.
 3. Присоединить RAG API и Mini App к одной сети; задать RAG API DNS alias `rag-api`.
    В отдельном репозитории настроить `.env` по `.env.example`, затем
    `docker compose up -d --build`. Его backend использует `http://rag-api:8000`.

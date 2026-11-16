@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -89,6 +89,61 @@ class PollingTests(unittest.IsolatedAsyncioTestCase):
             await restarted.step()
             self.assertEqual(restarted.offset, 28)
         self.assertEqual(saved, [27, 27])
+
+    async def test_mini_app_navigation_is_sent_before_polling_ack(self):
+        from fastapi import FastAPI
+        from rag.rag_api.telegram.router import router
+        from rag.rag_api import _mini_app_webhook as navigation
+
+        app = FastAPI()
+        app.include_router(router)
+        update = {'update_id': 100, 'message': {
+            'from': {'id': 7, 'is_bot': False},
+            'chat': {'id': 7, 'type': 'private'}, 'text': '/start'}}
+        polls = []
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url='http://core:8000') as intake:
+            async def transport(request):
+                if request.url.host == '127.0.0.1':
+                    self.assertEqual(str(request.url), 'http://127.0.0.1:8000/telegram/webhook')
+                    response = await intake.post('/telegram/webhook', content=request.content,
+                                                 headers=request.headers)
+                    self.assertEqual(response.content, b'')
+                    return response
+                value = json.loads(request.content)
+                polls.append(value)
+                return httpx.Response(200, json={'ok': True, 'result': (
+                    [] if value.get('offset') == 101 else [update])})
+
+            with patch.dict(os.environ, {
+                'MINI_APP_ENABLED': 'true', 'MINI_APP_URL': 'https://mini.example.org',
+                'TELEGRAM_BOT_TOKEN': '123:synthetic',
+                'TELEGRAM_WEBHOOK_SECRET': 'private-secret',
+                'TELEGRAM_WEBHOOK_URL': 'https://rag.example.org',
+            }), patch.object(navigation, 'record_update', new=AsyncMock()) as record, \
+                    patch.object(navigation.adapter, '_post', new=AsyncMock(side_effect=[
+                        (503, {'ok': False, 'error_code': 503}),
+                        (200, {'ok': True, 'result': {'message_id': 42}}),
+                    ])) as send:
+                async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+                    worker = polling._Poller(client, self.settings, lambda: None,
+                                             intake_url='http://127.0.0.1:8000/telegram/webhook')
+                    with self.assertRaises(polling._Retry):
+                        await worker.step()
+                    self.assertIsNone(worker.offset)
+                    record.assert_not_awaited()
+                    await worker.step()
+                    self.assertEqual(worker.offset, 101)
+                    record.assert_awaited_once()
+                    self.assertEqual(send.await_count, 2)
+                    self.assertEqual(send.call_args.args[0], 'sendMessage')
+                    self.assertEqual(send.call_args.args[1]['reply_markup']['inline_keyboard'][0][0],
+                                     {'text': 'Открыть приложение',
+                                      'web_app': {'url': 'https://mini.example.org'}})
+                    await worker.step()
+        self.assertNotIn('offset', polls[0])
+        self.assertNotIn('offset', polls[1])
+        self.assertEqual(polls[2]['offset'], 101)
 
     async def test_invalid_batch_is_never_partially_confirmed(self):
         for updates in ([{'update_id': 10}, {'update_id': True}], [{'update_id': 10}, {'update_id': 10}]):

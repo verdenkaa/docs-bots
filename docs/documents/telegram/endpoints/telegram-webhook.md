@@ -9,7 +9,7 @@ hide_title: true
 
 ## Назначение и доступ
 
-Telegram доставляет update по HTTPS. Проверяется X-Telegram-Bot-Api-Secret-Token; это подлинность Telegram, а допуск сотрудника отдельно проверяет Access.
+В режиме webhook Telegram доставляет update по HTTPS; в режиме polling его передаёт внутренний `telegram-poller`. Проверяется X-Telegram-Bot-Api-Secret-Token; допуск сотрудника отдельно проверяет Access.
 
 ## Что принимает
 
@@ -37,6 +37,11 @@ Content-Type: application/json, обязательный секрет в заг�
 3. accepted/duplicate/handled/busy/denied/ignored подтверждаются после сохранённого решения. Retry_later требует повторной доставки; Core работает вне HTTP-запроса.
 4. answerCallbackQuery выполняет handle_telegram_update через общий Telegram-адаптер. Webhook не дублирует этот вызов; подтверждение кнопки не является HTTP-телом ответа webhook.
 
+При `MINI_APP_ENABLED=true` личные сообщения перенаправляются в Mini App:
+кнопка отправляется отдельным `sendMessage`, затем сохраняется ignored update.
+Callback и выключенный флаг сохраняют прежний сценарий.
+[Повторы и ошибки навигации](../mini-app.md#приём-telegram-и-интерфейс).
+
 ## Что отдаёт
 
 200 OK с пустым телом для надёжно обработанного update. Бизнес-отказ доступа/занятости сотрудника не является HTTP-403/503 и не ставит вопрос повторно.
@@ -47,7 +52,7 @@ Content-Type: application/json, обязательный секрет в заг�
 | --- | --- | --- |
 | 400 | Некорректный JSON или нет обязательного update_id/структуры. | Исправить вход. |
 | 403 | Отсутствует/неверен секрет Telegram. | Проверить настройку webhook. |
-| 503 | retry_later: PostgreSQL/коммит неизвестны либо глобальная ёмкость исчерпана. | Telegram может повторить тот же update. |
+| 503 | retry_later: PostgreSQL/коммит неизвестны, глобальная ёмкость исчерпана либо отправка навигации Mini App временно не удалась/не подтверждена. | Telegram или poller повторяет тот же update. |
 
 ## Связанные контракты
 

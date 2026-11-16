@@ -94,6 +94,17 @@ class RuntimeSettings(ProjectSettings):
     model_bindings: SecretStr = SecretStr("{}")
     use_reranker: bool = False
     text_only: bool = False
+    use_gigachat: bool = False
+
+    @model_validator(mode="after")
+    def _answer_cache_namespace(self):
+        if self.use_gigachat:
+            from rag.model_gateway._gigachat_config import _Options
+
+            suffix = _Options()._profile() + ":"
+            if not self.cache_prefix.endswith(suffix):
+                self.cache_prefix += suffix
+        return self
 
     @field_validator("pg_schema")
     @classmethod

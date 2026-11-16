@@ -66,6 +66,16 @@ def validate():
             or worker.generation_profile != bindings["generation"].profile_id
             or worker.preparation_profile != settings.preparation_profile):
         raise ValueError("Core, ingestion and model profiles must match")
+    if settings.use_gigachat:
+        from rag.model_gateway._gigachat_config import _Options
+
+        options = _Options()
+        options._binding()
+        if not values.get("GIGACHAT_CREDENTIALS", "").strip():
+            raise ValueError("RAG_USE_GIGACHAT requires GIGACHAT_CREDENTIALS")
+        if (options.verify_ssl_certs and options.ca_bundle is not None
+                and not options.ca_bundle.is_file()):
+            raise ValueError("GIGACHAT_CA_BUNDLE must point to a readable PEM file")
     revisions = {}
     from rag.model_gateway.ollama import _model_name
     for binding in bindings.values():

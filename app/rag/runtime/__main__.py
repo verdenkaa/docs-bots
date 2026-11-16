@@ -29,6 +29,10 @@ async def _command(args):
             bindings = TypeAdapter(dict[ModelRole, ModelBinding]).validate_json(
                 settings.model_bindings.get_secret_value()
             )
+            if settings.use_gigachat and "generation" in bindings:
+                from rag.model_gateway._gigachat_config import _Options
+
+                bindings["generation"] = _Options()._binding()
             if args.role:
                 bindings = {role: bindings[role] for role in args.role}
         except (ValueError, KeyError):

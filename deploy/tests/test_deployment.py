@@ -43,6 +43,15 @@ def settings():
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_gigachat_keeps_local_ingestion_generation_in_preparation(self):
+        with patch.dict(os.environ, {"GIGACHAT_MODEL": "test-model"}):
+            item = settings()
+            item.use_gigachat = True
+            from rag.runtime.runner import _bindings
+
+            self.assertEqual(_bindings("questions", item)["generation"].provider, "gigachat")
+            self.assertEqual(config.active_bindings(item)["generation"].provider, "ollama")
+
     def test_proxy_check_does_not_start_services_when_imported(self):
         with patch.object(subprocess, "run", side_effect=AssertionError("Unexpected process on import")), \
                 patch.object(subprocess, "Popen", side_effect=AssertionError("Unexpected process on import")):
@@ -166,7 +175,7 @@ class SupervisorTests(unittest.TestCase):
 
 
 class ModelsTests(unittest.IsolatedAsyncioTestCase):
-    async def _prepare(self, installed, download_revision="a" * 64, complete=True):
+    async def _prepare(self, installed, download_revision="a" * 64, complete=True, item=None):
         calls = []
         catalog = dict(installed)
 
@@ -183,7 +192,7 @@ class ModelsTests(unittest.IsolatedAsyncioTestCase):
 
         original_client = httpx.AsyncClient
         client = original_client(base_url="http://ollama:11434", transport=httpx.MockTransport(handler))
-        with patch.object(models, "RuntimeSettings", return_value=settings()), \
+        with patch.object(models, "RuntimeSettings", return_value=item or settings()), \
                 patch.object(models, "environment_values", return_value={}), \
                 patch.object(models.httpx, "AsyncClient", return_value=client), \
                 patch.object(models, "start_models", new=AsyncMock()) as start, \
@@ -198,6 +207,19 @@ class ModelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(path == "/api/pull" for _, path in self.calls))
         self.start.assert_awaited_once()
         self.close.assert_awaited_once()
+
+    async def test_enabled_gigachat_probes_both_backends_without_downloading_api_model(self):
+        with patch.dict(os.environ, {"GIGACHAT_MODEL": "test-model"}):
+            item = settings()
+            item.use_gigachat = True
+            await self._prepare({"embeddinggemma:300m": "a" * 64, "qwen3:0.6b": "a" * 64}, item=item)
+        self.assertFalse(any(path == "/api/pull" for _, path in self.calls))
+        self.assertEqual(self.start.await_count, 2)
+        first, second = [call.args[0] for call in self.start.await_args_list]
+        self.assertEqual(first["generation"].provider, "ollama")
+        self.assertEqual(set(second), {"generation"})
+        self.assertEqual(second["generation"].provider, "gigachat")
+        self.assertEqual(self.close.await_count, 2)
 
     async def test_same_model_used_by_multiple_roles_is_downloaded_once(self):
         await self._prepare({})

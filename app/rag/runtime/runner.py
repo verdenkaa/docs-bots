@@ -51,6 +51,10 @@ def _bindings(component, settings):
     if not required <= bindings.keys():
         raise StepError("model_bindings_missing", False)
     selected = {role: bindings[role] for role in required}
+    if component == "questions" and settings.use_gigachat:
+        from rag.model_gateway._gigachat_config import _Options
+
+        selected["generation"] = _Options()._binding()
     embedding = selected.get("embedding")
     if embedding is not None and (
         embedding.profile_id != settings.embedding_profile

@@ -159,3 +159,35 @@ python -m unittest discover -s deploy/tests -v
 ```
 
 Требуются установленное приложение и Docker Compose CLI. Демон нужен для сборки и интеграции. Для тестовых стендов не используйте настоящий `.env` или токен.
+
+
+## Mini App на том же HTTPS origin
+
+Склонируйте `https://github.com/lUniverseGameplay/docs-bots_TG_mini_app.git`
+рядом с docs-bots. Override `compose.mini-app.yaml` собирает его frontend/backend;
+`MINI_APP_DIR` позволяет задать другой путь. В серверный `.env` на Linux добавьте:
+
+```dotenv
+COMPOSE_FILE=compose.yaml:compose.mini-app.yaml
+MINI_APP_ENABLED=true
+MINI_APP_URL=https://176.53.246.245
+```
+
+Замените IP своим `PUBLIC_HOST`. `MINI_APP_ADMIN_IDS` содержит только явно назначенные
+числовые Telegram ID; пустое значение не назначает администратора. После резервной
+копии PostgreSQL выполните обычный `docker compose up -d --build`: миграции
+включены в существующую цепочку запуска. При обновлении обоих репозиториев
+выполните `git pull` в каждом перед сборкой. На Windows разделитель COMPOSE_FILE — `;`.
+
+Публичный nginx отправляет `/` во frontend, `/api/v1/` и `/sources/` в backend
+Mini App, а health, старую админку и тикеты — в core. Приём документов сохраняет
+отдельный маршрут worker. Backend обращается к `http://rag-api:8000` по внутренней
+сети `mini`, не получает секреты бота и не подключается к сети хранилищ.
+Порты Mini App на хост не публикуются; CORS не требуется. Без override прежняя
+маршрутизация сохраняется. Существующие сертификаты и их продление используются
+для того же IP или домена.
+
+Через Bot API задайте Menu Button типа `web_app` на `MINI_APP_URL` для этого же
+бота. Main Mini App в профиле настраивается отдельно в BotFather. Проверяйте вход
+из Telegram: обычный браузер без подписанного initData не имеет доступа к API.
+Публичный `/api/v1/me` без авторизации должен возвращать 401, `/health/ready` — 200.

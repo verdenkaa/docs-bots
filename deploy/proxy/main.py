@@ -45,6 +45,17 @@ def render(template, values):
     host = values["PUBLIC_HOST"]
     identifier(host)
     result = template.replace("@PUBLIC_HOST@", host)
+    locations = "location / { proxy_pass $core; }"
+    if values.get("MINI_APP_PROXY_ENABLED", "false").lower() == "true":
+        locations = """set $mini_backend http://mini-backend:8080;
+        set $mini_frontend http://mini-frontend:80;
+        location /api/v1/ { proxy_pass $mini_backend; }
+        location /sources/ { proxy_pass $mini_backend; }
+        location /health/ { proxy_pass $core; }
+        location /admin/ { proxy_pass $core; }
+        location /tickets/ { proxy_pass $core; }
+        location / { proxy_pass $mini_frontend; }"""
+    result = result.replace("@APP_LOCATIONS@", locations)
     for token, key, default in (("UPLOAD_BYTES", "RAG_INGESTION_MAX_UPLOAD_BYTES", 20971520),
                                 ("UPLOAD_TIMEOUT", "RAG_INGESTION_UPLOAD_TIMEOUT_S", 600),
                                 ("PROXY_TIMEOUT", "INGESTION_PROXY_TIMEOUT_S", 660)):

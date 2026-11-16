@@ -91,6 +91,19 @@ class ConfigurationTests(unittest.TestCase):
         worker = server.commands("worker", {})
         self.assertEqual(worker["ingestion"][-3:], ["-m", "rag.runtime", "worker"])
 
+    def test_mini_app_proxy_preserves_core_and_ingestion_routes(self):
+        template = (ROOT / "deploy/proxy/https.conf").read_text()
+        normal = proxy.render(template, {"PUBLIC_HOST": "176.53.246.245"})
+        self.assertNotIn("mini-backend", normal)
+        mini = proxy.render(template, {"PUBLIC_HOST": "176.53.246.245",
+                                      "MINI_APP_PROXY_ENABLED": "true"})
+        self.assertIn("location /api/v1/ { proxy_pass $mini_backend; }", mini)
+        self.assertIn("location / { proxy_pass $mini_frontend; }", mini)
+        self.assertIn("location /health/ { proxy_pass $core; }", mini)
+        self.assertIn("location = /admin/ingestion/upload", mini)
+        self.assertIn("location ^~ /internal/ { return 404; }", mini)
+        self.assertNotIn("@APP_LOCATIONS@", mini)
+
 
 class ReadinessTests(unittest.TestCase):
     def test_process_ready_signal_is_optional_and_owned_by_the_writing_pid(self):

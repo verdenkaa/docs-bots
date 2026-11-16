@@ -17,8 +17,8 @@ sidebar_position: 5
 
 ~~~python
 from typing import Self
-from pydantic import model_validator
-from rag.dto import _check_image_markers
+from pydantic import field_validator, model_validator
+from rag.dto import _check_image_markers, _check_source_url
 
 from pydantic import AwareDatetime, Field
 from rag.dto import DTO, PositiveId, NonNegativeInt, NonEmptyText
@@ -33,6 +33,12 @@ from uuid import UUID
 class UploadSource(DTO):
     filename: NonEmptyText
     access_level: NonEmptyText
+    source_url: str | None = None
+
+    @field_validator('source_url')
+    @classmethod
+    def check_source_url(cls, value: str | None) -> str | None:
+        return _check_source_url(value)
 
 @dataclass(frozen=True)
 class UploadInput:
@@ -122,6 +128,7 @@ class PreparedChunk(DTO):
 | --- | --- | --- | --- |
 | UploadSource.filename | NonEmptyText | Точное уникальное имя документа и подпись источника, не путь. | Руководство.docx |
 | UploadSource.access_level | NonEmptyText | Обязательная метка доступа всего документа из доверенного адаптера. | employees |
+| UploadSource.source_url | str или None | Необязательный HTTP(S) URL документа для пользователя, без credentials и пробелов; значение передаётся без нормализации. По URL ничего не скачивается. | `https://docs.example/manual` |
 | DocumentBatch.source / chunks | UploadSource / непустой список | Полное разбиение одного документа; метаданные общие для массива. | DocumentBatch(...) |
 | ClaimedIngestionJob.document_version / base_version | NonNegativeInt или None | Зарезервированная версия с 0 и предыдущая опубликованная версия. | 1 / 0 |
 | ConversionResult.markdown | NonEmptyText | Готовый Markdown с плейсхолдерами. | `![Схема](image://…)` |
@@ -170,7 +177,7 @@ Worker собирает один [`ChunkPoint`](../infrastructure/qdrant/contrac
 | `text`, `locator`, `images` | Поля PreparedChunk. images содержит ID/описания плейсхолдеров этого чанка; повтор не назначает новые ID. |
 | `document_version` | Номер из ReservedRevision; первый 0. |
 | `access_level` | batch.source.access_level, одна метка для всех чанков. |
-| `source_name`, `source_url` | `batch.source.filename` из сохранённой партии; source_url=None, ссылку на HTML-заглушку строит RAG API. |
+| `source_name`, `source_url` | `batch.source.filename` и `batch.source.source_url` из сохранённой партии. RAG API использует URL напрямую; при None строит ссылку на HTML-заглушку. |
 | `dense` | Вектор из `EmbeddingResult.vectors` на позиции `chunk_no`. |
 
 Адаптер Qdrant сериализует точку. Текст для BM25 берётся из того же поля `text`. [Пример записи](../infrastructure/qdrant/index.md#структура-точки)

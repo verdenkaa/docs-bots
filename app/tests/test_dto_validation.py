@@ -7,7 +7,7 @@ from uuid import uuid4
 from pydantic import TypeAdapter, ValidationError
 
 from contract_examples import IMAGE, MARKDOWN, NOW, source
-from rag.contracts import AnsweredOutcome, DeliveryAttempt, GeneratedAnswer, ImageRef, QuestionInput, RagResult, RequestRef
+from rag.contracts import AnsweredOutcome, DeliveryAttempt, GeneratedAnswer, ImageRef, QuestionInput, RagResult, RequestRef, SourceRef
 from rag.ingestion.contracts import ConvertedDocument, UploadSource
 from rag.model_gateway.contracts import InjectionResult
 from rag.rag_api.contracts import (
@@ -34,8 +34,23 @@ class DtoValidationTests(unittest.TestCase):
             })
         with self.assertRaises(ValidationError):
             TypeAdapter(SendResult).validate_json('{"kind":"sent"}')
-        with self.assertRaises(ValidationError):
-            UploadSource(filename="guide.docx", access_level="employees", source_url="https://old.example")
+
+    def test_source_urls_are_optional_http_links_preserved_without_normalization(self):
+        self.assertIsNone(UploadSource(filename="guide.docx", access_level="employees").source_url)
+        for url in ("https://docs.example/guide?revision=abc&view=1#section", "http://docs.example/guide"):
+            upload = UploadSource(filename="guide.docx", access_level="employees", source_url=url)
+            cited = SourceRef(**{**source().model_dump(), "source_url": url})
+            self.assertEqual(upload.source_url, url)
+            self.assertEqual(SourceRef.model_validate_json(cited.model_dump_json()).source_url, url)
+        for url in ("", "guide.md", "javascript:alert(1)", "file:///tmp/guide.md",
+                    "https:///guide", "https://user:password@docs.example/guide",
+                    "https://docs.example:invalid/guide", "https://docs.example/a b",
+                    "https://docs.example/\nprivate"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValidationError):
+                    UploadSource(filename="guide.docx", access_level="employees", source_url=url)
+                with self.assertRaises(ValidationError):
+                    SourceRef(**{**source().model_dump(), "source_url": url})
 
     def test_intake_and_support_actions(self):
         for values in ({"kind": "accepted"}, {"kind": "busy", "request_id": 1}):

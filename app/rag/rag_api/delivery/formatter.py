@@ -213,7 +213,8 @@ def _build(delivery: ClaimedDelivery, source_base_url: str) -> list[DeliveryPart
             offset = units(suffix + prefix)
             suffix += prefix + name
             source_entities.append(TelegramEntity(type='text_link', offset=offset,
-                length=units(name), url=base + '/sources/' + str(source.document_id)))
+                length=units(name), url=source.source_url if source.source_url is not None
+                else base + '/sources/' + str(source.document_id)))
         if units(text + suffix) > 4096:
             # Keep the complete answer and one compact source when possible.
             remaining = 4096 - units(text) - 1
@@ -221,7 +222,8 @@ def _build(delivery: ClaimedDelivery, source_base_url: str) -> list[DeliveryPart
             if name:
                 suffix = '\n' + name
                 source_entities = [TelegramEntity(type='text_link', offset=1,
-                    length=units(name), url=base + '/sources/' + str(result.sources[0].document_id))]
+                    length=units(name), url=result.sources[0].source_url if result.sources[0].source_url is not None
+                    else base + '/sources/' + str(result.sources[0].document_id))]
             else:
                 text, suffix, entities, source_entities, images = FALLBACK_TEXT, '', [], [], []
                 variant = 'length_fallback'

@@ -148,6 +148,8 @@ class PreparedRevision(DTO):
             raise ValueError('Чанки редакции имеют одну версию документа')
         if len({point.access_level for point in self.points}) != 1 or len({point.source_name for point in self.points}) != 1:
             raise ValueError('Чанки редакции имеют общее имя и уровень доступа')
+        if len({point.source_url for point in self.points}) != 1:
+            raise ValueError('Чанки редакции имеют общий source_url')
         for number, point in enumerate(self.points):
             if point.revision_id != self.revision_id or point.chunk_no != number or point.chunk_id != uuid5(self.revision_id, str(number)):
                 raise ValueError('Нарушена идентичность или нумерация чанков')
@@ -246,4 +248,4 @@ async def load_document_batch(staging_ref: str) -> DocumentBatch | None:
 
 Результат — валидированная DocumentBatch либо None при отсутствии chunks.json. Повреждённый существующий файл или недоступность тома — StorageError, не None. Для принятого задания отсутствие партии является ошибкой материала; Worker не создаёт новую партию из converted.md. Уборка remove_staged_upload удаляет также chunks.json.
 
-При проверке PreparedRevision все точки должны иметь одинаковые document_id, document_version, source_name и access_level. Worker дополнительно сверяет их с ReservedRevision и DocumentBatch; локальный валидатор снимка не может подтвердить чужие метаданные без этих входов.
+При проверке PreparedRevision все точки должны иметь одинаковые document_id, document_version, source_name, source_url и access_level. Worker дополнительно сверяет их с ReservedRevision и DocumentBatch; source_url должен совпадать с UploadSource в манифесте и партии, включая None. Локальный валидатор снимка не может подтвердить чужие метаданные без этих входов. Старые манифесты и партии без source_url читаются с None.

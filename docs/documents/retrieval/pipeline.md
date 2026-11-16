@@ -33,7 +33,7 @@ Runtime запускает нужные роли через Model Gateway: embed
 
 [Weighted RRF Qdrant](https://qdrant.tech/documentation/search/hybrid-queries/#weighted-rrf) поддерживает отдельный вес на prefetch. Порядок весов должен совпадать с порядком dense/BM25 веток. Значения выбираем по тестам со ссылками/кодами. Reranker, если включён, переоценивает уже сформированный пул; влияние приоритета проверяем на итоговой выдаче.
 
-Примеры topic_questions не входят в выдачу Searcher и не могут цитироваться как документ. SearchFragment.images передаётся без смены ID; source_url=None, ссылку на HTML-заглушку строит RAG API.
+Примеры topic_questions не входят в выдачу Searcher и не могут цитироваться как документ. SearchFragment.images передаётся без смены ID; source_url передаётся из payload без изменения. RAG API выдаёт этот URL пользователю, а при None строит ссылку на HTML-заглушку.
 
 ## Настройки Searcher
 

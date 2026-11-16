@@ -33,6 +33,8 @@ Model Gateway проверяет все шесть ролей, ограничи�
 
 DTO наследуют Pydantic-базу `rag.dto.DTO`; поля читаются через атрибуты (`result.answer_text`). Правила валидации, JSON и технических потоков — в [справке](../docs/documents/faq/dto.md).
 
+При HTTP-загрузке можно передать query-параметр `source_url` — HTTP(S) ссылку документа для пользователя. Gateway сохраняет её в UploadSource/DocumentBatch, Worker переносит в payload Qdrant, а RAG API использует в источниках ответа. Значение кодируется как query-параметр, например через curl `--url-query 'source_url=https://docs.example/manual?revision=abc&view=1#section'`. Документ по URL не скачивается: тело запроса по-прежнему содержит байты файла. Без source_url сохраняется ссылка на `/sources/{document_id}`.
+
 Общие DTO лежат в [`rag/contracts.py`](rag/contracts.py), специфичные для RAG API и Ingestion — в `contracts.py` внутри своих модулей. Начинайте с тела нужной функции. При изменении сигнатуры согласуйте её с вызывающей стороной и обновите соответствующую страницу документации.
 
 [`tests/test_documented_contracts.py`](tests/test_documented_contracts.py) сверяет точный состав и структуру контрактов с Python-блоками действующей документации. Документ-владелец указан в `Contracts: docs/documents/...md.` в docstring модуля; базовый `rag.dto` описан в справке DTO. При добавлении точки входа или DTO добавьте определение в документ владельца. Тесты сравнивают AST, проверяют DTO на положительных/ошибочных данных и трассируют передачу параметров между точками входа без исполнения бизнес-операций. В tests/test_contracts.py — вопрос и доставка, test_ingestion_contracts.py — загрузка/индексация, test_dto_validation.py — правила полей. К сервисам тесты не подключаются.

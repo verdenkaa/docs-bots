@@ -32,7 +32,7 @@ Gateway — Python-компонент в `worker`. Адаптер проверя
 6. `register_revision(revision_id, upload.document_id, staging_ref, upload.source, image_ids)` атомарно находит/создаёт document_id по имени и регистрирует редакцию и outbox.
 7. После подтверждённого коммита вернуть AcceptedUpload. Номер версии ещё не назначен; индекс готовится Worker.
 
-Название оригинала сохраняем как source_name. URL оригинала не нужен: RAG API строит ссылку на HTML-заглушку документа.
+Название оригинала сохраняем как source_name. Необязательный source_url проходит в манифест и DocumentBatch, затем в точки Qdrant и источники ответа; PostgreSQL регистрации хранит прежние метаданные имени/доступа, без отдельной колонки URL. RAG API выдаёт source_url напрямую, а при None строит ссылку на HTML-заглушку. Gateway не скачивает содержимое по URL.
 
 ~~~python
 result = await accept_upload(

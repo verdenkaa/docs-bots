@@ -49,6 +49,27 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.deps.reservation.document_version, 1)
         self.assertEqual(self.deps.reservation.base_version, 0)
 
+    async def test_source_url_is_preserved_in_index_points_and_snapshot(self):
+        url = "https://docs.example/network?revision=abc&view=1#section"
+        self.deps.batch.source.source_url = url
+        self.assertEqual(await self._run(), "ack")
+        self.assertEqual(self.deps.state, "published")
+        self.assertTrue(all(point.source_url == url for point in self.deps.chunk_points))
+        self.assertTrue(all(point.source_url == url for point in self.deps.prepared.points))
+
+    async def test_retry_refuses_a_snapshot_with_changed_source_url(self):
+        self.deps.batch.source.source_url = "https://docs.example/network?revision=abc"
+        self.deps.errors["write_chunks"] = StepError("qdrant_unavailable", True)
+        await self._run()
+        self.deps.pending = False
+        for point in self.deps.prepared.points:
+            point.source_url = "https://docs.example/other"
+        self.deps.errors.clear()
+        self.deps.calls.clear()
+        self.assertEqual(await self._run(), "ack")
+        self.assertIn("fail", self.deps.calls)
+        self.assertNotIn("write_chunks", self.deps.calls)
+
     async def test_duplicate_after_publication_does_not_regenerate(self):
         await self._run()
         self.deps.calls.clear()

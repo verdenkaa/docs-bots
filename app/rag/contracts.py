@@ -9,9 +9,9 @@ from __future__ import annotations
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
-from rag.dto import DTO, NonEmptyText, NonNegativeInt, PositiveId, _check_image_markers
+from rag.dto import DTO, NonEmptyText, NonNegativeInt, PositiveId, _check_image_markers, _check_source_url
 
 
 ConsumeDecision = Literal['ack', 'retry_broker']
@@ -91,7 +91,12 @@ class SourceRef(DTO):
     revision_id: UUID = Field(description='ID конкретной редакции документа; совпадает с job_id индексации.')
     source_name: NonEmptyText = Field(description='Читаемое название источника для оформления ответа.')
     locator: SourceLocator | None = Field(default=None, description='Необязательный внутренний локатор; ссылка на раздел не требуется.')
-    source_url: str | None = Field(default=None, description='В MVP None; ссылку на HTML-заглушку строит RAG API по document_id.')
+    source_url: str | None = Field(default=None, description='Исходный HTTP(S) URL документа; при None RAG API строит ссылку на HTML-заглушку по document_id.')
+
+    @field_validator('source_url')
+    @classmethod
+    def check_source_url(cls, value: str | None) -> str | None:
+        return _check_source_url(value)
 
 
 class SearchFragment(SourceRef):

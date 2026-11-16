@@ -328,14 +328,24 @@ class FormatterTests(unittest.TestCase):
         self.assertEqual(part.entities[0].url, f'https://bot.example/sources/{source.document_id}')
         TextPart.model_validate(part.model_dump())
 
-    def test_sources_are_grouped_by_document_and_use_only_trusted_base(self):
+    def test_compact_source_uses_original_url_at_answer_limit(self):
+        source = _source(name='Инструкция')
+        source.source_url = 'https://docs.example/manual?revision=abc&view=1#section'
+        answer = 'x' * 4090
+        part = entrypoints.build_delivery_parts(_delivery(content=RagResult(
+            answer_text=answer, sources=[source])), 'https://bot.example')[0]
+        self.assertTrue(part.text.startswith(answer))
+        self.assertEqual([entity.url for entity in part.entities if entity.type == 'text_link'],
+                         [source.source_url])
+
+    def test_sources_are_grouped_by_document_and_use_original_url(self):
         document = uuid4()
         source = _source(document)
-        source.source_url = 'https://untrusted.example'
+        source.source_url = 'https://docs.example/manual?revision=abc&view=1#section'
         delivery = _delivery(content=RagResult(answer_text='Ответ', sources=[source, _source(document)]))
         part = entrypoints.build_delivery_parts(delivery, 'https://bot.example')[0]
         links = [e.url for e in part.entities if e.type == 'text_link']
-        self.assertEqual(links, [f'https://bot.example/sources/{document}'])
+        self.assertEqual(links, [source.source_url])
         for url in ('http://bot.example', 'https://user:pass@bot.example', 'https://bot.example?token=secret'):
             with self.assertRaises(ValueError):
                 entrypoints.build_delivery_parts(delivery, url)

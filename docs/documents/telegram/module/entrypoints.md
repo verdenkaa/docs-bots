@@ -87,7 +87,7 @@ def build_delivery_parts(delivery: ClaimedDelivery, source_base_url: str) -> lis
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
 | delivery | ClaimedDelivery | Контент/состояние и назначение из PostgreSQL. | purpose="answer", content=RagResult(...) |
-| source_base_url | str | Проверенный адрес RAG API из конфигурации для ссылок источников. | "https://bot.example" |
+| source_base_url | str | Проверенный адрес RAG API из конфигурации для резервных ссылок источников без source_url. | "https://bot.example" |
 
 ### Что отдаёт
 
@@ -100,7 +100,7 @@ def build_delivery_parts(delivery: ClaimedDelivery, source_base_url: str) -> lis
 
 ### Правила и ошибки
 
-Чистая сборка без I/O. Для answer/notice использует content; для status/busy/denied/first_question — стандартный текст; offer даёт кнопку s:request_id; confirmation — y/n:case_id; ticket_link использует case.ticket_url. Обычный ответ может предложить «Ответ не помог» (a:request_id), но не кнопку оператора. Переводит Markdown в видимый текст + entities с UTF-16-смещениями; image-маркеры становятся описаниями, файлы — отдельными частями. Источник группируется по document_id, ссылка ведёт на /sources/&#123;document_id&#125;. Видимый текст ограничен 4096 единицами UTF-16, из них до 512 — источники. При переполнении сохраняет хотя бы один источник либо даёт короткий резервный текст и реакцию недовольства. План один раз сохраняется в PostgreSQL.
+Чистая сборка без I/O. Для answer/notice использует content; для status/busy/denied/first_question — стандартный текст; offer даёт кнопку s:request_id; confirmation — y/n:case_id; ticket_link использует case.ticket_url. Обычный ответ может предложить «Ответ не помог» (a:request_id), но не кнопку оператора. Переводит Markdown в видимый текст + entities с UTF-16-смещениями; image-маркеры становятся описаниями, файлы — отдельными частями. Источник группируется по document_id; ссылка использует проверенный HTTP(S) source_url из SourceRef, а при None — /sources/&#123;document_id&#125; на source_base_url. Это правило одинаково для обычного списка и сокращённого источника при длинном ответе. Видимый текст ограничен 4096 единицами UTF-16, из них до 512 — источники. При переполнении сохраняет хотя бы один источник либо даёт короткий резервный текст и реакцию недовольства. План один раз сохраняется в PostgreSQL и при повторе не пересобирается.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `send_answer` {#send-answer}
 

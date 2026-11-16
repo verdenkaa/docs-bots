@@ -15,7 +15,7 @@ from contract_examples import (
     DOCUMENT, IMAGE, MARKDOWN, NOW, REVISION, processing_attempt,
     returned, source, validate_call_arguments,
 )
-from rag.contracts import AllowedQuestion, AnsweredOutcome, ClaimedQuestion, DeliveryAttempt, DeliveryRef, GeneratedAnswer, ImageContent, ImageQuestion, NoticeOutcome, OutOfScope, QuestionInput, QuestionOutcome, RagResult, RequestRef, SearchFragment, StepError, StorageError, SupportOutcome, TextQuestion
+from rag.contracts import AllowedQuestion, AnsweredOutcome, ClaimedQuestion, DeliveryAttempt, DeliveryRef, GeneratedAnswer, ImageContent, ImageQuestion, NoticeOutcome, OutOfScope, QuestionInput, QuestionOutcome, RagResult, RequestRef, SearchFragment, SourceRef, StepError, StorageError, SupportOutcome, TextQuestion
 from rag.dto import DTO
 from rag.guardrails.entrypoints import check_question
 from rag.ingestion.contracts import UploadInput
@@ -67,14 +67,15 @@ class ContractTests(unittest.TestCase):
         validate_call_arguments(search, query, revisions)
         validate_call_arguments(find_chunks, query, embedding.vectors[0], revisions, 10,
                                 lexical_priority=False)
-        fragment = SearchFragment(**source().model_dump(), text=MARKDOWN, images=[IMAGE])
+        cited_source = SourceRef(**{**source().model_dump(), "source_url": "https://docs.example/manual?revision=abc"})
+        fragment = SearchFragment(**cited_source.model_dump(), text=MARKDOWN, images=[IMAGE])
         hits = returned(find_chunks, [QdrantHit(fragment=fragment, score=0.72)])
         fragments = returned(search, [hit.fragment for hit in hits])
         validate_call_arguments(generate_answer, query, fragments)
         answer = returned(generate_answer, GeneratedAnswer(
             kind="answered", answer_text=MARKDOWN,
             cited_chunk_ids=[fragments[0].chunk_id], cited_image_ids=[IMAGE.image_id]))
-        result = RagResult(answer_text=answer.answer_text, sources=[source()], images=[IMAGE])
+        result = RagResult(answer_text=answer.answer_text, sources=[cited_source], images=[IMAGE])
         outcome = AnsweredOutcome(kind="answered", result=result)
         validate_call_arguments(pg_core.complete_question, job.attempt, outcome)
         validate_call_arguments(store_answer, query, job.corpus_generation, result)

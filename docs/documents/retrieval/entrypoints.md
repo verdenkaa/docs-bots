@@ -35,7 +35,7 @@ async def search(query: str, revision_ids: frozenset[UUID]) -> list[SearchFragme
 | `[].text` | `str` | Текст для контекста генератора. | `"Фрагмент инструкции по установке."` |
 | `[].source_name` | `str` | Название источника для пользователя. | `"Руководство по установке.pdf"` |
 | `[].locator` | `SourceLocator \| None` | Место в документе, если его можно указать. | `{"page": 4, "section": "Установка"}` |
-| `[].source_url` | `str \| None` | В MVP None: API строит ссылку на HTML-заглушку документа. | `None` |
+| `[].source_url` | `str \| None` | HTTP(S) URL документа из payload; API использует его напрямую. При None используется HTML-заглушка документа. | `https://docs.example/manual` |
 | `[].images` | `list[ImageRef]` | ID/описания изображений этого чанка из payload. | `[]` |
 
 Фрагмент также возвращает images: list[ImageRef] из payload; без изображений это []. Источник ID — Gateway, не Searcher.

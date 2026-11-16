@@ -46,7 +46,7 @@ class _BatchChecks:
                     or point.document_version != revision.document_version
                     or point.access_level != batch.source.access_level
                     or point.source_name != batch.source.filename
-                    or point.source_url is not None
+                    or point.source_url != batch.source.source_url
                     or point.text != chunk.text
                     or point.locator != chunk.locator
                     or point.images != chunk.images):

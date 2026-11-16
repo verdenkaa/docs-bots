@@ -26,10 +26,10 @@ from rag.runtime.upload_spool import (
 )
 
 
-def prepared_revision():
+def prepared_revision(source_url=None):
     """Полный согласованный набор из одного чанка и одного примера темы."""
     chunk = ChunkPoint(chunk_id=uuid5(REVISION, "0"), document_id=DOCUMENT,
-                       revision_id=REVISION, source_name="Руководство.docx",
+                       revision_id=REVISION, source_name="Руководство.docx", source_url=source_url,
                        text=MARKDOWN, images=[IMAGE], chunk_no=0, document_version=0,
                        access_level="employees", dense=[0.1, 0.2])
     topic = TopicPoint(point_id=uuid5(REVISION, "question:0"), revision_id=REVISION,
@@ -43,7 +43,8 @@ class IngestionContractTests(unittest.TestCase):
         async def stream():
             yield b"document"
 
-        upload = UploadInput(content=stream(), source=UploadSource(filename="Руководство.docx", access_level="employees"),
+        upload = UploadInput(content=stream(), source=UploadSource(filename="Руководство.docx", access_level="employees",
+                             source_url="https://docs.example/manual?revision=abc"),
                              document_id=None)
         validate_call_arguments(accept_upload, upload)
         validate_call_arguments(convert_document, upload, REVISION)
@@ -79,7 +80,7 @@ class IngestionContractTests(unittest.TestCase):
         validate_call_arguments(pg.reserve_document_version, job.attempt, current)
         reservation = returned(pg.reserve_document_version, pg.ReservedRevision(
             revision_id=REVISION, document_id=DOCUMENT, document_version=0, base_version=None))
-        snapshot = prepared_revision()
+        snapshot = prepared_revision(source_url=upload.source.source_url)
         self.assertEqual(snapshot.points[0].text, chunks[0].text)
         self.assertEqual(snapshot.points[0].document_version, reservation.document_version)
         self.assertEqual(snapshot.points[0].access_level, batch.source.access_level)
@@ -94,7 +95,7 @@ class IngestionContractTests(unittest.TestCase):
         validate_call_arguments(verify_topic_points, event.job_id, len(restored.topic_points))
         validate_call_arguments(pg.publish_revision, job.attempt)
         self.assertEqual(returned(pg.publish_revision, 42), 42)
-        self.assertNotIn("source_url", UploadSource.model_fields)
+        self.assertEqual(restored.points[0].source_url, upload.source.source_url)
 
     def test_existing_document_version_zero_is_not_absence(self):
         current = returned(pg.read_document_version, pg.DocumentVersion(
@@ -135,7 +136,7 @@ class IngestionContractTests(unittest.TestCase):
     def test_snapshot_keeps_one_document_version_and_access_level(self):
         original = prepared_revision()
         for field, value in (("document_version", 1), ("access_level", "operators"),
-                             ("source_name", "Другое имя")):
+                             ("source_name", "Другое имя"), ("source_url", "https://docs.example/other")):
             data = original.model_dump()
             second = dict(data["points"][0], chunk_no=1, chunk_id=uuid5(REVISION, "1"))
             second[field] = value

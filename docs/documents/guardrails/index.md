@@ -43,6 +43,6 @@ Core переводит out_of_scope в автоматическое созда�
 | Переменная | По умолчанию | Смысл |
 | --- | --- | --- |
 | RAG_GUARDRAILS_MAX_QUESTION_CHARS | 4000 | Длиннее — invalid_input. |
-| RAG_GUARDRAILS_TOPIC_THRESHOLD | 0.3 | Косинусное сходство, ниже которого вопрос вне темы. |
+| RAG_GUARDRAILS_TOPIC_THRESHOLD | 0.3 | Косинусное сходство, ниже которого вопрос вне темы. На стенде 0.45 — [подбор](./detector.md#порог-темы). |
 | RAG_GUARDRAILS_DETECTOR_TIMEOUT_S / EMBEDDING_TIMEOUT_S / TOPIC_TIMEOUT_S | 5 / 5 / 5 | Бюджеты шагов. |
 | RAG_GUARDRAILS_INJECTION_SCORE_THRESHOLDS | {} | JSON: profile_id → порог score, при котором это инъекция. |

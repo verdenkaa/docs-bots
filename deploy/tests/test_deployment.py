@@ -221,7 +221,11 @@ class WebhookTests(unittest.IsolatedAsyncioTestCase):
             register.assert_not_awaited()
 
 
-@unittest.skipUnless(shutil.which("docker"), "Docker Compose CLI unavailable")
+COMPOSE = (["docker", "compose"] if shutil.which("docker") else
+           ["docker-compose"] if shutil.which("docker-compose") else None)
+
+
+@unittest.skipUnless(COMPOSE, "Docker Compose CLI unavailable")
 class ComposeTests(unittest.TestCase):
     def test_default_server_services_and_network_exposure_without_real_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -229,7 +233,7 @@ class ComposeTests(unittest.TestCase):
             env_file.write_text("PUBLIC_HOST=176.53.246.245\nPGPASSWORD=test-pg\nRABBITMQ_PASSWORD=test-rabbit\nS3_SECRET_KEY=test-s3\nGRAFANA_PASSWORD=test-grafana\n")
             # config --no-env-resolution validates the deployable graph without
             # reading or printing the real service .env. No daemon is required.
-            command = ["docker", "compose", "--env-file", str(env_file), "-f", str(ROOT / "compose.yaml"),
+            command = [*COMPOSE, "--env-file", str(env_file), "-f", str(ROOT / "compose.yaml"),
                        "config", "--no-env-resolution", "--format", "json"]
             environment = {key: value for key, value in os.environ.items()
                            if not key.startswith(("COMPOSE_", "RAG_", "PG", "RABBITMQ_", "S3_", "GRAFANA_", "PUBLIC_"))}
@@ -245,5 +249,14 @@ class ComposeTests(unittest.TestCase):
                         self.assertIn(port["target"], (80, 443))
             self.assertEqual(services["core"]["depends_on"]["models-init"]["condition"], "service_completed_successfully")
             self.assertEqual(services["webhook"]["depends_on"]["nginx"]["condition"], "service_healthy")
+            self.assertEqual(services["analytics-init"]["depends_on"]["migrate"]["condition"], "service_completed_successfully")
+            self.assertEqual(services["grafana"]["depends_on"]["analytics-init"]["condition"], "service_completed_successfully")
+            self.assertEqual(services["grafana"]["environment"]["ANALYTICS_PASSWORD"], "test-grafana")
+            self.assertEqual(services["analytics-init"]["environment"]["ANALYTICS_PASSWORD"], "test-grafana")
+            self.assertEqual(services["analytics-init"]["environment"]["PGHOST"], "postgres")
+            self.assertNotIn("PGPASSWORD", services["grafana"]["environment"])
+            business_mounts = [volume for volume in services["grafana"]["volumes"] if "business" in volume["target"]]
+            self.assertEqual(len(business_mounts), 3)
+            self.assertTrue(all(volume["read_only"] for volume in business_mounts))
             spool = lambda name: {volume["source"] for volume in services[name]["volumes"] if volume["target"] == "/var/lib/rag/spool"}
             self.assertEqual(spool("core"), spool("worker"))

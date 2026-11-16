@@ -8,5 +8,6 @@ RUN pip install --no-cache-dir -c requirements.lock . -r deployment-requirements
     && mkdir -p /var/lib/rag/spool /var/lib/rag/models \
     && chown -R 10001:10001 /var/lib/rag
 COPY deploy/*.py ./deploy/
+COPY deploy/monitoring ./deploy/monitoring/
 USER 10001:10001
 CMD ["python", "-m", "deploy", "core"]

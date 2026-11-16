@@ -1,5 +1,6 @@
 """Build the versioned Grafana JSON. Python stdlib; no infrastructure access."""
 import json
+import runpy
 from pathlib import Path
 from urllib.parse import quote
 
@@ -315,3 +316,6 @@ if __name__ == "__main__":
     pipeline()
     ingestion()
     messaging()
+    # The server adds a PostgreSQL business dashboard through its own provider.
+    # The local monitoring-only stack keeps its existing four Loki dashboards.
+    runpy.run_path(str(HERE.parents[1] / "deploy/monitoring/generate_dashboard.py"), run_name="__main__")

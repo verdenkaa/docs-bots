@@ -1,0 +1,1403 @@
+{
+  "uid": "rag-business",
+  "title": "RAG · Бизнес-аналитика",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "tags": [
+    "rag",
+    "business"
+  ],
+  "timezone": "Europe/Moscow",
+  "description": "Запросы, темы, автоответы без эскалации и тренды. PostgreSQL; рабочие и синтетические данные разделены.",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "timepicker": {
+    "refresh_intervals": [
+      "1m",
+      "5m",
+      "15m"
+    ],
+    "time_options": [
+      "24h",
+      "7d",
+      "14d",
+      "28d"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "data_mode",
+        "label": "Данные",
+        "type": "custom",
+        "query": "Рабочие данные : live,ДЕМО (синтетические данные) : demo",
+        "multi": false,
+        "includeAll": false,
+        "current": {
+          "text": "Рабочие данные",
+          "value": "live"
+        },
+        "options": [
+          {
+            "text": "Рабочие данные",
+            "value": "live",
+            "selected": true
+          },
+          {
+            "text": "ДЕМО (синтетические данные)",
+            "value": "demo",
+            "selected": false
+          }
+        ]
+      },
+      {
+        "name": "channel",
+        "label": "Канал",
+        "type": "custom",
+        "query": "telegram,web",
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "topic",
+        "label": "Тема",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "rag-business-postgres"
+        },
+        "refresh": 2,
+        "query": "SELECT DISTINCT topic AS __text, topic AS __value FROM rag_analytics.requests WHERE data_mode = ${data_mode:sqlstring} ORDER BY 1",
+        "multi": true,
+        "includeAll": true,
+        "allValue": "'__all'",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Бизнес-аналитика · ${data_mode:text}",
+      "type": "text",
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**${data_mode:text}.** Показатели по вопросам, **принятым в выбранный период**, и их текущему состоянию. ДЕМО — синтетические примеры. Автоответ без эскалации — операционная метрика; решение проблемы не подтверждено."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Эффективность помощника",
+      "type": "row",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 3,
+      "title": "Принято вопросов",
+      "type": "stat",
+      "description": "Одна строка на сохранённый request_id; повторы доставки и технические попытки не увеличивают счётчик.",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\nSELECT count(*) AS \"Принято вопросов\" FROM facts",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Автоответы без эскалации",
+      "type": "stat",
+      "description": "Ответ по документации доступен пользователю: нормальная полная доставка Telegram либо коммит web. Исключены эскалации и зафиксированное недовольство.",
+      "gridPos": {
+        "x": 8,
+        "y": 4,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\nSELECT count(*) FILTER (WHERE auto_answer) AS \"Автоответы без эскалации\" FROM facts",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Доля успешных автоответов*",
+      "type": "stat",
+      "description": "Автоответы без эскалации / все вопросы с зафиксированным результатом в когорте приёма. Незавершённые исключены из знаменателя. *Операционное определение для демо, не CSAT и не подтверждённое решение.",
+      "gridPos": {
+        "x": 16,
+        "y": 4,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "Нет данных",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\nSELECT 100.0 * count(*) FILTER (WHERE auto_answer) / nullif(count(*) FILTER (WHERE result_kind IS NOT NULL), 0) AS \"Доля успешных автоответов*\" FROM facts",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Передано оператору",
+      "type": "stat",
+      "description": "Автоматическое намерение Support либо case в creating/open/closed. Включает ручную передачу после ответа; waiting/awaiting_confirmation и cancelled не считаются передачей.",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\nSELECT count(*) FILTER (WHERE escalated) AS \"Передано оператору\" FROM facts",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Ожидают результата",
+      "type": "stat",
+      "description": "Принятые вопросы без зафиксированного результата Core. Это текущий срез, не разность строк started и finished.",
+      "gridPos": {
+        "x": 8,
+        "y": 8,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\nSELECT count(*) FILTER (WHERE result_kind IS NULL) AS \"Ожидают результата\" FROM facts",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Медиана до ответа",
+      "type": "stat",
+      "description": "От приёма до первой нормальной текстовой квитанции Telegram; для web — до доступности ответа. Только answered, отрицательные или отсутствующие замеры исключены; это не время решения.",
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Нет данных",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\nSELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY reply_ms) AS \"Медиана до ответа\" FROM facts",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Спрос и качество во времени",
+      "type": "row",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 10,
+      "title": "Запросы · текущий и предыдущий период",
+      "type": "timeseries",
+      "description": "Предыдущий период той же длительности сдвинут на текущую ось времени. UTC-сутки, крайние сутки могут быть неполными. Пустые интервалы не заменяются нулём.",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false,
+            "showPoints": "never",
+            "axisBorderShow": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.*, CASE WHEN r.received_at >= b.start_at THEN 'current' ELSE 'previous' END AS period\n  FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at - (b.end_at - b.start_at) AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\n\n, aligned AS (\n  SELECT *, received_at + CASE WHEN period = 'previous'\n    THEN (SELECT end_at - start_at FROM bounds) ELSE interval '0' END AS plot_at FROM facts\n)\nSELECT $__timeGroupAlias(plot_at, '1d'),\n  count(*)::double precision AS value,\n  CASE WHEN period = 'current' THEN 'Выбранный период' ELSE 'Предыдущий период' END AS metric\nFROM aligned GROUP BY 1, 3 ORDER BY 1, 3\n",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Автоответы без эскалации · доля по дням",
+      "type": "timeseries",
+      "description": "Когорта по UTC-дате приёма. Доля пересчитывается при поздней эскалации; это не неизменяемая история ежедневных снимков.",
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "Нет данных",
+          "decimals": 1,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false,
+            "showPoints": "never",
+            "axisBorderShow": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\n\nSELECT $__timeGroupAlias(received_at, '1d'),\n  100.0 * count(*) FILTER (WHERE auto_answer) / nullif(count(*) FILTER (WHERE result_kind IS NOT NULL), 0)\n    AS \"Доля автоответов, %\"\nFROM facts GROUP BY 1 ORDER BY 1\n",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Какие темы спрашивают чаще",
+      "type": "barchart",
+      "description": "Каждый вопрос относится ровно к одной теме. Первое совпадение словаря побеждает; нераспознанные вопросы видны отдельно.",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always",
+        "barWidth": 0.7,
+        "groupWidth": 0.75,
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\n\nSELECT topic AS \"Тема\", count(*) AS \"Вопросы\" FROM facts GROUP BY topic ORDER BY 2 DESC, 1\n",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Динамика тем · вопросы по дням",
+      "type": "timeseries",
+      "description": "Рост числа вопросов — повод проверить изменения продукта или понятность инструкции, а не автоматическое доказательство дефекта.",
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false,
+            "showPoints": "never",
+            "axisBorderShow": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\n\nSELECT $__timeGroupAlias(received_at, '1d'), count(*)::double precision AS value, topic AS metric\nFROM facts GROUP BY 1, 3 ORDER BY 1, 3\n",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "time_series"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Где улучшать документацию и продукт",
+      "type": "row",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 24,
+        "h": 1
+      }
+    },
+    {
+      "id": 15,
+      "title": "Темы · рост спроса и покрытие ответами",
+      "type": "table",
+      "description": "Предыдущий смежный диапазон той же длительности, те же фильтры. Нулевая база → Нет базы сравнения, а не бесконечный рост. Нет подтверждений указывает на возможный пробел документации/поиска; недовольство требует разбора ответа и продукта.",
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 24,
+        "h": 9
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Рост, %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Автоответы, %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Рост, %"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Автоответы, %"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Тема"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 220
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Сейчас"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ранее"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Изменение, шт."
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Рост, %"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 85
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Сравнение"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Автоответы, %"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 125
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Нет подтверждений"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 160
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Недовольство"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 140
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.*, CASE WHEN r.received_at >= b.start_at THEN 'current' ELSE 'previous' END AS period\n  FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at - (b.end_at - b.start_at) AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\n\nSELECT topic AS \"Тема\",\n  count(*) FILTER (WHERE period = 'current') AS \"Сейчас\",\n  count(*) FILTER (WHERE period = 'previous') AS \"Ранее\",\n  count(*) FILTER (WHERE period = 'current') - count(*) FILTER (WHERE period = 'previous') AS \"Изменение, шт.\",\n  round(100.0 * (count(*) FILTER (WHERE period = 'current') - count(*) FILTER (WHERE period = 'previous'))\n    / nullif(count(*) FILTER (WHERE period = 'previous'), 0), 1) AS \"Рост, %\",\n  CASE WHEN count(*) FILTER (WHERE period = 'previous') = 0\n    THEN 'Нет базы сравнения' ELSE 'Сопоставимо' END AS \"Сравнение\",\n  round(100.0 * count(*) FILTER (WHERE period = 'current' AND auto_answer)\n    / nullif(count(*) FILTER (WHERE period = 'current' AND result_kind IS NOT NULL), 0), 1) AS \"Автоответы, %\",\n  count(*) FILTER (WHERE period = 'current' AND support_reason = 'no_evidence' AND escalated) AS \"Нет подтверждений\",\n  count(*) FILTER (WHERE period = 'current' AND dissatisfied) AS \"Недовольство\"\nFROM facts GROUP BY topic ORDER BY \"Нет подтверждений\" DESC, \"Недовольство\" DESC, \"Сейчас\" DESC, topic\n",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Приоритет проверки · частые вопросы без подтверждений",
+      "type": "table",
+      "description": "Приоритет по абсолютному числу проблемных обращений. Группировка точных текстов после lower/trim/сжатия пробелов; смысловые перефразирования не объединяются. Текст обрезается только после группировки. Это гипотезы для проверки, не установленная причина.",
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Тема"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 190
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Частый вопрос"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 370
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Повторов"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 85
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Нет подтверждений"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 160
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Недовольство"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 140
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Следующий шаг"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 240
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\n\nSELECT topic AS \"Тема\", left(question, 240) AS \"Частый вопрос\",\n  count(*) AS \"Повторов\",\n  count(*) FILTER (WHERE support_reason = 'no_evidence' AND escalated) AS \"Нет подтверждений\",\n  count(*) FILTER (WHERE dissatisfied) AS \"Недовольство\",\n  CASE WHEN count(*) FILTER (WHERE support_reason = 'no_evidence' AND escalated) > 0\n    THEN 'Проверить инструкцию и поиск' ELSE 'Разобрать ответ и сценарий продукта' END AS \"Следующий шаг\"\nFROM facts GROUP BY topic, question\nHAVING count(*) >= 2 AND count(*) FILTER (WHERE (support_reason = 'no_evidence' AND escalated) OR dissatisfied) > 0\nORDER BY \"Нет подтверждений\" DESC, \"Недовольство\" DESC, \"Повторов\" DESC, topic, question LIMIT 15\n",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "Частые вопросы · кандидаты в FAQ",
+      "type": "table",
+      "description": "Самые частые точные формулировки. Редкие вопросы скрыты этой таблицей, но включены в KPI и темы. Тексты доступны только вошедшему администратору Grafana.",
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 16,
+        "h": 9
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Автоответы, %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Автоответы, %"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Тема"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Вопрос"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 360
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Повторов"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 85
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Автоответы, %"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 115
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\n\nSELECT topic AS \"Тема\", left(question, 240) AS \"Вопрос\", count(*) AS \"Повторов\",\n  round(100.0 * count(*) FILTER (WHERE auto_answer)\n    / nullif(count(*) FILTER (WHERE result_kind IS NOT NULL), 0), 1) AS \"Автоответы, %\"\nFROM facts GROUP BY topic, question HAVING count(*) >= 2\nORDER BY \"Повторов\" DESC, topic, question LIMIT 15\n",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "Причины передачи оператору",
+      "type": "barchart",
+      "description": "Факт/намерение передачи не означает закрытие тикета. Вне темы не объявляется дефектом документации.",
+      "gridPos": {
+        "x": 16,
+        "y": 49,
+        "w": 8,
+        "h": 9
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always",
+        "barWidth": 0.7,
+        "groupWidth": 0.75,
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rag-business-postgres"
+          },
+          "rawSql": "WITH bounds AS (\n  SELECT $__timeFrom()::timestamptz AS start_at, $__timeTo()::timestamptz AS end_at\n), facts AS (\n  SELECT r.* FROM rag_analytics.requests r CROSS JOIN bounds b\n  WHERE r.received_at >= b.start_at AND r.received_at < b.end_at\n    AND data_mode = ${data_mode:sqlstring}\n  AND channel IN (${channel:sqlstring})\n  AND ('__all' IN (${topic:sqlstring}) OR topic IN (${topic:sqlstring}))\n)\n\nSELECT CASE support_reason WHEN 'no_evidence' THEN 'Нет подтверждений'\n  WHEN 'out_of_scope' THEN 'Вне темы' WHEN 'dissatisfied' THEN 'Недовольство'\n  WHEN 'human_request' THEN 'Нужен оператор' ELSE 'Не определено' END AS \"Причина\",\n  count(*) AS \"Обращения\"\nFROM facts WHERE escalated GROUP BY 1 ORDER BY 2 DESC, 1\n",
+          "rawQuery": true,
+          "editorMode": "code",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "title": "Как читать результаты",
+      "type": "text",
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 24,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rag-business-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Нет данных",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Автоответ:** сохранён `answered`, нормальная полная доставка Telegram или доступный результат web, нет передачи оператору и зарегистрированного недовольства. **Знаменатель доли:** все принятые в период вопросы с результатом, включая уведомления и технические ошибки. Незавершённые видны отдельным KPI. При пустом диапазоне счётчики = 0, доли и медианы = «Нет данных». Поздние реакции меняют прошлую когорту. **Сигналы:** `no_evidence` → проверить документацию и поиск; рост/недовольство → проверить продукт и ответ. Причину устанавливает разбор. ДЕМО содержит 28 полных UTC-дней; его цифры не подтверждают эффективность рабочего решения."
+      }
+    }
+  ],
+  "links": [
+    {
+      "type": "link",
+      "title": "Демо · 7 дней",
+      "url": "/d/rag-business?var-data_mode=demo&var-channel=All&var-topic=All&from=now-7d&to=now"
+    },
+    {
+      "type": "link",
+      "title": "Рабочие данные",
+      "url": "/d/rag-business?var-data_mode=live&var-channel=All&var-topic=All&from=now-7d&to=now"
+    },
+    {
+      "type": "dashboards",
+      "title": "Технические дашборды",
+      "tags": [
+        "loki"
+      ],
+      "asDropdown": true,
+      "keepTime": true
+    }
+  ]
+}

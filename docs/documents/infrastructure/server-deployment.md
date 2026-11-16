@@ -65,7 +65,7 @@ docker compose logs --tail=50 telegram-poller
 5. `prepare` проверяет обе коллекции Qdrant и приватный bucket S3, применяет необязательный первоначальный допуск.
 6. `core` запускает HTTP API и отдельно `relay`, `recovery`, `questions`, `results`, `maintenance`. `worker` запускает Ingestion HTTP и индексатор под супервизором попыток. Оба используют общий spool.
 7. nginx включает HTTPS; `webhook` проверяет настоящий публичный сертификат и регистрирует адрес Telegram.
-8. Grafana, Loki и Alloy запускаются по умолчанию; четыре дашборда и источник Loki подключаются provisioning.
+8. Grafana, Loki и Alloy запускаются по умолчанию; четыре технических дашборда и источник Loki подключаются provisioning. После `migrate` одноразовый `analytics-init` создаёт аналитические представления и ограниченного PostgreSQL-читателя; Grafana ждёт его и дополнительно подключает [бизнес-дашборд](../faq/business-analytics.md). Модели для аналитики не запускаются.
 
 HTTP обслуживается Gunicorn с `uvicorn-worker`. `API_WORKERS` по умолчанию 2, `INGESTION_HTTP_WORKERS` — 1. HTTP workers не запускают потребителей очередей. Контейнерный супервизор завершает роль при потере обязательного процесса, затем Docker её перезапускает. Health проверяет живые PID, heartbeat, HTTP и локальные сигналы готовности потребителей/singleton-ролей. Это не проверка качества ответов или отсутствия задержек очередей.
 

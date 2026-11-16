@@ -53,6 +53,7 @@ async def fixtures(port):
     from sqlalchemy import URL, text
     from rag.runtime.postgresql._models import _Base
 
+    await wait_postgres(port)
     url = URL.create("postgresql+asyncpg", username="test", password="isolated-only",
                      host="127.0.0.1", port=port, database="test")
     engine = create_async_engine(url)
@@ -136,6 +137,34 @@ async def fixtures(port):
     print("PASS: real schema, custom schema name, delivery/fallback, web, late escalation, deduplication, reader permissions", flush=True)
 
 
+async def wait_postgres(port, *, timeout_s=60):
+    """Wait for SQL through the published TCP endpoint used by the fixtures.
+
+    The image's temporary init server accepts Unix-socket connections before
+    the final TCP server starts. A socket-only pg_isready probe is insufficient.
+    """
+    import asyncpg
+
+    deadline = time.monotonic() + timeout_s
+    last_error = None
+    while time.monotonic() < deadline:
+        connection = None
+        try:
+            connection = await asyncpg.connect(
+                host="127.0.0.1", port=port, user="test", password="isolated-only", database="test",
+                timeout=min(2, max(.01, deadline - time.monotonic())), command_timeout=2,
+            )
+            await connection.fetchval("SELECT 1")
+            return
+        except (OSError, TimeoutError, asyncpg.CannotConnectNowError) as error:
+            last_error = error
+        finally:
+            if connection is not None:
+                await connection.close(timeout=2)
+        await asyncio.sleep(.25)
+    raise RuntimeError("Isolated PostgreSQL did not become ready on its published TCP port") from last_error
+
+
 def expand(sql, mode, channel="'telegram','web'", topic=None):
     if topic is None:
         # Custom All values bypass Grafana formatters; test the stored value verbatim.
@@ -198,7 +227,7 @@ def main():
         result = subprocess.run([options.engine, *map(str, args)], capture_output=True, text=True, encoding="utf-8", timeout=120)
         if result.returncode:
             raise RuntimeError("Isolated container command failed: " + result.stderr.strip())
-        return result.stdout.strip()
+        return (result.stdout + (result.stderr if args and args[0] == "logs" else "")).strip()
 
     def port(name, number):
         return int(engine("port", name, str(number) + "/tcp").splitlines()[0].rsplit(":", 1)[1])
@@ -211,12 +240,6 @@ def main():
                "-p", "127.0.0.1::5432", "-e", "POSTGRES_USER=test", "-e", "POSTGRES_DB=test",
                "-e", "POSTGRES_PASSWORD=isolated-only", "postgres:17-alpine")
         created.append(pg)
-        for _ in range(60):
-            try:
-                engine("exec", pg, "pg_isready", "-U", "test")
-                break
-            except RuntimeError:
-                time.sleep(.5)
         asyncio.run(fixtures(port(pg, 5432)))
         name = prefix + "-grafana"
         args = ["run", "-d", "--name", name, "--network", prefix, "-p", "127.0.0.1::3000",
@@ -246,8 +269,9 @@ def main():
             while True:
                 time.sleep(1)
     except Exception:
-        if created and created[-1].endswith("-grafana"):
-            print(engine("logs", "--tail", "45", created[-1]), flush=True)
+        for name in created:
+            print(f"Isolated container logs: {name}", flush=True)
+            print(engine("logs", "--tail", "45", name), flush=True)
         raise
     finally:
         for name in reversed(created):

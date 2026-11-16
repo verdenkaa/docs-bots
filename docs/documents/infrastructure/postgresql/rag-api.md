@@ -8,6 +8,48 @@ toc_max_heading_level: 2
 
 Доставки busy/denied/first_question не требуют content: текст формирует RAG API по purpose. В IntakeResult они возвращаются как delivery_id; уведомление и результат update сохраняются вместе.
 
+## <span className="operation-badge operation-badge--db">DB</span> `register_bot_notice` {#register-bot-notice}
+
+~~~python
+async def register_bot_notice(question: NewQuestion, response: str) -> IntakeResult: ...
+~~~
+
+**Кто вызывает.** Telegram intake для публичного приглашения открыть Mini App.
+
+**Вход.** Валидированный `NewQuestion` и непустой текст notice; username может отсутствовать. DTO и RagResult проверяются на границе.
+
+**Результат.** `handled` с delivery_id либо прежний исход ledger. Старый accepted возвращается как duplicate с прежним request_id.
+
+**Запись и повторы.** Под блокировками update/user одной транзакцией создаёт notice, outbox rag.results и ledger. Не проверяет employee admission: приглашение публично и не содержит защищённых данных. Не создаёт request, активный слот или rag.questions; занятость и ёмкость RAG не препятствуют навигации. Ошибка откатывает всю транзакцию; повтор не дублирует доставку.
+
+## <span className="operation-badge operation-badge--db">DB</span> `check_message` {#check-message}
+
+~~~python
+async def check_message(question: NewQuestion) -> IntakeResult | None: ...
+~~~
+
+**Кто вызывает.** Подготовленный адаптер проверки допуска перед локальной классификацией; текущий Telegram navigation intake его не вызывает.
+
+**Вход.** Валидированный `NewQuestion` с Telegram update, личным получателем, username и временем UTC.
+
+**Результат.** Прежний `IntakeResult` из ledger, либо сохранённый `denied` с уведомлением, либо `None`, разрешающий классификацию. `None` не резервирует слот и не создаёт RAG-вопрос.
+
+**Правила и повторы.** Сначала ledger под блокировкой update, затем допуск под блокировками username/user. Повтор обрабатывается раньше нового допуска. После `None` выбранная операция повторяет ledger и допуск в собственной транзакции: параллельный update или отзыв доступа не обходят проверку. Ошибки хранилища — `StorageError`.
+
+## <span className="operation-badge operation-badge--db">DB</span> `register_shortcut_reply` {#register-shortcut-reply}
+
+~~~python
+async def register_shortcut_reply(question: NewQuestion, response: str) -> IntakeResult: ...
+~~~
+
+**Кто вызывает.** Адаптер локального ответа с допуском; текущая Telegram-навигация использует register_bot_notice.
+
+**Вход.** `NewQuestion` и непустой готовый текст. На границе валидируются вопрос и `RagResult(answer_text=response, sources=[])`.
+
+**Результат.** `handled` с `delivery_id`, прежний исход повтора либо `denied`.
+
+**Правила и повторы.** В одной транзакции повторяет ledger и допуск, создаёт существующую доставку `purpose=notice` с ключом `update:<update_id>`, её outbox `rag.results` и ledger update. Не создаёт request, активный слот или событие `rag.questions`; занятость пользователя и лимит RAG-вопросов не препятствуют готовому ответу. Повтор не создаёт вторую доставку. При `StorageError` транзакция откатывается, RAG API просит повтор.
+
 ## <span className="operation-badge operation-badge--db">DB</span> `register_question` {#register-question}
 
 ~~~python

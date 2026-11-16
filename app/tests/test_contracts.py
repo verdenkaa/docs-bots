@@ -40,6 +40,26 @@ from rag.searcher.entrypoints import search
 
 
 class ContractTests(unittest.TestCase):
+    def test_shortcut_to_notice_contract_trace(self):
+        from rag.rag_api.shortcuts import ShortcutResult, intercept_message
+
+        incoming = NewQuestion(username="employee_name", update_id=10, user_id=7, chat_id=7,
+                               received_at=NOW, input=TextQuestion(kind="text", text="Привет!"))
+        validate_call_arguments(pg_api.check_message, incoming)
+        self.assertIsNone(returned(pg_api.check_message, None))
+        shortcut = intercept_message(incoming.input.text)
+        self.assertIsInstance(shortcut, DTO)
+        self.assertEqual(ShortcutResult.model_validate_json(shortcut.model_dump_json()), shortcut)
+        validate_call_arguments(pg_api.register_shortcut_reply, incoming, shortcut.response)
+        intake = returned(pg_api.register_shortcut_reply, IntakeResult(kind="handled", delivery_id=2))
+        self.assertIsNone(intake.request_id)
+        delivery = ClaimedDelivery(attempt=DeliveryAttempt(delivery_id=intake.delivery_id,
+            attempt_no=1, deadline_at=NOW), user_id=7, chat_id=7, purpose="notice",
+            content=RagResult(answer_text=shortcut.response, sources=[]))
+        parts = build_delivery_parts(delivery, "https://example.test")
+        self.assertEqual(parts[0].text, shortcut.response)
+        self.assertEqual(parts[0].actions, [])
+
     def test_question_to_parts_trace(self):
         """Каждый этап получает параметры из результата уже пройденного шага."""
         incoming = NewQuestion(username="employee_name", update_id=10, user_id=7, chat_id=7, received_at=NOW,

@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "app"))
 
-from deploy import config, models, server, webhook
+from deploy import config, models, server
 from deploy.proxy import main as proxy
 from rag.runtime._config import RuntimeSettings
 from rag.runtime import _process_status
@@ -207,18 +207,6 @@ class ModelsTests(unittest.IsolatedAsyncioTestCase):
         self.start.assert_not_awaited()
 
 
-class WebhookTests(unittest.IsolatedAsyncioTestCase):
-    async def test_untrusted_public_tls_never_switches_the_webhook(self):
-        client = AsyncMock()
-        client.__aenter__.return_value = client
-        client.get.side_effect = httpx.ConnectError("certificate verification failed")
-        with patch.object(webhook, "get_settings", return_value=type("Settings", (), {"public_url": "https://176.53.246.245"})()), \
-                patch.object(webhook.httpx, "AsyncClient", return_value=client), \
-                patch.object(webhook, "register_webhook", new=AsyncMock()) as register, \
-                patch.object(webhook.asyncio, "sleep", new=AsyncMock()):
-            with self.assertRaisesRegex(RuntimeError, "Webhook registration failed"):
-                await webhook.register()
-            register.assert_not_awaited()
 
 
 COMPOSE = (["docker", "compose"] if shutil.which("docker") else
@@ -240,7 +228,7 @@ class ComposeTests(unittest.TestCase):
             result = subprocess.run(command, env=environment, capture_output=True, text=True, encoding="utf-8", timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             services = json.loads(result.stdout)["services"]
-            self.assertTrue({"core", "worker", "models-init", "prepare", "migrate", "webhook", "nginx", "grafana", "loki", "alloy"} <= services.keys())
+            self.assertTrue({"core", "worker", "models-init", "prepare", "migrate", "telegram-poller", "nginx", "grafana", "loki", "alloy"} <= services.keys())
             self.assertFalse(any(service.get("profiles") for service in services.values()))
             for name, service in services.items():
                 for port in service.get("ports", []):
@@ -248,7 +236,9 @@ class ComposeTests(unittest.TestCase):
                         self.assertEqual(name, "nginx")
                         self.assertIn(port["target"], (80, 443))
             self.assertEqual(services["core"]["depends_on"]["models-init"]["condition"], "service_completed_successfully")
-            self.assertEqual(services["webhook"]["depends_on"]["nginx"]["condition"], "service_healthy")
+            self.assertNotIn("webhook", services)
+            self.assertNotIn("profiles", services["telegram-poller"])
+            self.assertEqual(services["telegram-poller"]["depends_on"]["core"]["condition"], "service_healthy")
             self.assertEqual(services["analytics-init"]["depends_on"]["migrate"]["condition"], "service_completed_successfully")
             self.assertEqual(services["grafana"]["depends_on"]["analytics-init"]["condition"], "service_completed_successfully")
             self.assertEqual(services["grafana"]["environment"]["ANALYTICS_PASSWORD"], "test-grafana")

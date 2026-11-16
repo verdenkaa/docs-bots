@@ -17,7 +17,7 @@ from rag.rag_api.contracts import (AccessRecord, ClaimedDelivery, Conflict, Hist
     SupportCommand, TextPart, TicketMessage, TicketView)
 from rag.rag_api.delivery import formatter, sender
 from rag.rag_api.delivery.limiter import TelegramLimiter
-from rag.rag_api.telegram import adapter, webhook
+from rag.rag_api.telegram import adapter
 
 
 def _now():
@@ -59,7 +59,7 @@ class _HttpCase(unittest.IsolatedAsyncioTestCase):
         self.output = io.StringIO()
         self.enterContext(redirect_stdout(self.output))
         self.enterContext(patch.dict('os.environ', TELEGRAM_BOT_TOKEN='123:test', BOT_TOKEN='',
-                                    TELEGRAM_WEBHOOK_SECRET='test-secret', TELEGRAM_WEBHOOK_URL='https://bot.example',
+                                    TELEGRAM_INTAKE_SECRET='test-secret', RAG_PUBLIC_URL='https://bot.example',
                                     ADMIN_LOGIN='admin', ADMIN_PASSWORD='test-password'))
 
     async def asyncSetUp(self):
@@ -67,8 +67,8 @@ class _HttpCase(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.client.aclose)
 
     async def post_update(self, payload=None, **kwargs):
-        headers = kwargs.pop('headers', {'X-Telegram-Bot-Api-Secret-Token': 'test-secret'})
-        return await self.client.post('/telegram/webhook', json=payload if payload is not None else _update(), headers=headers, **kwargs)
+        headers = kwargs.pop('headers', {'X-Telegram-Intake-Secret': 'test-secret'})
+        return await self.client.post('/internal/telegram/updates', json=payload if payload is not None else _update(), headers=headers, **kwargs)
 
 
 class ApiTests(_HttpCase):
@@ -97,13 +97,13 @@ class ApiTests(_HttpCase):
 
     async def test_webhook_secret_and_json_structure(self):
         with patch.object(entrypoints, 'handle_telegram_update', AsyncMock()) as handle:
-            for headers in ({}, {'X-Telegram-Bot-Api-Secret-Token': 'wrong'}):
+            for headers in ({}, {'X-Telegram-Intake-Secret': 'wrong'}):
                 self.assertEqual((await self.post_update(headers=headers)).status_code, 403)
-            headers = {'X-Telegram-Bot-Api-Secret-Token': 'test-secret', 'Content-Type': 'application/json'}
+            headers = {'X-Telegram-Intake-Secret': 'test-secret', 'Content-Type': 'application/json'}
             for raw in ('{', '[]', 'null', '{"update_id":true}', '{"update_id":"1"}', '{}', '{"update_id":-1}'):
-                self.assertEqual((await self.client.post('/telegram/webhook', content=raw, headers=headers)).status_code, 400)
+                self.assertEqual((await self.client.post('/internal/telegram/updates', content=raw, headers=headers)).status_code, 400)
             headers['Content-Type'] = 'text/plain'
-            self.assertEqual((await self.client.post('/telegram/webhook', content='{}', headers=headers)).status_code, 400)
+            self.assertEqual((await self.client.post('/internal/telegram/updates', content='{}', headers=headers)).status_code, 400)
             handle.assert_not_awaited()
 
     async def test_webhook_exception_does_not_ack(self):
@@ -111,15 +111,18 @@ class ApiTests(_HttpCase):
             self.assertEqual((await self.post_update()).status_code, 503)
         self.assertNotIn('private-secret', self.output.getvalue())
 
-    async def test_text_and_atomic_registration_do_not_precheck_access(self):
-        with patch.object(intake.repository, 'register_question', AsyncMock(return_value=IntakeResult(kind='accepted', request_id=10))) as register, \
-             patch.object(access, 'check_access', AsyncMock(side_effect=AssertionError('must not read'))):
+    async def test_text_only_registers_public_navigation_without_admission_or_rag(self):
+        with patch.object(intake.repository, 'register_bot_notice', AsyncMock(return_value=IntakeResult(kind='handled', delivery_id=10))) as register, \
+             patch.object(intake.repository, 'register_question', AsyncMock()) as rag, \
+             patch.object(access, 'check_access', AsyncMock(side_effect=AssertionError('navigation needs no admission'))):
             result = await entrypoints.handle_telegram_update(_update())
-        self.assertEqual(result.kind, 'accepted')
-        question = register.await_args.args[0]
+        self.assertEqual(result.kind, 'handled')
+        question, response = register.await_args.args
         self.assertEqual((question.user_id, question.chat_id, question.username), (7, 99, 'employee'))
         self.assertEqual(question.input.text, 'Вопрос')
+        self.assertIn('мини-приложени', response)
         self.assertEqual(question.received_at.utcoffset(), timedelta(0))
+        rag.assert_not_awaited()
 
     async def test_images_photo_document_caption_and_deterministic_choice(self):
         variants = [({'photo': [{'file_id': 'small', 'width': 2, 'height': 2},
@@ -128,7 +131,7 @@ class ApiTests(_HttpCase):
                     ({'document': {'file_id': 'png', 'mime_type': 'image/png'}, 'caption': 'Подпись'}, 'png'),
                     ({'document': {'file_id': 'gif', 'mime_type': 'image/gif'}, 'caption': 'Подпись'}, 'gif')]
         for message, expected in variants:
-            with patch.object(intake.repository, 'register_question', AsyncMock(return_value=IntakeResult(kind='accepted', request_id=1))) as register:
+            with patch.object(intake.repository, 'register_bot_notice', AsyncMock(return_value=IntakeResult(kind='handled', delivery_id=1))) as register:
                 await entrypoints.handle_telegram_update(_update(**message))
                 question = register.await_args.args[0]
                 self.assertEqual(question.input.file_id, expected)
@@ -140,18 +143,17 @@ class ApiTests(_HttpCase):
                        {'update_id': 1, 'message': {'from': {'id': 7}, 'chat': {'id': 99, 'type': 'private'}, 'sticker': {}}},
                        _update(document={'mime_type': 'application/pdf'})):
             with patch.object(intake.repository, 'record_update', AsyncMock(return_value=IntakeResult(kind='ignored'))) as record, \
-                 patch.object(intake.repository, 'register_question', AsyncMock()) as register:
+                 patch.object(intake.repository, 'register_bot_notice', AsyncMock()) as register:
                 self.assertEqual((await entrypoints.handle_telegram_update(update)).kind, 'ignored')
                 self.assertEqual(record.await_args.args[-1], 'ignored')
                 register.assert_not_awaited()
 
-    async def test_missing_username_busy_duplicate_and_db_failure(self):
-        for kind in ('busy', 'denied', 'duplicate', 'retry_later'):
-            with patch.object(intake.repository, 'register_question', AsyncMock(return_value=IntakeResult(kind=kind))) as register:
-                result = await entrypoints.handle_telegram_update(_update(**{'from': {'id': 7}}))
-                self.assertEqual(result.kind, kind)
-                self.assertIsNone(register.await_args.args[0].username)
-        with patch.object(intake.repository, 'register_question', AsyncMock(side_effect=StorageError())):
+    async def test_navigation_without_username_retries_on_storage_failure(self):
+        with patch.object(intake.repository, 'register_bot_notice', AsyncMock(return_value=IntakeResult(kind='handled', delivery_id=10))) as register:
+            result = await entrypoints.handle_telegram_update(_update(**{'from': {'id': 7}}))
+            self.assertEqual(result.kind, 'handled')
+            self.assertIsNone(register.await_args.args[0].username)
+        with patch.object(intake.repository, 'register_bot_notice', AsyncMock(side_effect=StorageError())):
             self.assertEqual((await entrypoints.handle_telegram_update(_update())).kind, 'retry_later')
 
     async def test_malformed_private_update_is_recorded(self):
@@ -161,29 +163,16 @@ class ApiTests(_HttpCase):
                 record.assert_awaited_once()
 
     async def test_repository_programming_error_is_not_saved_as_invalid_input(self):
-        with patch.object(intake.repository, 'register_question', AsyncMock(side_effect=ValueError('broken_storage_dto'))), \
+        with patch.object(intake.repository, 'register_bot_notice', AsyncMock(side_effect=ValueError('broken_storage_dto'))), \
              patch.object(intake.repository, 'record_update', AsyncMock()) as record:
             with self.assertRaises(ValueError):
                 await entrypoints.handle_telegram_update(_update())
             record.assert_not_awaited()
 
-    async def test_accepted_update_survives_revocation_via_runtime_ledger(self):
-        ledger = {}
-        enabled = True
-        async def register(question):
-            if question.update_id in ledger:
-                return IntakeResult(kind='duplicate', request_id=ledger[question.update_id])
-            if not enabled:
-                return IntakeResult(kind='denied')
-            ledger[question.update_id] = 10
-            return IntakeResult(kind='accepted', request_id=10)
-        with patch.object(intake.repository, 'register_question', side_effect=register):
-            self.assertEqual((await entrypoints.handle_telegram_update(_update())).kind, 'accepted')
-            enabled = False
-            self.assertEqual((await entrypoints.handle_telegram_update(_update())).kind, 'duplicate')
-            fresh = _update()
-            fresh['update_id'] += 1
-            self.assertEqual((await entrypoints.handle_telegram_update(fresh)).kind, 'denied')
+    async def test_previous_accepted_update_is_returned_without_new_navigation(self):
+        previous = IntakeResult(kind='duplicate', request_id=10)
+        with patch.object(intake.repository, 'register_bot_notice', AsyncMock(return_value=previous)):
+            self.assertEqual(await entrypoints.handle_telegram_update(_update()), previous)
 
     async def test_callback_through_http_has_one_ack_and_runtime_authorization(self):
         update = {'update_id': 1, 'callback_query': {'id': 'cq', 'from': {'id': 8, 'username': 'Other'},
@@ -237,12 +226,29 @@ class ApiTests(_HttpCase):
         with patch.object(support.repository, 'record_support_action', AsyncMock(side_effect=StorageError())):
             self.assertEqual((await support.handle_support_action(command)).kind, 'retry_later')
 
-    async def test_text_operator_request_is_offer_not_question(self):
-        with patch.object(support, 'handle_support_action', AsyncMock(return_value=IntakeResult(kind='handled'))) as action:
-            await entrypoints.handle_telegram_update(_update(text='/support'))
-            command = action.await_args.args[0]
-            self.assertEqual((command.origin, command.action.kind, command.action.reason), ('text', 'offer', 'human_request'))
-            self.assertIsNone(command.action.request_id)
+    async def test_text_operator_request_only_opens_mini_app(self):
+        with patch.object(intake.repository, 'register_bot_notice', AsyncMock(return_value=IntakeResult(kind='handled', delivery_id=10))) as register, \
+             patch.object(support, 'handle_support_action', AsyncMock()) as action:
+            await entrypoints.handle_telegram_update(_update(text='Позови оператора'))
+            self.assertIn('мини-приложени', register.await_args.args[1])
+            action.assert_not_awaited()
+
+    async def test_commands_and_text_never_reach_rag_with_either_mini_app_switch(self):
+        for enabled in ('true', 'false'):
+            with patch.dict('os.environ', MINI_APP_ENABLED=enabled), \
+                 patch.object(intake.repository, 'record_update', AsyncMock(return_value=IntakeResult(kind='ignored'))), \
+                 patch.object(intake.repository, 'register_bot_notice', AsyncMock(return_value=IntakeResult(kind='handled', delivery_id=20))) as reply, \
+                 patch.object(intake.repository, 'register_question', AsyncMock()) as rag:
+                for text in ('/start', '/help', '/start@DocsBot token', 'Привет', 'Как настроить систему?'):
+                    response = await self.post_update(_update(text=text))
+                    self.assertEqual((response.status_code, response.content), (200, b''))
+                self.assertEqual(reply.await_count, 5)
+                for text in ('/other', '/support', '/operator'):
+                    response = await self.post_update(_update(text=text))
+                    self.assertEqual((response.status_code, response.content), (200, b''))
+                self.assertEqual(reply.await_count, 5)
+                rag.assert_not_awaited()
+
 
     async def test_support_maintenance_due_and_automatic_creation(self):
         waiting, creating = _case(), _case('creating')
@@ -261,18 +267,16 @@ class ApiTests(_HttpCase):
             with self.assertRaises(ValueError):
                 await entrypoints.run_api_maintenance(invalid)
 
-    async def test_health_and_lifecycle_do_not_manage_webhook_or_consumers(self):
+    async def test_health_and_lifecycle_do_not_start_polling_or_consumers(self):
         self.assertEqual((await self.client.get('/health/live')).status_code, 200)
         self.assertEqual((await self.client.get('/health/ready')).status_code, 503)
         with patch.object(application, 'start_runtime', AsyncMock()) as start, \
-             patch.object(application, 'close_runtime', AsyncMock()) as close, \
-             patch.object(webhook, '_register_webhook', AsyncMock()) as register:
+             patch.object(application, 'close_runtime', AsyncMock()) as close:
             with self.assertRaises(RuntimeError):
                 async with application._lifespan(application.app):
                     raise RuntimeError('body failure')
             start.assert_awaited_once()
             close.assert_awaited_once()
-            register.assert_not_awaited()
 
     async def test_partial_lifecycle_startup_also_closes_runtime(self):
         with patch.object(application, 'start_runtime', AsyncMock(side_effect=RuntimeError('startup'))), \
@@ -282,16 +286,8 @@ class ApiTests(_HttpCase):
                     self.fail('must not start')
             close.assert_awaited_once()
 
-    async def test_explicit_webhook_management_keeps_callbacks_and_pending_updates(self):
-        client = AsyncMock()
-        with patch.object(webhook, '_telegram_api_request', AsyncMock()) as request:
-            await webhook._register_webhook(client)
-            payload = request.await_args.args[2]
-            self.assertEqual(payload['allowed_updates'], ['message', 'callback_query'])
-            self.assertFalse(payload['drop_pending_updates'])
-            self.assertEqual(payload['url'], 'https://bot.example/telegram/webhook')
-            await webhook._unregister_webhook(client)
-            self.assertEqual(request.await_args.args[1:], ('deleteWebhook', {'drop_pending_updates': False}))
+    async def test_removed_webhook_is_not_exposed(self):
+        self.assertEqual((await self.client.post('/telegram/webhook', json=_update())).status_code, 404)
 
 
 class FormatterTests(unittest.TestCase):
@@ -610,13 +606,15 @@ class PublicTests(_HttpCase):
 
 class SettingsTests(unittest.TestCase):
     def test_environment_only_canonical_token_and_secret_validation(self):
-        with patch.dict('os.environ', TELEGRAM_BOT_TOKEN='123:test', BOT_TOKEN='', TELEGRAM_WEBHOOK_SECRET='secret', TELEGRAM_WEBHOOK_URL='https://bot.example'):
+        with patch.dict('os.environ', TELEGRAM_BOT_TOKEN='123:test', BOT_TOKEN='', TELEGRAM_INTAKE_SECRET='secret', RAG_PUBLIC_URL='https://bot.example'):
             settings = config.get_settings()
             self.assertEqual(settings.token, '123:test')
+            self.assertEqual(settings.intake_secret, 'secret')
             self.assertNotIn('123:test', repr(settings))
             with patch.dict('os.environ', BOT_TOKEN='456:ignored'):
                 self.assertEqual(config.get_settings().token, '123:test')
-            for env in ({'TELEGRAM_WEBHOOK_SECRET': 'bad secret'},
-                        {'TELEGRAM_WEBHOOK_URL': 'http://example.org'}, {'TELEGRAM_BOT_TOKEN': ''}):
+            with patch.dict('os.environ', TELEGRAM_INTAKE_SECRET='bad secret'), self.assertRaises(ValueError):
+                config.get_settings().intake_secret
+            for env in ({'RAG_PUBLIC_URL': 'http://example.org'}, {'TELEGRAM_BOT_TOKEN': ''}):
                 with patch.dict('os.environ', env), self.assertRaises(ValueError):
                     config.get_settings()

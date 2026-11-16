@@ -189,6 +189,34 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_bot_navigation_retries_with_busy_slot_and_access_revocation(self):
+        from rag.rag_api.entrypoints import handle_telegram_update
+
+        active = await self.question()
+        update = {"update_id": uuid4().int % 10**15, "message": {
+            "from": {"id": 2, "username": "employee_2"},
+            "chat": {"id": 2, "type": "private"}, "text": "ПРИВЕТ!!!"}}
+        results = await asyncio.gather(*(handle_telegram_update(update) for _ in range(3)))
+        self.assertTrue(all(result.kind == "handled" for result in results))
+        self.assertEqual(len({result.delivery_id for result in results}), 1)
+        self.assertTrue(all(result.request_id is None for result in results))
+        delivery_id = results[0].delivery_id
+        async with _transaction() as connection:
+            requests = await _one(connection, "SELECT count(*) AS n FROM rag_requests")
+            deliveries = await _one(connection, "SELECT count(*) AS n FROM rag_deliveries WHERE purpose='notice'")
+            self.assertEqual((requests["n"], deliveries["n"]), (1, 1))
+            row = await _one(connection, "SELECT state FROM rag_requests WHERE request_id=:id", id=active.request_id)
+            self.assertEqual(row["state"], "queued")
+        await support.write_user_access(Principal(login="runtime_admin"),
+                                        AccessRecord(username="employee_2", enabled=False))
+        self.assertEqual((await handle_telegram_update(update)).delivery_id, delivery_id)
+        fresh = dict(update, update_id=update["update_id"] + 1)
+        self.assertEqual((await handle_telegram_update(fresh)).kind, "handled")
+        delivery = await self.finish(delivery_id)
+        self.assertEqual(delivery.purpose, "notice")
+        self.assertIsNone(delivery.request_id)
+        self.assertEqual(delivery.content.sources, [])
+
     async def finish(self, delivery_id):
         delivery = await rag_api.claim_delivery(delivery_id)
         self.assertIsNotNone(delivery)

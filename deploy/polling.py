@@ -10,7 +10,7 @@ import time
 
 import httpx
 
-from rag.rag_api.config import get_settings
+from rag.rag_api.config import TELEGRAM_INTAKE_PATH, get_settings
 
 _STATUS = Path('/tmp/telegram-poller-status.json')
 _LOCK = Path('/var/lib/rag/spool/telegram-poller.lock')
@@ -101,9 +101,9 @@ class _Poller:
             if self.offset is not None and update['update_id'] < self.offset:
                 continue
             try:
-                response = await self.client.post('http://core:8000/telegram/webhook',
+                response = await self.client.post('http://core:8000' + TELEGRAM_INTAKE_PATH,
                     json=update, timeout=15,
-                    headers={'X-Telegram-Bot-Api-Secret-Token': self.settings.webhook_secret})
+                    headers={'X-Telegram-Intake-Secret': self.settings.intake_secret})
             except httpx.HTTPError:
                 raise _Retry('polling_intake_unavailable') from None
             if response.status_code in (400, 401, 403, 404, 422):

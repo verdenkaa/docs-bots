@@ -194,9 +194,10 @@ async def _start_support(identity, request_id, reason):
                 case_id=uuid4(),
                 request_id=request_id,
                 user_id=identity.user_id,
-                state="waiting",
+                state="creating" if reason == "dissatisfied" else "waiting",
                 reason=reason,
-                check_at=await _now(session) + timedelta(minutes=10),
+                check_at=(await _now(session) + timedelta(minutes=10))
+                if reason != "dissatisfied" else None,
             )
             .returning(*_SupportCase.__table__.c),
         )

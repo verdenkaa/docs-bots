@@ -15,6 +15,7 @@ from rag.rag_api.mini_app_contracts import (
     WebAccessInput,
 )
 from rag.rag_api import support, access
+from rag.rag_api.config import get_settings
 from rag.rag_api.contracts import RateLimited, TicketMessageInput
 from rag.runtime import s3
 from rag.runtime.postgresql import _mini_app as storage
@@ -80,7 +81,12 @@ async def _start_support(
     request_id: _RequestId, request: Request, identity=Depends(_identity)
 ):
     body = await _body(request, WebSupportInput)
-    return await storage._start_support(identity, request_id, body.reason)
+    case = await storage._start_support(identity, request_id, body.reason)
+    if body.reason == "dissatisfied" and case.state == "creating":
+        return await support.repository.create_support_ticket(
+            case.case_id, get_settings().public_url + "/tickets/" + str(case.case_id)
+        )
+    return case
 
 
 @router.get("/support/{case_id}")

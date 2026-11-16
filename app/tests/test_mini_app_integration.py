@@ -224,13 +224,14 @@ class MiniAppPostgresTests(unittest.IsolatedAsyncioTestCase):
                     json={"reason": "dissatisfied"},
                 )
                 self.assertEqual(case.status_code, 200)
+                self.assertEqual(case.json()["state"], "open")
                 self.assertEqual(
                     len(
                         (await client.get("/api/v1/support", headers=user)).json()[
                             "items"
                         ]
                     ),
-                    1,
+                    0,
                 )
                 self.assertEqual(
                     (await client.get("/api/v1/support", headers=other)).json()[
@@ -407,7 +408,7 @@ class MiniAppPostgresTests(unittest.IsolatedAsyncioTestCase):
                 0,
             )
 
-    async def test_manual_timer_idempotency_messages_and_close(self):
+    async def test_dissatisfied_ticket_idempotency_messages_and_close(self):
         request_id = await self.register()
         await self.complete(request_id, self.answer())
         case = await web._start_support(self.user, request_id, "dissatisfied")
@@ -415,32 +416,17 @@ class MiniAppPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             (case.case_id, case.check_at), (duplicate.case_id, duplicate.check_at)
         )
-        self.assertEqual(
-            (await web._pending_support(self.user, 30, None))["items"][0].case_id,
-            case.case_id,
-        )
+        self.assertEqual(case.state, "creating")
         self.assertEqual(
             (await web._pending_support(self.other, 30, None))["items"], []
         )
-        with self.assertRaises(Conflict):
-            await web._support_case(self.user, case.case_id, "confirm")
         with self.assertRaises(NotFound):
             await web._support_case(self.other, case.case_id)
-        async with _transaction() as session:
-            await _execute(
-                session,
-                update(_SupportCase)
-                .where(_SupportCase.case_id == case.case_id)
-                .values(check_at=datetime.now(UTC) - timedelta(seconds=1)),
-            )
-        self.assertTrue(
-            await support.queue_support_confirmation(case.case_id, datetime.now(UTC))
-        )
-        confirmed = await web._support_case(self.user, case.case_id, "confirm")
-        self.assertEqual(confirmed.state, "creating")
         await support.create_support_ticket(
             case.case_id, "https://rag.example.org/tickets/" + str(case.case_id)
         )
+        self.assertEqual((await web._start_support(self.user, request_id, "dissatisfied")).state, "open")
+        await self.register()
         body = TicketMessageInput(client_message_id=uuid4(), text="Details")
         saved = await web._append_message(self.user, case.case_id, body)
         self.assertEqual(

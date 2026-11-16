@@ -7,15 +7,15 @@
   },
   "generation": {
     "provider": "ollama",
-    "model_id": "qwen3.5:9b-q4_K_M",
-    "model_revision": "sha256:56671c2ab9385f9cfcb404638e32cd62d88e3501d44822208363c010179a3c90",
-    "profile_id": "qwen35-9b-q4-json-16k-v1-56671c2ab938"
+    "model_id": "qwen3.5:4b-q4_K_M",
+    "model_revision": "sha256:d8b0f5e9760cd1682034f292d7ef72ec46f432149be0df7574bf2d6e92e38c04",
+    "profile_id": "qwen35-4b-q4-json-16k-v1-d8b0f5e9760c"
   },
   "vision": {
     "provider": "ollama",
-    "model_id": "qwen3-vl:8b-instruct-q8_0",
-    "model_revision": "sha256:cc61569a61859d58022573b405f576b7efa9c50442ccc8acce62e9ec781fde0f",
-    "profile_id": "qwen3vl-8b-instruct-q8-8k-v1-cc61569a6185"
+    "model_id": "qwen3-vl:4b-instruct-q4_K_M",
+    "model_revision": "sha256:84f7ed8042fa7cdbd902f7dcb7d0370e032095047cc3244179f263b77b5bc318",
+    "profile_id": "qwen3vl-4b-instruct-q4-8k-v1-84f7ed8042fa"
   },
   "reranker": {
     "provider": "native_cpu",

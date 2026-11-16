@@ -75,16 +75,16 @@ HTTP обслуживается Gunicorn с `uvicorn-worker`. `API_WORKERS` по
 
 | Задача | Выбранная модель | Исполнение |
 | --- | --- | --- |
-| Ответ в JSON | `qwen3.5:9b-q4_K_M` | Ollama, контекст 16384, thinking выключен, JSON включён. |
-| Описание изображений | `qwen3-vl:8b-instruct-q8_0` | Ollama, контекст 8192. |
+| Ответ в JSON | `qwen3.5:4b-q4_K_M` | Ollama, контекст 16384, thinking выключен, JSON включён. |
+| Описание изображений | `qwen3-vl:4b-instruct-q4_K_M` | Ollama, контекст 8192. |
 | Векторизация | `bge-m3:567m` | Ollama, dense 1024, без инструкций EmbeddingGemma. |
 | OCR | PaddleOCR PP-OCRv5 | CPU: server detector + официальный eslav recognizer для русского/английского. |
 | Reranking | `BAAI/bge-reranker-v2-m3` | CPU Transformers, sigmoid score. |
 | Защита от инъекций | `Horizon-Labs/prompt-injection-guard-base` | Существующий ONNX backend: максимум разности логитов по окнам 512 токенов с перекрытием 64; порог Guardrails 3.566. |
 
-Ollama получает до 22 CPU и 40 GiB RAM, `OLLAMA_MAX_LOADED_MODELS=3`, параллелизм — 1. `native-models` получает до 6 CPU и 8 GiB, Horizon ONNX — до 2 CPU и 4 GiB; оставшиеся ресурсы используются приложением и хранилищами. Это стартовые лимиты, а не измеренная производительность. На CPU генерация 9B и VLM 8B могут занимать минуты; в подготовленном `.env` увеличены таймауты.
+Ollama получает до 22 CPU и 40 GiB RAM, `OLLAMA_MAX_LOADED_MODELS=3`, параллелизм — 1. `native-models` получает до 6 CPU и 8 GiB, Horizon ONNX — до 2 CPU и 4 GiB; оставшиеся ресурсы используются приложением и хранилищами. Это стартовые лимиты, а не измеренная производительность. На CPU генерация 4B и VLM 4B могут занимать минуты; в подготовленном `.env` увеличены таймауты.
 
-`OLLAMA_GATEWAY_KEEP_ALIVE=-1` сохраняет модели в памяти при наличии ресурсов. Адаптер передаёт числовое значение как JSON-число; строка `"-1"` не является корректной Go duration и раньше вызывала HTTP 400 на пробе embedding. Веса Ollama сохраняются в `ollama_data`. Native SDK и веса изолированы в отдельном образе и томе `native_model_data`; `COMPOSE_PROFILES=native` включает оба CPU-сервиса при обычном `up`. Все репозитории выбранного набора публичны, HF-токен не требуется. Веса скачиваются при запуске, не при сборке; только Ollama-файлы занимают примерно 18 GB, дополнительно нужны CPU-веса, образы и место для документов.
+`OLLAMA_GATEWAY_KEEP_ALIVE=-1` сохраняет модели в памяти при наличии ресурсов. Адаптер передаёт числовое значение как JSON-число; строка `"-1"` не является корректной Go duration и раньше вызывала HTTP 400 на пробе embedding. Веса Ollama сохраняются в `ollama_data`. Native SDK и веса изолированы в отдельном образе и томе `native_model_data`; `COMPOSE_PROFILES=native` включает оба CPU-сервиса при обычном `up`. Все репозитории выбранного набора публичны, HF-токен не требуется. Веса скачиваются при запуске, не при сборке; только Ollama-файлы занимают примерно 8 GB, дополнительно нужны CPU-веса, образы и место для документов.
 
 В `.env` включены `RAG_TEXT_ONLY=false`, `RAG_USE_RERANKER=true`, три provider-модуля, согласованы профили Core/Ingestion и новые коллекции `document_chunks_bge_m3_v1` / `topic_questions_bge_m3_v1`. Бюджет Core учитывает русский системный промпт из `features`; `validate` проверяет наличие места для фрагментов и соответствие контексту Ollama. [Native CPU: нормализация и ограничения](../model-gateway/native-cpu.md). Существующий ONNX-сервис детектора переиспользуется без изменения модели, окон и нормализации. Корневой Compose собирает его через `deploy/detector/Dockerfile`: при запуске скачиваются и сверяются закреплённые файлы в `detector_model_data`. Локальный Dockerfile с весами в образе сохранён.
 

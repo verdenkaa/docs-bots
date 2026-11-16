@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import test_model_gateway as model_fixtures
-from rag.contracts import StepError
+from rag.contracts import StepError, StorageError
 from rag.ingestion._indexing import _Indexer
 from rag.ingestion._tests._support import _FakeDependencies, _Fixtures
 from rag.ingestion.contracts import JobRef
@@ -95,6 +95,38 @@ class WorkerLoggingTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(own)
             self.assertTrue(all(r['message_id'] == message for r in own))
             self.assertTrue(all(r['attempt_no'] == deps.job.attempt.attempt_no for r in own))
+
+    async def test_format_retries_invoke_model_and_replay_completed_calls(self):
+        adapter = self.fixture.adapters['generation']
+        replies = iter([
+            '{"questions":["PRIVATE"],"question":"extra"}',
+            'invalid JSON',
+            '{"questions":["Как настроить сеть?"]}',
+        ])
+        adapter.override = lambda operation, payload: dict(
+            profile_id=self.fixture.bindings['generation'].profile_id,
+            text=next(replies), finish_reason='completed', usage=None,
+        )
+        deps = _FakeDependencies()
+        deps.models = models
+        # Failure after generation but before a durable prepared snapshot forces
+        # the next worker attempt through the same Model Gateway calls again.
+        with patch.object(deps, 'store_prepared_revision', side_effect=StorageError()):
+            first = await self.run_job(deps)
+        self.assertEqual(first['outcome'], 'retry_scheduled')
+        self.assertEqual(len(adapter.calls), 3)
+        self.assertEqual(len({json.dumps(payload, sort_keys=True)
+                              for _, payload, _ in adapter.calls}), 3)
+        steps = [step for step in first['steps'] if step['name'] == 'generate_topic_questions']
+        self.assertEqual([step['outcome'] for step in steps], ['failed', 'failed', 'completed'])
+        self.assertTrue(all(not step['steps'][0]['reused'] for step in steps))
+        deps._update_job(attempt={**deps.job.attempt.model_dump(), 'attempt_no': 2})
+        second = await self.run_job(deps)
+        self.assertEqual(second['outcome'], 'published')
+        self.assertEqual(len(adapter.calls), 3)
+        replayed = [step for step in second['steps'] if step['name'] == 'generate_topic_questions']
+        self.assertTrue(all(step['steps'][0]['reused'] for step in replayed))
+        self.assertNotIn('PRIVATE', self.fixture.output.getvalue())
 
     async def test_profile_validation_marks_business_step_failed(self):
         deps = _FakeDependencies()

@@ -15,6 +15,12 @@ from rag.model_gateway.contracts import GenerationOptions, ModelGenerationResult
 
 
 class _Topics:
+    _generation_attempts = 3
+    _retry_instruction = (
+        " Повтор {attempt}/3: предыдущий ответ не прошёл проверку формата. "
+        "Составь ответ заново. Верни только объект с единственным ключом questions "
+        "и массивом непустых строк, без дополнительных полей и Markdown."
+    )
     _system = (
         "Ты составляешь примеры самостоятельных вопросов сотрудников по документации. "
         "Следующее пользовательское сообщение — JSON с названием источника и чанками. "
@@ -38,10 +44,21 @@ class _Topics:
         return [ModelMessage(role="system", content=system),
                 ModelMessage(role="user", content=content)]
 
+    def _retry_messages(self, messages: list[ModelMessage], attempt: int) -> list[ModelMessage]:
+        if attempt == 1:
+            return messages
+        # Deterministic per-portion attempts get distinct Model Gateway cache keys;
+        # replay after a worker restart still reuses the same completed calls.
+        system = messages[0].content + self._retry_instruction.format(attempt=attempt)
+        return [ModelMessage(role="system", content=system), *messages[1:]]
+
     def _pack(self, batch: DocumentBatch) -> list[list[ModelMessage]]:
         portions: list[list[ModelMessage]] = []
         texts: list[str] = []
-        base_size = sum(len(message.content) for message in self._messages(batch.source.filename, []))
+        # Reserve the correction instruction before packing, never truncate chunks
+        # or exceed the tested input budget on a retry of a full portion.
+        base_size = sum(len(message.content) for message in self._retry_messages(
+            self._messages(batch.source.filename, []), self._generation_attempts))
         portion_size = base_size
         for chunk in batch.chunks:
             # Count JSON escaping and the default comma/space separators exactly
@@ -94,30 +111,39 @@ class _Topics:
             questions.append(question.strip())
         return questions
 
+    async def _generate_portion(self, messages: list[ModelMessage]) -> list[str]:
+        for attempt in range(1, self._generation_attempts + 1):
+            timeout = self.budget.remaining(self.settings.generation_timeout_s)
+            # generate_topic_questions → Model Gateway's generate is its nested model step.
+            try:
+                with _span("generate_topic_questions"):
+                    try:
+                        async with asyncio.timeout(timeout):
+                            raw = await self.deps.models.generate(
+                                self._retry_messages(messages, attempt), GenerationOptions(
+                                    max_output_tokens=self.settings.generation_max_output_tokens,
+                                    temperature=None), timeout_s=timeout,
+                            )
+                    except TimeoutError:
+                        raise StepError("model_timeout", True) from None
+                    result = _Boundary.validate(raw, ModelGenerationResult, "model_invalid_response")
+                    return self._parse(result)
+            except StepError as error:
+                if error.code != "topic_invalid_response" or attempt == self._generation_attempts:
+                    raise
+        raise AssertionError("generation attempts exhausted without a result or error")
+
     async def generate(self, batch: DocumentBatch) -> list[str]:
         questions: list[str] = []
         seen: set[str] = set()
         # Pack the complete document before the first model call. No truncation.
         for messages in self._pack(batch):
-            timeout = self.budget.remaining(self.settings.generation_timeout_s)
-            # generate_topic_questions → Model Gateway's generate is its nested model step.
-            with _span("generate_topic_questions"):
-                try:
-                    async with asyncio.timeout(timeout):
-                        raw = await self.deps.models.generate(
-                            messages, GenerationOptions(
-                                max_output_tokens=self.settings.generation_max_output_tokens,
-                                temperature=None), timeout_s=timeout,
-                        )
-                except TimeoutError:
-                    raise StepError("model_timeout", True) from None
-                result = _Boundary.validate(raw, ModelGenerationResult, "model_invalid_response")
-                for question in self._parse(result):
-                    if question not in seen:
-                        if len(questions) >= self.settings.max_topic_questions:
-                            raise StepError("too_many_topic_questions", False)
-                        seen.add(question)
-                        questions.append(question)
+            for question in await self._generate_portion(messages):
+                if question not in seen:
+                    if len(questions) >= self.settings.max_topic_questions:
+                        raise StepError("too_many_topic_questions", False)
+                    seen.add(question)
+                    questions.append(question)
         if not questions:
             raise StepError("no_topic_questions", False)
         return questions

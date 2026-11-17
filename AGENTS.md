@@ -5,6 +5,7 @@ Telegram RAG-бот для ответов по документации. В `app
 ## Где что лежит
 
 - `app/rag/` — Python-код: `rag_api/` — Telegram и результаты, `rag_core/` — сценарий ответа и кэш, `guardrails/` — проверки, `searcher/` — поиск, `ingestion/` — загрузка и индексация, `model_gateway/` — вызовы моделей, `runtime/` — инфраструктурные адаптеры. Общие DTO — `dto.py` и `contracts.py`; тесты — `app/tests/`. Соответствие функций и контрактов указано в `app/README.md`.
+- `app/injection_detector/` — отдельный HTTP-сервис детектора prompt injection (ONNX Runtime, свой образ); в пакет `rag` и образ приложения не входит.
 - `container-manager/` — инструмент для людей. Для агента там нет полезных материалов: не просматривайте и не изменяйте этот каталог.
 - `docs/` — сайт документации; публикуемые страницы находятся в `docs/documents/`. Правила работы с ними — в `docs/AGENTS.md`.
 

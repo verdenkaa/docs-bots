@@ -18,6 +18,7 @@ htmlcov/
 *.egg-info/
 /app/build/
 /app/dist/
+/app/.tools/
 
 # PyCharm / JetBrains local project files
 .idea/
@@ -33,6 +34,10 @@ node_modules/
 /docs/.vercel/
 /docs/.docusaurus/
 /docs/build/
+
+# Injection detector: downloaded model weights; local threshold tuning tools and data
+/app/injection_detector/model/
+/app/evals/
 
 # Local logs and OS metadata
 *.log

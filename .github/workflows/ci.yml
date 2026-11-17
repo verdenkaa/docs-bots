@@ -89,3 +89,56 @@ jobs:
         run: npm test
       - name: Build documentation
         run: npm run build
+
+  server-deployment:
+    name: Server images and startup checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: app/.python-version
+      - name: Install application for configuration tests
+        run: python -m pip install -c app/requirements.lock ./app
+      - name: Test deployment without real secrets or Telegram
+        run: python -m unittest discover -s deploy/tests -v
+      - name: Check generated business dashboard
+        run: |
+          python -m deploy.monitoring.generate_dashboard
+          git diff --exit-code -- deploy/monitoring/dashboards/
+      - name: Verify business analytics in isolated PostgreSQL and Grafana
+        run: python -m deploy.monitoring.verify
+      - name: Build server application
+        run: docker build -t rag-server-check -f deploy/Dockerfile .
+      - name: Build CPU model SDK image without downloading weights
+        run: docker build -t rag-native-check -f deploy/native/Dockerfile .
+      - name: Exercise CPU model SDKs without pretrained weights or network
+        run: >-
+          docker run --rm --network none --entrypoint python
+          -v "$PWD/deploy/tests/check_native_image.py:/opt/native/check_native_image.py:ro" rag-native-check
+          /opt/native/check_native_image.py
+      - name: Build existing Horizon detector runtime without downloading weights
+        run: docker build -t rag-detector-check -f deploy/detector/Dockerfile .
+      - name: Check ONNX detector SDK imports
+        run: >-
+          docker run --rm --network none rag-detector-check
+          python -c "import onnxruntime, tokenizers; print('Detector SDK imports passed')"
+      - name: Test Linux supervisor inside the production image
+        run: >-
+          docker run --rm --network none
+          -v "$PWD/deploy/tests:/opt/rag/deploy/tests:ro"
+          -v "$PWD/deploy/proxy:/opt/rag/deploy/proxy:ro"
+          -v "$PWD/deploy/native:/opt/rag/deploy/native:ro"
+          rag-server-check python -m unittest discover -s deploy/tests -v
+      - name: Build HTTPS proxy
+        run: docker build -t rag-proxy-check deploy/proxy
+      - name: Start real application roles with isolated stores and synthetic models
+        run: python deploy/tests/check_stack.py --image rag-server-check
+      - name: Exercise nginx with disposable synthetic TLS and upstreams
+        run: >-
+          docker run --rm --network none --entrypoint python
+          -v "$PWD/deploy/tests/check_proxy_image.py:/check_proxy_image.py:ro"
+          rag-proxy-check /check_proxy_image.py

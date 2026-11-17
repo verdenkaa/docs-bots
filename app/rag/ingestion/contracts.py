@@ -12,16 +12,22 @@ from pathlib import Path
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from rag.contracts import ImageContent, ImageRef, SourceLocator
-from rag.dto import DTO, NonEmptyText, NonNegativeInt, PositiveId, _check_image_markers
+from rag.dto import DTO, NonEmptyText, NonNegativeInt, PositiveId, _check_image_markers, _check_source_url
 
 
 class UploadSource(DTO):
-    """Название документа для источника; оригинал и исходный URL не хранятся."""
+    """Имя, доступ и необязательная ссылка на документ; оригинал не хранится."""
     filename: NonEmptyText = Field(description='Название исходного документа для подписи и выбора обработчика; не доверенный путь.')
     access_level: NonEmptyText = Field(description='Метка доступа всего документа из доверенного адаптера загрузки; не роль отправителя.')
+    source_url: str | None = Field(default=None, description='Исходный HTTP(S) URL для пользователя; передаётся в Qdrant без скачивания документа по ссылке.')
+
+    @field_validator('source_url')
+    @classmethod
+    def check_source_url(cls, value: str | None) -> str | None:
+        return _check_source_url(value)
 
 
 @dataclass(frozen=True)

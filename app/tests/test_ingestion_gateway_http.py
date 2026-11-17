@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -86,6 +87,16 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.register_revision.assert_awaited_once_with(
             self.revision, self.document, f"uploads/{self.revision}", self.source, [self.image.image_id],
         )
+
+    async def test_source_url_reaches_manifest_batch_and_registration(self):
+        url = "https://docs.example/manual.pdf?revision=abc&view=1#page=2"
+        self.source = UploadSource(filename="manual.pdf", access_level="employees", source_url=url)
+        self.staged.source = self.source
+        self.assertEqual(await gateway.accept_upload(self._input()), self.accepted)
+        self.assertEqual(self.convert_document.await_args.args[0].source.source_url, url)
+        self.assertEqual(self.stage_upload.await_args.args[2].source_url, url)
+        self.assertEqual(self.store_document_batch.await_args.args[1].source.source_url, url)
+        self.assertEqual(self.register_revision.await_args.args[3].source_url, url)
 
     async def test_empty_and_oversized_streams_are_rejected_before_storage(self):
         for parts, code in (((), "invalid_upload"), ((b"12345", b"678901"), "too_large")):
@@ -316,14 +327,16 @@ class HttpUploadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_http_acceptance_passes_stream_and_metadata(self):
         document_id = uuid4()
+        source_url = "https://docs.example/manual.pdf?revision=abc&view=1#page=2"
         async def accept(upload):
             self.assertEqual(upload.document_id, document_id)
             self.assertEqual(upload.source.filename, "manual.pdf")
             self.assertEqual(upload.source.access_level, "employees")
+            self.assertEqual(upload.source.source_url, source_url)
             self.assertEqual(b"".join([part async for part in upload.content]), b"pdf")
             return self.mock.return_value
         self.mock.side_effect = accept
-        response = await self.client.post(self.url + f"&document_id={document_id}",
+        response = await self.client.post(self.url + f"&document_id={document_id}&source_url={quote(source_url, safe='')}",
                                           headers=self.headers, content=b"pdf")
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json()["kind"], "accepted")
@@ -332,6 +345,7 @@ class HttpUploadTests(unittest.IsolatedAsyncioTestCase):
     async def test_markdown_upload_preserves_bytes_and_source_name(self):
         async def accept(upload):
             self.assertEqual(upload.source.filename, "manual.md")
+            self.assertIsNone(upload.source.source_url)
             self.assertEqual(b"".join([part async for part in upload.content]), b"# Manual")
             return self.mock.return_value
         self.mock.side_effect = accept
@@ -339,6 +353,15 @@ class HttpUploadTests(unittest.IsolatedAsyncioTestCase):
             headers={"Authorization": "Bearer test-secret", "Content-Type": "text/markdown"},
             content=b"# Manual")
         self.assertEqual(response.status_code, 202)
+
+    async def test_invalid_source_url_is_rejected_before_gateway(self):
+        for url in ("", "file:///tmp/manual.pdf", "javascript:alert(1)", "https://user:password@docs.example"):
+            with self.subTest(url=url):
+                response = await self.client.post(self.url + "&source_url=" + quote(url, safe=""),
+                                                  headers=self.headers, content=b"pdf")
+                self.assertEqual(response.status_code, 422)
+                self.assertEqual(response.json()["detail"], "invalid_upload_metadata")
+        self.mock.assert_not_awaited()
 
     async def test_authentication_runs_before_body_and_metadata(self):
         for authorization in (None, "Bearer wrong", "Basic test-secret", "Bearer "):

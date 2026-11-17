@@ -2,7 +2,8 @@
 
 Читает разметку Word напрямую (ZIP + XML стандартной библиотекой), без вызовов моделей:
 заголовки и списки берутся из стилей и нумерации, таблицы, ссылки и картинки — из самого документа.
-Оглавление, колонтитулы, сноски и удалённый в режиме правки текст в Markdown не попадают.
+Колонтитулы включаются один раз, сноски — в скобках у ссылки на них.
+Оглавление и удалённый в режиме правки текст в Markdown не попадают.
 Внешние картинки по ссылкам не скачиваются.
 """
 
@@ -11,6 +12,7 @@ from __future__ import annotations
 import posixpath
 import re
 import zipfile
+from contextlib import contextmanager
 from io import BytesIO
 from xml.etree import ElementTree
 
@@ -33,7 +35,7 @@ ORDERED_RE = re.compile(r"^(\*\*)?(\d+)[.)]\s+")
 BULLET_RE = re.compile(r"^[•▪■□◦·–]\s+")
 URL_RE = re.compile(r"(?i)^(https?://|mailto:)\S+$")
 UNORDERED_FORMATS = {"bullet", "none"}
-VECTOR_SUFFIXES = (".emf", ".wmf")  # outside the raster-image profile
+VECTOR_SUFFIXES = (".emf", ".wmf")
 SKIPPED = {f"{W}del", f"{W}moveFrom", f"{W}instrText", f"{W}delText", f"{W}pPr", f"{W}rPr"}
 GRAPHICS = {f"{W}drawing", f"{W}pict", f"{W}object"}
 
@@ -43,16 +45,81 @@ class DocxConverter:
         self._add_image = add_image
         self._zip = zipfile.ZipFile(BytesIO(data))
         self._names = set(self._zip.namelist())
-        self._targets = self._relationships()
+        self._part_name = DOCUMENT
+        self._targets = self._relationships(DOCUMENT)
         self._styles = self._read_styles()
         self._numbering = self._read_numbering()
         self._counters: dict[tuple[str, int], int] = {}
+        self._notes: dict[str, dict[str, ElementTree.Element]] = {}
+        self._active_notes: set[tuple[str, str]] = set()
+        self._metafiles: dict[str, bytes] = {}
 
     def convert(self) -> str:
         body = self._xml(DOCUMENT).find(f"{W}body")
         if body is None:
             raise ParseRefused("conversion_failed", "в DOCX нет тела документа")
-        return "\n\n".join(self._blocks(body)) + "\n"
+        blocks: list[str] = []
+        seen: set[str] = set()
+        pending: list[ElementTree.Element] = []
+        for node in self._block_nodes(body):
+            pending.append(node)
+            section = node.find(f"{W}pPr/{W}sectPr") if node.tag == f"{W}p" else None
+            if section is not None:
+                blocks.extend(self._section(pending, section, seen))
+                pending = []
+        blocks.extend(self._section(pending, body.find(f"{W}sectPr"), seen))
+        return "\n\n".join(blocks) + "\n"
+
+    def _section(self, nodes: list[ElementTree.Element], section: ElementTree.Element | None,
+                 seen: set[str]) -> list[str]:
+        container = ElementTree.Element("section")
+        container.extend(nodes)
+        return (self._margins(section, "header", seen) + self._blocks(container)
+                + self._margins(section, "footer", seen))
+
+    def _margins(self, section: ElementTree.Element | None, kind: str, seen: set[str]) -> list[str]:
+        """Все явно заданные варианты колонтитула секции, каждый файл — один раз."""
+        blocks: list[str] = []
+        if section is not None:
+            for reference in section.findall(f"{W}{kind}Reference"):
+                name = self._related_part(reference.get(f"{R}id", ""))
+                if name not in seen:
+                    seen.add(name)
+                    with self._in_part(name):
+                        blocks.extend(self._blocks(self._xml(name)))
+        return blocks
+
+    @contextmanager
+    def _in_part(self, name: str):
+        """Ссылки и картинки разрешаются относительно собственной части, не document.xml."""
+        previous = self._part_name, self._targets, self._counters
+        self._part_name, self._targets, self._counters = name, self._relationships(name), {}
+        try:
+            yield
+        finally:
+            self._part_name, self._targets, self._counters = previous
+
+    def _note(self, kind: str, note_id: str) -> str:
+        name = f"word/{kind}s.xml"
+        if kind not in self._notes:
+            if name not in self._names:
+                raise ParseRefused("conversion_failed", "DOCX note part is missing")
+            self._notes[kind] = {
+                note.get(f"{W}id", ""): note for note in self._xml(name).findall(f"{W}{kind}")
+                if note.get(f"{W}type", "normal") == "normal"
+            }
+        note = self._notes[kind].get(note_id)
+        key = kind, note_id
+        if note is None or key in self._active_notes:
+            raise ParseRefused("conversion_failed", "DOCX note reference is invalid")
+        self._active_notes.add(key)
+        try:
+            with self._in_part(name):
+                blocks = self._blocks(note)
+            text = "; ".join(" ".join(block.split()) for block in blocks)
+            return f" ({text})" if text else ""
+        finally:
+            self._active_notes.remove(key)
 
     # --- части архива -------------------------------------------------------------------------
 
@@ -68,15 +135,27 @@ class DocxConverter:
             raise ParseRefused("conversion_failed", "DOCX содержит DTD")
         return ElementTree.fromstring(data)
 
-    def _relationships(self) -> dict[str, tuple[str, bool]]:
-        """rId -> (цель, внешняя ли она) для основной части документа."""
-        name = "word/_rels/document.xml.rels"
+    def _relationships(self, part: str) -> dict[str, tuple[str, bool]]:
+        """rId -> (цель, внешняя ли она) для указанной части документа."""
+        name = posixpath.join(posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels")
         if name not in self._names:
             return {}
         return {
             rel.get("Id", ""): (rel.get("Target", ""), rel.get("TargetMode") == "External")
             for rel in self._xml(name).iter(f"{REL}Relationship")
         }
+
+    def _related_part(self, relationship: str) -> str:
+        target, external = self._targets.get(relationship, ("", True))
+        if not target:
+            raise ParseRefused("conversion_failed", "DOCX relationship is missing")
+        if external:
+            raise ParseRefused("unsupported_format", "External DOCX parts are not fetched")
+        name = (target.lstrip("/") if target.startswith("/") else
+                posixpath.normpath(posixpath.join(posixpath.dirname(self._part_name), target)))
+        if name not in self._names:
+            raise ParseRefused("conversion_failed", "DOCX related part is missing")
+        return name
 
     def _read_styles(self) -> dict[str, dict]:
         """styleId -> свойства с учётом наследования: уровень заголовка, оглавление, список, жирность."""
@@ -227,7 +306,8 @@ class DocxConverter:
         return ordered, min(level, 8), number
 
     def _table(self, node: ElementTree.Element) -> list[str]:
-        rows = [[cell for cell in row if cell.tag == f"{W}tc"] for row in node if row.tag == f"{W}tr"]
+        rows = [[cell for cell in row if cell.tag == f"{W}tc" and cell.find(f"{W}tcPr/{W}cellDel") is None]
+                for row in node if row.tag == f"{W}tr" and row.find(f"{W}trPr/{W}del") is None]
         rows = [row for row in rows if row]
         if not rows:
             return []
@@ -295,6 +375,9 @@ class DocxConverter:
                     segments.append(("\n", False))
             elif kid.tag == f"{W}noBreakHyphen":
                 segments.append(("-", bold))
+            elif kid.tag in (f"{W}footnoteReference", f"{W}endnoteReference"):
+                kind = "footnote" if kid.tag == f"{W}footnoteReference" else "endnote"
+                segments.append((self._note(kind, kid.get(f"{W}id", "")), False))
             elif kid.tag in GRAPHICS:
                 self._graphics(kid, segments, extra)
             elif kid.tag == f"{MC}AlternateContent":
@@ -316,16 +399,13 @@ class DocxConverter:
                 self._graphics(kid, segments, extra)
 
     def _image(self, relationship: str) -> str:
-        target, external = self._targets.get(relationship, ("", True))
-        if not target:
-            raise ParseRefused("conversion_failed", "DOCX image relationship is missing")
-        if external:
-            raise ParseRefused("unsupported_format", "External DOCX images are not fetched")
-        name = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("word", target))
-        if name not in self._names:
-            raise ParseRefused("conversion_failed", "DOCX image part is missing")
+        name = self._related_part(relationship)
         if name.lower().endswith(VECTOR_SUFFIXES):
-            raise ParseRefused("unsupported_format", "DOCX vector image requires another profile")
+            from rag.ingestion._metafile import metafile_to_png
+
+            if name not in self._metafiles:
+                self._metafiles[name] = metafile_to_png(self._part(name), posixpath.splitext(name)[1].lower())
+            return self._add_image(self._metafiles[name])
         return self._add_image(to_png(self._part(name)))
 
     # --- разбор XML ---------------------------------------------------------------------------

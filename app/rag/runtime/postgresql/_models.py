@@ -47,6 +47,7 @@ class _Employee(_Base):
 class _Request(_Base):
     __tablename__ = "rag_requests"
     __table_args__ = (
+        CheckConstraint("(channel='telegram' AND chat_id IS NOT NULL AND update_id IS NOT NULL) OR (channel='web' AND chat_id IS NULL AND update_id IS NULL)", name="rag_requests_channel_check"),
         CheckConstraint("state IN ('queued','processing','awaiting_delivery','awaiting_support','finished')", name="rag_requests_state_check"),
         CheckConstraint("pinned_generation>=0", name="rag_requests_pinned_generation_check"),
         CheckConstraint("attempt_no>=0", name="rag_requests_attempt_no_check"),
@@ -58,9 +59,10 @@ class _Request(_Base):
     )
     request_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger)
-    chat_id: Mapped[int] = mapped_column(BigInteger)
+    channel: Mapped[str] = mapped_column(Text, server_default="telegram")
+    chat_id: Mapped[int | None] = mapped_column(BigInteger)
     username: Mapped[str | None] = mapped_column(Text)
-    update_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    update_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
     input: Mapped[dict[str, Any]] = mapped_column(_json_type)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     prepared_text: Mapped[str | None] = mapped_column(Text)
@@ -69,6 +71,16 @@ class _Request(_Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(_json_type)
     attempt_no: Mapped[int] = mapped_column(Integer, server_default="0")
     resume_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class _WebRequest(_Base):
+    __tablename__ = "web_requests"
+    __table_args__ = (UniqueConstraint("user_id", "idempotency_key", name="web_requests_user_key"),)
+    request_id: Mapped[int] = mapped_column(ForeignKey("rag_requests.request_id"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger)
+    idempotency_key: Mapped[str] = mapped_column(Text)
+    payload_hash: Mapped[str] = mapped_column(Text)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class _TelegramUpdate(_Base):
@@ -90,6 +102,7 @@ class _SupportCase(_Base):
         CheckConstraint("(state IN ('open','closed')) = (ticket_url IS NOT NULL AND created_at IS NOT NULL)", name="support_cases_ticket_check"),
         CheckConstraint("(state='closed') = (closed_at IS NOT NULL)", name="support_cases_closed_check"),
         Index("support_due", "state", "check_at"),
+        Index("support_owner_page", "user_id", "request_id"),
     )
     case_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     request_id: Mapped[int] = mapped_column(ForeignKey("rag_requests.request_id"), unique=True)

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from rag import _configuration
 from rag.contracts import StepError
 from rag.runtime._config import RuntimeSettings
-from rag.rag_api.config import _WebhookSettings
+from rag.rag_api.config import _ApiConfig
 from rag.rag_core._settings import _Settings as CoreSettings
 from rag.guardrails._config import GuardrailsSettings
 from rag.ingestion._config import ConverterSettings
@@ -53,7 +53,7 @@ class ProjectConfigurationTests(unittest.TestCase):
         try:
             os.chdir(other)
             self.assertEqual(RuntimeSettings().pg_user, 'file-user')
-            self.assertEqual(_WebhookSettings().secret.get_secret_value(), 'file-webhook')
+            self.assertEqual(_ApiConfig().secret.get_secret_value(), 'file-webhook')
             self.assertEqual(CoreSettings().max_attempts, 7)
             self.assertEqual(GuardrailsSettings().max_question_chars, 123)
             self.assertEqual(ConverterSettings().max_images, 17)

@@ -14,7 +14,7 @@ toc_max_heading_level: 2
 async def handle_telegram_update(update: Mapping[str, object]) -> IntakeResult: ...
 ~~~
 
-**Кто вызывает.** Webhook после проверки секрета либо альтернативный polling-адаптер.
+**Кто вызывает.** Внутренний HTTP-адаптер после проверки секрета; updates поступают только от poller.
 
 ### Что принимает
 
@@ -45,7 +45,11 @@ async def handle_telegram_update(update: Mapping[str, object]) -> IntakeResult: 
 
 ### Правила и ошибки
 
-Проверяет личный чат и Access, разбирает текст/изображение либо действие Support. Время первого приёма берёт в RAG API, не из произвольного поля клиента. Для поддерживаемого вопроса вызывает register_question(NewQuestion(...)); repository сначала проверяет ledger повтора и лишь для нового вопроса — текущий допуск. Предварительный check_access не должен заменить прежний исход уже принятого update на denied. Для нового управления вызывает handle_support_action с текущей проверкой прав. Для непригодного/неподдерживаемого update вызывает record_update, чтобы сохранить пропуск и возможное уведомление без вопроса. Глобальная перегрузка и StorageError дают retry_later; занятость сотрудника — busy, не retry_later. Единственный владелец answerCallbackQuery — handle_telegram_update через Telegram-адаптер; webhook/polling второй раз не подтверждают кнопку; его сбой не откатывает уже применённое действие.
+Проверяет структуру личного чата и разбирает сообщение либо старое действие Support. Время приёма берёт в RAG API. `/start`, `/help` (аргументы и `@BotName` поддерживаются), обычный текст и изображения вызывают [register_bot_notice](../../infrastructure/postgresql/rag-api.md#register-bot-notice): приглашение открыть Mini App доставляется через notice/Outbox без допуска сотрудника, RAG-вопроса и активного слота. Остальные slash-команды, группы и неподдерживаемые updates сохраняются как ignored без ответа.
+
+Telegram-вход не вызывает register_question, поиск или Shortcut Interceptor. Классификатор остаётся самостоятельным модулем; интеграция в Mini App находится вне этого изменения. HTTP-контракты `/api/v1/*` не меняются.
+
+Ledger проверяется перед созданием notice; повтор сохраняет прежний исход, включая исторический accepted/duplicate с request_id. StorageError даёт retry_later. Старые callback продолжают handle_support_action с проверкой допуска и сохранённой кнопки. Единственный владелец answerCallbackQuery — intake; сбой квитанции не откатывает уже применённое действие.
 
 ## <span className="operation-badge operation-badge--sub">SUB</span> `handle_rag_result` {#handle-rag-result}
 
@@ -87,7 +91,7 @@ def build_delivery_parts(delivery: ClaimedDelivery, source_base_url: str) -> lis
 | Параметр | Тип | Зачем нужен | Пример |
 | --- | --- | --- | --- |
 | delivery | ClaimedDelivery | Контент/состояние и назначение из PostgreSQL. | purpose="answer", content=RagResult(...) |
-| source_base_url | str | Проверенный адрес RAG API из конфигурации для ссылок источников. | "https://bot.example" |
+| source_base_url | str | Проверенный адрес RAG API из конфигурации для резервных ссылок источников без source_url. | "https://bot.example" |
 
 ### Что отдаёт
 
@@ -100,7 +104,7 @@ def build_delivery_parts(delivery: ClaimedDelivery, source_base_url: str) -> lis
 
 ### Правила и ошибки
 
-Чистая сборка без I/O. Для answer/notice использует content; для status/busy/denied/first_question — стандартный текст; offer даёт кнопку s:request_id; confirmation — y/n:case_id; ticket_link использует case.ticket_url. Обычный ответ может предложить «Ответ не помог» (a:request_id), но не кнопку оператора. Переводит Markdown в видимый текст + entities с UTF-16-смещениями; image-маркеры становятся описаниями, файлы — отдельными частями. Источник группируется по document_id, ссылка ведёт на /sources/&#123;document_id&#125;. Видимый текст ограничен 4096 единицами UTF-16, из них до 512 — источники. При переполнении сохраняет хотя бы один источник либо даёт короткий резервный текст и реакцию недовольства. План один раз сохраняется в PostgreSQL.
+Чистая сборка без I/O. Для answer/notice использует content; для status/busy/denied/first_question — стандартный текст; offer даёт кнопку s:request_id; confirmation — y/n:case_id; ticket_link использует case.ticket_url. Обычный ответ может предложить «Ответ не помог» (a:request_id), но не кнопку оператора. Переводит Markdown в видимый текст + entities с UTF-16-смещениями; image-маркеры становятся описаниями, файлы — отдельными частями. Источник группируется по document_id; ссылка использует проверенный HTTP(S) source_url из SourceRef, а при None — /sources/&#123;document_id&#125; на source_base_url. Это правило одинаково для обычного списка и сокращённого источника при длинном ответе. Видимый текст ограничен 4096 единицами UTF-16, из них до 512 — источники. При переполнении сохраняет хотя бы один источник либо даёт короткий резервный текст и реакцию недовольства. План один раз сохраняется в PostgreSQL и при повторе не пересобирается.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> `send_answer` {#send-answer}
 

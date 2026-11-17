@@ -7,7 +7,7 @@ toc_max_heading_level: 2
 
 | Метод / путь | Кто вызывает | Назначение |
 | --- | --- | --- |
-| POST [/telegram/webhook](./telegram-webhook.md) | Telegram с секретом | Текст, изображение и callback только личного чата. |
+| POST [/internal/telegram/updates](./telegram-updates.md) | Внутренний poller с intake-secret | Навигационные ответы и старые callback; новых RAG-вопросов нет. |
 | GET [/health/live](./health-live.md) | Среда запуска | HTTP-процесс жив. |
 | GET [/health/ready](./health-ready.md) | Среда запуска | Готовность надёжного приёма и outbox. |
 | GET [/sources/&#123;document_id&#125;](./source-page.md) | Браузер | Публичная HTML-заглушка только с названием документа. |
@@ -22,6 +22,6 @@ toc_max_heading_level: 2
 
 HTTP Basic по HTTPS: статичные ADMIN_LOGIN и ADMIN_PASSWORD из окружения/.env. HTTP-адаптер проверяет credentials и создаёт Principal(login=ADMIN_LOGIN); тело запроса не задаёт личность. Пустая конфигурация — 503 auth_not_configured, нет/неверны credentials — 401 с WWW-Authenticate. Для мутаций проверяется Origin панели. См. [правила входа](../module/access.md#администрирование). Публичные чтение и реплики тикета не зависят от входа администратора.
 
-Webhook подтверждает приём, а результат приходит через очередь и отдельные вызовы Telegram. 20 секунд — метрика, не HTTP-таймаут ответа на вопрос. Long polling остаётся альтернативным адаптером, не вторым одновременным входом.
+Telegram использует только long polling. Внутренний intake подтверждает сохранение ledger/notice, доставку выполняет Outbox/results. RAG-вопросы поступают через Mini App, внешний webhook удалён.
 
 [Python-точки входа](../module/entrypoints.md) · [Access/Support](../module/service-entrypoints.md) · [DTO](../module/contracts.md)

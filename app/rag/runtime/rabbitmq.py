@@ -161,6 +161,8 @@ async def _consume(route, handler, stop):
         if route == "ingestion.jobs":
             _watchdog._send(None, "idle")
         tag = await queue.consume(receive,no_ack=False)
+        from rag.runtime._process_status import _ready
+        _ready()
         await stop.wait()
         await queue.cancel(tag)
     finally:

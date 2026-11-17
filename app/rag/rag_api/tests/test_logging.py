@@ -30,7 +30,7 @@ class LoggingTests(unittest.IsolatedAsyncioTestCase):
         self.output = io.StringIO()
         self.enterContext(redirect_stdout(self.output))
         self.enterContext(patch.dict('os.environ', TELEGRAM_BOT_TOKEN='123:secret',
-            TELEGRAM_WEBHOOK_SECRET='webhook-secret', TELEGRAM_WEBHOOK_URL='https://bot.example'))
+            TELEGRAM_INTAKE_SECRET='webhook-secret', RAG_PUBLIC_URL='https://bot.example'))
 
     def check_steps(self, record):
         self.assertIn('started_at', record)
@@ -48,24 +48,24 @@ class LoggingTests(unittest.IsolatedAsyncioTestCase):
         update = {'update_id': 123, 'message': {'from': {'id': 7, 'username': 'Employee'},
             'chat': {'id': 99, 'type': 'private'}, 'text': 'private-question'}}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application.app), base_url='http://test') as client:
-            with patch.object(intake.repository, 'register_question', AsyncMock(return_value=IntakeResult(kind='accepted', request_id=10))):
-                response = await client.post('/telegram/webhook', json=update,
-                    headers={'X-Telegram-Bot-Api-Secret-Token': 'webhook-secret'})
+            with patch.object(intake.repository, 'register_bot_notice', AsyncMock(return_value=IntakeResult(kind='handled', delivery_id=10))):
+                response = await client.post('/internal/telegram/updates', json=update,
+                    headers={'X-Telegram-Intake-Secret': 'webhook-secret'})
         self.assertEqual(response.status_code, 200)
         records = _records(self.output)
         self.assertEqual(len(records), 1)
         record = records[0]
         self.check_steps(record)
-        self.assertEqual((record['operation'], record['outcome'], record['request_id']), ('handle_telegram_update', 'accepted', 10))
+        self.assertEqual((record['operation'], record['outcome'], record['delivery_id']), ('handle_telegram_update', 'handled', 10))
         self.assertEqual(record['http_status'], 200)
-        self.assertEqual(record['route'], '/telegram/webhook')
+        self.assertEqual(record['route'], '/internal/telegram/updates')
         projected = [json.loads(line) for line in self.output.getvalue().splitlines()
                      if json.loads(line)['operation'] == 'step']
         self.assertEqual(len(projected), len(record['steps']))
-        self.assertTrue(all(step['run_id'] == record['run_id'] and step['request_id'] == 10
+        self.assertTrue(all(step['run_id'] == record['run_id'] and step['delivery_id'] == 10
                             and step['parent_operation'] == 'handle_telegram_update' for step in projected))
-        self.assertEqual([s['name'] for s in record['steps']], ['validate_webhook_secret', 'validate_content_type',
-            'decode_update', 'validate_update_id', 'parse_update', 'register_question'])
+        self.assertEqual([s['name'] for s in record['steps']], ['validate_intake_secret', 'validate_content_type',
+            'decode_update', 'validate_update_id', 'parse_update', 'register_bot_notice'])
         for secret in ('private-question', '123:secret', 'webhook-secret'):
             self.assertNotIn(secret, self.output.getvalue())
 

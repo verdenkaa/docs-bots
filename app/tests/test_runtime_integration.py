@@ -84,6 +84,33 @@ def answer():
     os.environ.get("RUN_RUNTIME_INTEGRATION") == "1", "Use tests/runtime-compose.yaml"
 )
 class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_embedding_switch_preserves_data_and_refuses_a_used_corpus(self):
+        from rag.runtime._qdrant import _switch_empty_embedding_profile
+
+        original = self.state.settings.embedding_profile
+        self.state.settings.embedding_profile = "new-empty-profile"
+        self.state.settings.embedding_dimensions = 1024
+        await _switch_empty_embedding_profile()
+        await _switch_empty_embedding_profile()  # idempotent
+        async with _transaction() as connection:
+            row = await _one(connection, "SELECT embedding_profile, embedding_dimensions FROM corpus_state")
+            self.assertNotEqual(row["embedding_profile"], original)
+            self.assertEqual((row["embedding_profile"], row["embedding_dimensions"]), ("new-empty-profile", 1024))
+            await _execute(connection, "UPDATE corpus_state SET generation=1")
+        self.state.settings.embedding_profile = "another-profile"
+        with self.assertRaises(StepError):
+            await _switch_empty_embedding_profile()
+        async with _transaction() as connection:
+            await _execute(connection, "UPDATE corpus_state SET generation=0")
+            await _execute(connection, "INSERT INTO documents(document_id,source_name) VALUES(:id,'retained-document')", id=uuid4())
+        with self.assertRaises(StepError) as error:
+            await _switch_empty_embedding_profile()
+        self.assertEqual(error.exception.code, "embedding_profile_change_requires_reindex")
+        async with _transaction() as connection:
+            self.assertIsNotNone(await _one(connection, "SELECT document_id FROM documents WHERE source_name='retained-document'"))
+            row = await _one(connection, "SELECT embedding_profile FROM corpus_state")
+            self.assertEqual(row["embedding_profile"], "new-empty-profile")
+
     async def asyncSetUp(self):
         token = uuid4().hex
         self.schema = "runtime_" + token
@@ -161,6 +188,34 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 input=TextQuestion(kind="text", text="Question"),
             )
         )
+
+    async def test_bot_navigation_retries_with_busy_slot_and_access_revocation(self):
+        from rag.rag_api.entrypoints import handle_telegram_update
+
+        active = await self.question()
+        update = {"update_id": uuid4().int % 10**15, "message": {
+            "from": {"id": 2, "username": "employee_2"},
+            "chat": {"id": 2, "type": "private"}, "text": "ПРИВЕТ!!!"}}
+        results = await asyncio.gather(*(handle_telegram_update(update) for _ in range(3)))
+        self.assertTrue(all(result.kind == "handled" for result in results))
+        self.assertEqual(len({result.delivery_id for result in results}), 1)
+        self.assertTrue(all(result.request_id is None for result in results))
+        delivery_id = results[0].delivery_id
+        async with _transaction() as connection:
+            requests = await _one(connection, "SELECT count(*) AS n FROM rag_requests")
+            deliveries = await _one(connection, "SELECT count(*) AS n FROM rag_deliveries WHERE purpose='notice'")
+            self.assertEqual((requests["n"], deliveries["n"]), (1, 1))
+            row = await _one(connection, "SELECT state FROM rag_requests WHERE request_id=:id", id=active.request_id)
+            self.assertEqual(row["state"], "queued")
+        await support.write_user_access(Principal(login="runtime_admin"),
+                                        AccessRecord(username="employee_2", enabled=False))
+        self.assertEqual((await handle_telegram_update(update)).delivery_id, delivery_id)
+        fresh = dict(update, update_id=update["update_id"] + 1)
+        self.assertEqual((await handle_telegram_update(fresh)).kind, "handled")
+        delivery = await self.finish(delivery_id)
+        self.assertEqual(delivery.purpose, "notice")
+        self.assertIsNone(delivery.request_id)
+        self.assertEqual(delivery.content.sources, [])
 
     async def finish(self, delivery_id):
         delivery = await rag_api.claim_delivery(delivery_id)
@@ -411,6 +466,57 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(StepError, "topic_count_mismatch"):
             await ingestion.begin_revision_write(retry.attempt, 1, 2)
         self.assertTrue(await ingestion.fail_ingestion_job(retry.attempt))
+
+    async def test_returned_pending_attempt_immediately_allows_other_documents(self):
+        first, second, next_revision = uuid4(), uuid4(), uuid4()
+        source = UploadSource(filename="Pending A", access_level="employees")
+        accepted = await ingestion.register_revision(first, None, f"uploads/{first}", source, [])
+        await ingestion.register_revision(
+            second, None, f"uploads/{second}",
+            UploadSource(filename="Independent B", access_level="employees"), [],
+        )
+        await ingestion.register_revision(
+            next_revision, accepted.document_id, f"uploads/{next_revision}", source, [],
+        )
+        job = await ingestion.claim_ingestion_job(first)
+        await ingestion.reserve_document_version(job.attempt, None)
+        self.assertTrue(await ingestion.begin_revision_write(job.attempt, 2, 3))
+
+        # pending=true also exists during a live write: it must still exclude B.
+        self.assertGreater(job.attempt.deadline_at, now())
+        self.assertIsNone(await ingestion.claim_ingestion_job(second))
+        self.assertTrue(await ingestion._release_pending_attempt(job.attempt))
+        async with _transaction() as connection:
+            row = await _one(connection,
+                "SELECT state, resume_at, qdrant_write_pending, attempt_no, "
+                "staging_ref, expected_chunk_count, expected_topic_count "
+                "FROM document_revisions WHERE revision_id=:id", id=first)
+        self.assertEqual(row["state"], "indexing")
+        self.assertTrue(row["qdrant_write_pending"])
+        self.assertLessEqual(row["resume_at"], now())
+        self.assertEqual(row["attempt_no"], job.attempt.attempt_no)
+        self.assertEqual(row["staging_ref"], f"uploads/{first}")
+        self.assertEqual((row["expected_chunk_count"], row["expected_topic_count"]), (2, 3))
+
+        # No clock manipulation or reconciliation is needed to start document B.
+        other = await ingestion.claim_ingestion_job(second)
+        self.assertIsNotNone(other)
+        self.assertLess(now(), job.attempt.deadline_at)
+        self.assertIsNone(await ingestion.claim_ingestion_job(first))
+        self.assertFalse(await ingestion.schedule_ingestion_retry(job.attempt, now()))
+        self.assertFalse(await ingestion.fail_ingestion_job(job.attempt))
+        self.assertIsNone(await ingestion.publish_revision(job.attempt))
+        self.assertFalse(await ingestion._release_pending_attempt(job.attempt))
+        self.assertEqual(await cleanup.list_finished_staging(20), [])
+        self.assertEqual(await cleanup.claim_revision_cleanup(20), [])
+
+        # Finishing B doesn't unblock a later revision of A or recreate A's notice.
+        self.assertTrue(await ingestion.fail_ingestion_job(other.attempt))
+        self.assertIsNone(await ingestion.claim_ingestion_job(next_revision))
+        self.assertEqual(await outbox.recover_pending_work("ingestion.jobs", 20), 0)
+        pending = await ingestion.list_pending_revision_writes(20)
+        self.assertEqual([(item.revision_id, item.attempt_no) for item in pending],
+                         [(first, job.attempt.attempt_no)])
 
     async def test_redis_compare_token_and_exact_large_generations(self):
         result = answer()

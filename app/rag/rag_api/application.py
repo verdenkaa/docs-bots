@@ -1,6 +1,6 @@
 """Contracts: docs/documents/telegram/module/http-adapter-entrypoints.md.
 
-HTTP lifecycle and request logging; background roles belong to Runtime."""
+HTTP lifecycle and request logging; Mini App contracts remain independent of polling."""
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -14,6 +14,7 @@ from rag.rag_api.health.router import router as health_router
 from rag.rag_api.public import router as public_router
 from rag.rag_api.telegram.router import router as telegram_router
 from rag.rag_api.admin import router as admin_router
+from rag.rag_api.mini_app import router as mini_app_router
 from rag.rag_api.contracts import AccessDenied, Conflict, NotFound
 from rag.contracts import StorageError
 from rag.runtime._config import RuntimeSettings
@@ -67,6 +68,11 @@ async def _start_with_retry():
 @asynccontextmanager
 async def _lifespan(app):
     get_settings()
+    from rag.rag_api._mini_app_auth import _MiniSettings
+    mini = _MiniSettings()
+    if mini.enabled:
+        mini._url()
+        mini._admins()
     try:
         await _start_with_retry()
         yield
@@ -122,3 +128,4 @@ app.include_router(telegram_router)
 app.include_router(health_router)
 app.include_router(public_router)
 app.include_router(admin_router)
+app.include_router(mini_app_router)

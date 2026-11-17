@@ -89,7 +89,7 @@ def _content_stream() -> bytes:
     return "\n".join(ops).encode("ascii")
 
 
-def build_sample_pdf(*, tagged: bool = True, untagged_text: str = "") -> bytes:
+def build_sample_pdf(*, tagged: bool = True, untagged_text: str = "", page_content: bytes | None = None) -> bytes:
     """untagged_text — строка видимого текста, оставленная вне тегов (как в плохо размеченном PDF)."""
     objects: dict[int, bytes] = {}
 
@@ -135,7 +135,7 @@ def build_sample_pdf(*, tagged: bool = True, untagged_text: str = "") -> bytes:
         f"/Annots [{link} 0 R]>>"
     ))
     extra = f"\nBT /F1 11 Tf 50 100 Td ({untagged_text}) Tj ET".encode("ascii") if untagged_text else b""
-    stream(content, "", _content_stream() + extra)
+    stream(content, "", (_content_stream() if page_content is None else page_content) + extra)
     add(font, "<</Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding>>")
     add(bold, "<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding>>")
     width, height = IMAGE_SIZE

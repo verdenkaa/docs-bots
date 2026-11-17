@@ -49,6 +49,27 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.deps.reservation.document_version, 1)
         self.assertEqual(self.deps.reservation.base_version, 0)
 
+    async def test_source_url_is_preserved_in_index_points_and_snapshot(self):
+        url = "https://docs.example/network?revision=abc&view=1#section"
+        self.deps.batch.source.source_url = url
+        self.assertEqual(await self._run(), "ack")
+        self.assertEqual(self.deps.state, "published")
+        self.assertTrue(all(point.source_url == url for point in self.deps.chunk_points))
+        self.assertTrue(all(point.source_url == url for point in self.deps.prepared.points))
+
+    async def test_retry_refuses_a_snapshot_with_changed_source_url(self):
+        self.deps.batch.source.source_url = "https://docs.example/network?revision=abc"
+        self.deps.errors["write_chunks"] = StepError("qdrant_unavailable", True)
+        await self._run()
+        self.deps.pending = False
+        for point in self.deps.prepared.points:
+            point.source_url = "https://docs.example/other"
+        self.deps.errors.clear()
+        self.deps.calls.clear()
+        self.assertEqual(await self._run(), "ack")
+        self.assertIn("fail", self.deps.calls)
+        self.assertNotIn("write_chunks", self.deps.calls)
+
     async def test_duplicate_after_publication_does_not_regenerate(self):
         await self._run()
         self.deps.calls.clear()
@@ -131,9 +152,26 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.deps.errors["write_chunks"] = StepError("qdrant_unavailable", True)
         self.assertEqual(await self._run(), "ack")
         self.assertTrue(self.deps.pending)
+        self.assertTrue(self.deps.attempt_released)
+        self.assertEqual(self.deps.calls[-1], "release_pending")
         for name in ("write_topics", "publish", "retry", "fail", "delete_points"):
             self.assertNotIn(name, self.deps.calls)
         self.assertEqual(self.deps.events[-1]["outcome"], "reconciliation_required")
+
+    async def test_unknown_pending_release_commit_does_not_acknowledge_work(self):
+        self.deps.errors["write_chunks"] = StepError("qdrant_unavailable", True)
+        self.deps.errors["release_pending"] = StorageError("unknown commit")
+        self.assertEqual(await self._run(), "retry_broker")
+        self.assertTrue(self.deps.pending)
+        for name in ("retry", "fail", "publish", "delete_points"):
+            self.assertNotIn(name, self.deps.calls)
+
+    async def test_stale_pending_release_does_not_claim_reconciliation_success(self):
+        self.deps.errors["write_chunks"] = StepError("qdrant_unavailable", True)
+        with patch.object(self.deps, "_release_pending_attempt", new=AsyncMock(return_value=False)):
+            self.assertEqual(await self._run(), "ack")
+        self.assertTrue(self.deps.pending)
+        self.assertEqual(self.deps.events[-1]["outcome"], "attempt_lost")
 
     async def test_incomplete_index_cannot_be_published(self):
         with patch.object(self.deps, "verify_topic_points", new=AsyncMock(return_value=False)):

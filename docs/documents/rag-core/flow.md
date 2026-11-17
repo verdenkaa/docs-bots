@@ -79,7 +79,7 @@ flowchart TD
 
 Gateway сохраняет и передаёт Worker полную DocumentBatch: готовые чанки с плейсхолдерами и ImageRef, единые имя и метку доступа; source_name — название исходного документа. Изображения уже записаны Gateway в S3, оригинал не сохранён.
 
-Worker читает PreparedChunk из партии, резервирует версию документа и сохраняет images, document_version/access_level в ChunkPoint. Qdrant возвращает их в SearchFragment без генерации новых ID. Чанки и примеры одной редакции публикуются совместно через PostgreSQL. SourceRef сохраняет document_id и source_name; RAG API строит ссылку на HTML-заглушку документа, локатор раздела необязателен.
+Worker читает PreparedChunk из партии, резервирует версию документа и сохраняет images, document_version/access_level и source_url в ChunkPoint. Qdrant возвращает их в SearchFragment без генерации новых ID. Чанки и примеры одной редакции публикуются совместно через PostgreSQL. SourceRef сохраняет document_id, source_name и source_url в готовом ответе и кеше; RAG API использует URL напрямую, а при None строит ссылку на HTML-заглушку документа. Локатор раздела необязателен.
 
 [Общие DTO](./contracts.md) · [API и доставка](../telegram/module/entrypoints.md) · [PostgreSQL Core](../infrastructure/postgresql/rag-core.md)
 

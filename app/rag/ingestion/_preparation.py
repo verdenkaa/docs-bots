@@ -61,7 +61,7 @@ class _Preparation:
             ChunkPoint(
                 chunk_id=uuid5(revision.revision_id, str(number)),
                 document_id=revision.document_id, revision_id=revision.revision_id,
-                source_name=batch.source.filename, source_url=None,
+                source_name=batch.source.filename, source_url=batch.source.source_url,
                 text=chunk.text, locator=chunk.locator, images=chunk.images,
                 chunk_no=number, document_version=revision.document_version,
                 access_level=batch.source.access_level, dense=vector,

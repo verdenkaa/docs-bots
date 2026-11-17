@@ -150,28 +150,28 @@ class DeliveryRegressions(unittest.IsolatedAsyncioTestCase):
 
 class HttpRegressions(_HttpCase):
     async def test_webhook_checks_declared_and_streamed_limit_before_dispatch(self):
-        headers = {'X-Telegram-Bot-Api-Secret-Token': 'test-secret', 'Content-Type': 'application/json'}
+        headers = {'X-Telegram-Intake-Secret': 'test-secret', 'Content-Type': 'application/json'}
         with patch.object(entrypoints, 'handle_telegram_update', AsyncMock()) as handle:
             body = b'x' * (webhook._MAX_UPDATE_BYTES + 1)
-            response = await self.client.post('/telegram/webhook', content=body, headers=headers)
+            response = await self.client.post('/internal/telegram/updates', content=body, headers=headers)
             self.assertEqual(response.status_code, 413)
             async def chunks():
                 yield body[:500000]
                 yield body[500000:]
-            response = await self.client.post('/telegram/webhook', content=chunks(), headers=headers)
+            response = await self.client.post('/internal/telegram/updates', content=chunks(), headers=headers)
             self.assertEqual(response.status_code, 413)
             handle.assert_not_awaited()
 
     async def test_webhook_accepts_exact_limit_and_rejects_invalid_lengths(self):
-        headers = {'X-Telegram-Bot-Api-Secret-Token': 'test-secret', 'Content-Type': 'application/json'}
+        headers = {'X-Telegram-Intake-Secret': 'test-secret', 'Content-Type': 'application/json'}
         body = json.dumps(_update()).encode()
         body += b' ' * (webhook._MAX_UPDATE_BYTES - len(body))
         with patch.object(entrypoints, 'handle_telegram_update', AsyncMock(return_value=IntakeResult(kind='accepted', request_id=1))) as handle:
-            self.assertEqual((await self.client.post('/telegram/webhook', content=body, headers=headers)).status_code, 200)
+            self.assertEqual((await self.client.post('/internal/telegram/updates', content=body, headers=headers)).status_code, 200)
             handle.assert_awaited_once_with(_update())
             handle.reset_mock()
             for length in ('bad', '-1', '9' * 5000):
-                response = await self.client.post('/telegram/webhook', content=b'{}',
+                response = await self.client.post('/internal/telegram/updates', content=b'{}',
                                                   headers={**headers, 'Content-Length': length})
                 self.assertEqual(response.status_code, 413 if length[0] == '9' else 400)
             handle.assert_not_awaited()
@@ -182,7 +182,7 @@ class HttpRegressions(_HttpCase):
             nonlocal read
             read = True
             yield b'x' * (webhook._MAX_UPDATE_BYTES + 1)
-        response = await self.client.post('/telegram/webhook', content=chunks(),
+        response = await self.client.post('/internal/telegram/updates', content=chunks(),
                                           headers={'Content-Type': 'application/json'})
         self.assertEqual(response.status_code, 403)
         self.assertFalse(read)

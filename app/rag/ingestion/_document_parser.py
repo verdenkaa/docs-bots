@@ -8,6 +8,8 @@ import os
 import signal
 import struct
 import sys
+import tempfile
+from contextlib import nullcontext
 
 from rag.contracts import StepError
 
@@ -69,14 +71,25 @@ async def _settle(task):
 
 
 async def _run_worker(kind, data, marker, settings):
+    # The parent owns renderer metadata so SIGKILL of the parser cannot leave
+    # temporary Inkscape profiles behind. Original bytes never enter this tree.
+    workspace = tempfile.TemporaryDirectory(prefix="rag-docx-") if kind == "docx" else nullcontext(None)
+    with workspace as directory:
+        return await _run_worker_process(kind, data, marker, settings, directory)
+
+
+async def _run_worker_process(kind, data, marker, settings, directory):
     command = (sys.executable, "-m", "rag.ingestion._convert_worker", kind,
                str(settings.parse_memory_bytes), str(len(data)), marker,
                str(settings.max_markdown_bytes), str(settings.max_images),
                str(settings.max_image_bytes), str(settings.max_parser_output_bytes))
+    env = {key: value for key, value in os.environ.items() if key.upper() in _WORKER_ENV}
+    if directory is not None:
+        env["_RAG_CONVERTER_WORK_DIRECTORY"] = directory
     spawning = asyncio.create_task(asyncio.create_subprocess_exec(
         *command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={key: value for key, value in os.environ.items() if key.upper() in _WORKER_ENV},
+        env=env,
         start_new_session=sys.platform != "win32",
     ))
     try:

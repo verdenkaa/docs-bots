@@ -15,7 +15,7 @@ from contract_examples import (
     DOCUMENT, IMAGE, MARKDOWN, NOW, REVISION, processing_attempt,
     returned, source, validate_call_arguments,
 )
-from rag.contracts import AllowedQuestion, AnsweredOutcome, ClaimedQuestion, DeliveryAttempt, DeliveryRef, GeneratedAnswer, ImageContent, ImageQuestion, NoticeOutcome, OutOfScope, QuestionInput, QuestionOutcome, RagResult, RequestRef, SearchFragment, StepError, StorageError, SupportOutcome, TextQuestion
+from rag.contracts import AllowedQuestion, AnsweredOutcome, ClaimedQuestion, DeliveryAttempt, DeliveryRef, GeneratedAnswer, ImageContent, ImageQuestion, NoticeOutcome, OutOfScope, QuestionInput, QuestionOutcome, RagResult, RequestRef, SearchFragment, SourceRef, StepError, StorageError, SupportOutcome, TextQuestion
 from rag.dto import DTO
 from rag.guardrails.entrypoints import check_question
 from rag.ingestion.contracts import UploadInput
@@ -40,6 +40,26 @@ from rag.searcher.entrypoints import search
 
 
 class ContractTests(unittest.TestCase):
+    def test_shortcut_to_notice_contract_trace(self):
+        from rag.rag_api.shortcuts import ShortcutResult, intercept_message
+
+        incoming = NewQuestion(username="employee_name", update_id=10, user_id=7, chat_id=7,
+                               received_at=NOW, input=TextQuestion(kind="text", text="Привет!"))
+        validate_call_arguments(pg_api.check_message, incoming)
+        self.assertIsNone(returned(pg_api.check_message, None))
+        shortcut = intercept_message(incoming.input.text)
+        self.assertIsInstance(shortcut, DTO)
+        self.assertEqual(ShortcutResult.model_validate_json(shortcut.model_dump_json()), shortcut)
+        validate_call_arguments(pg_api.register_shortcut_reply, incoming, shortcut.response)
+        intake = returned(pg_api.register_shortcut_reply, IntakeResult(kind="handled", delivery_id=2))
+        self.assertIsNone(intake.request_id)
+        delivery = ClaimedDelivery(attempt=DeliveryAttempt(delivery_id=intake.delivery_id,
+            attempt_no=1, deadline_at=NOW), user_id=7, chat_id=7, purpose="notice",
+            content=RagResult(answer_text=shortcut.response, sources=[]))
+        parts = build_delivery_parts(delivery, "https://example.test")
+        self.assertEqual(parts[0].text, shortcut.response)
+        self.assertEqual(parts[0].actions, [])
+
     def test_question_to_parts_trace(self):
         """Каждый этап получает параметры из результата уже пройденного шага."""
         incoming = NewQuestion(username="employee_name", update_id=10, user_id=7, chat_id=7, received_at=NOW,
@@ -67,14 +87,15 @@ class ContractTests(unittest.TestCase):
         validate_call_arguments(search, query, revisions)
         validate_call_arguments(find_chunks, query, embedding.vectors[0], revisions, 10,
                                 lexical_priority=False)
-        fragment = SearchFragment(**source().model_dump(), text=MARKDOWN, images=[IMAGE])
+        cited_source = SourceRef(**{**source().model_dump(), "source_url": "https://docs.example/manual?revision=abc"})
+        fragment = SearchFragment(**cited_source.model_dump(), text=MARKDOWN, images=[IMAGE])
         hits = returned(find_chunks, [QdrantHit(fragment=fragment, score=0.72)])
         fragments = returned(search, [hit.fragment for hit in hits])
         validate_call_arguments(generate_answer, query, fragments)
         answer = returned(generate_answer, GeneratedAnswer(
             kind="answered", answer_text=MARKDOWN,
             cited_chunk_ids=[fragments[0].chunk_id], cited_image_ids=[IMAGE.image_id]))
-        result = RagResult(answer_text=answer.answer_text, sources=[source()], images=[IMAGE])
+        result = RagResult(answer_text=answer.answer_text, sources=[cited_source], images=[IMAGE])
         outcome = AnsweredOutcome(kind="answered", result=result)
         validate_call_arguments(pg_core.complete_question, job.attempt, outcome)
         validate_call_arguments(store_answer, query, job.corpus_generation, result)

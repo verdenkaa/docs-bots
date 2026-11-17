@@ -242,7 +242,7 @@ def _check_prepared(ref, prepared, upload):
         if len(point.dense)!=settings.embedding_dimensions:
             raise StepError("embedding_profile_mismatch",False)
     for point in prepared.points:
-        if (point.source_name!=upload.source.filename or point.source_url is not None
+        if (point.source_name!=upload.source.filename or point.source_url!=upload.source.source_url
                 or point.access_level != upload.source.access_level):
             raise StepError("prepared_revision_conflict",False)
         if any(allowed.get(image.image_id)!=image for image in point.images):

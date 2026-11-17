@@ -1,0 +1,324 @@
+name: ${RAG_COMPOSE_PROJECT:-rag-hackathon}
+
+x-service: &service
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+x-app: &app
+  <<: *service
+  image: ${DEPLOY_APP_IMAGE:-rag-bot:server}
+  build:
+    context: .
+    dockerfile: deploy/Dockerfile
+  init: true
+  env_file: [{path: "${DEPLOY_ENV_FILE:-.env}", required: true}]
+  environment: &app-environment
+    RAG_ENV_FILE: /nonexistent/deployment.env
+    PGHOST: postgres
+    PGPORT: "5432"
+    RABBITMQ_HOST: rabbitmq
+    RABBITMQ_PORT: "5672"
+    REDIS_URL: redis://redis:6379/0
+    QDRANT_URL: http://qdrant:6333
+    S3_ENDPOINT_URL: http://s3:9000
+  stop_grace_period: 90s
+  volumes: [worker_spool:/var/lib/rag/spool]
+
+x-health: &health
+  interval: 5s
+  timeout: 5s
+  retries: 24
+  start_period: 15s
+
+services:
+  validate:
+    <<: *app
+    restart: "no"
+    command: [python, -m, deploy, validate]
+
+  postgres:
+    <<: *service
+    image: postgres:17-alpine
+    depends_on: {validate: {condition: service_completed_successfully}}
+    environment:
+      POSTGRES_DB: ${PGDATABASE:-rag}
+      POSTGRES_USER: ${PGUSER:-rag}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?Set PGPASSWORD in .env}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      <<: *health
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+
+  rabbitmq:
+    <<: *service
+    image: rabbitmq:4.1-alpine
+    hostname: rabbitmq
+    depends_on: {validate: {condition: service_completed_successfully}}
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-rag}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+      RABBITMQ_DEFAULT_VHOST: ${RAG_RABBITMQ_VHOST:-/}
+    volumes: [rabbitmq_data:/var/lib/rabbitmq]
+    healthcheck:
+      <<: *health
+      test: [CMD, rabbitmq-diagnostics, -q, check_running]
+
+  redis:
+    <<: *service
+    image: redis:7.4-alpine
+    command: [redis-server, --save, "", --appendonly, "no"]
+    healthcheck:
+      <<: *health
+      test: [CMD, redis-cli, ping]
+
+  qdrant:
+    <<: *service
+    image: qdrant/qdrant:v1.20.0
+    volumes: [qdrant_data:/qdrant/storage, qdrant_snapshots:/qdrant/snapshots]
+    healthcheck:
+      <<: *health
+      test:
+        - CMD
+        - bash
+        - -ec
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/6333
+          printf 'GET /readyz HTTP/1.0\r\n\r\n' >&3
+          read -r protocol code rest <&3
+          test "$$code" = 200
+
+  s3:
+    <<: *service
+    image: rustfs/rustfs:1.0.5
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-rag}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_REGION: ${S3_REGION:-us-east-1}
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+    volumes: [s3_data:/data]
+    healthcheck:
+      <<: *health
+      start_period: 40s
+      test: [CMD, sh, -ec, "curl -fsS --max-time 2 http://127.0.0.1:9000/health/ready && curl -fsS --max-time 2 http://127.0.0.1:9001/rustfs/console/health"]
+
+  ollama:
+    <<: *service
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.40.16}
+    depends_on: {validate: {condition: service_completed_successfully}}
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NO_CLOUD: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-3}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_GATEWAY_KEEP_ALIVE:-5m}
+    cpus: ${OLLAMA_CPUS:-22}
+    mem_limit: ${OLLAMA_MEMORY_LIMIT:-40g}
+    volumes: [ollama_data:/root/.ollama]
+    healthcheck:
+      <<: *health
+      test: [CMD-SHELL, "OLLAMA_HOST=http://127.0.0.1:11434 ollama list >/dev/null"]
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: [python, -m, rag.runtime, migrate]
+    depends_on:
+      validate: {condition: service_completed_successfully}
+      postgres: {condition: service_healthy}
+
+  analytics-init:
+    <<: *app
+    restart: "no"
+    command: [python, -m, deploy.monitoring.setup]
+    environment:
+      <<: *app-environment
+      ANALYTICS_PASSWORD: ${GRAFANA_ANALYTICS_PASSWORD:-${GRAFANA_PASSWORD}}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
+  models-init:
+    <<: *app
+    restart: "no"
+    command: [python, -m, deploy, models]
+    depends_on:
+      ollama: {condition: service_healthy}
+      native-models: {condition: service_healthy, required: false}
+      injection-detector: {condition: service_healthy, required: false}
+
+  injection-detector:
+    <<: *service
+    profiles: [native]
+    build:
+      context: .
+      dockerfile: deploy/detector/Dockerfile
+    init: true
+    depends_on: {validate: {condition: service_completed_successfully}}
+    environment:
+      DETECTOR_THREADS: "2"
+    cpus: ${DETECTOR_CPUS:-2}
+    mem_limit: ${DETECTOR_MEMORY_LIMIT:-4g}
+    volumes: [detector_model_data:/var/lib/detector]
+    healthcheck:
+      <<: *health
+      start_period: 30m
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8080/health/ready',timeout=3).close()"]
+
+  native-models:
+    <<: *service
+    profiles: [native]
+    build:
+      context: .
+      dockerfile: deploy/native/Dockerfile
+    init: true
+    depends_on: {validate: {condition: service_completed_successfully}}
+    environment:
+      RAG_MODEL_BINDINGS: ${RAG_MODEL_BINDINGS:-{}}
+      NATIVE_MODEL_TOKEN: ${NATIVE_MODEL_TOKEN:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+    cpus: ${NATIVE_MODEL_CPUS:-6}
+    mem_limit: ${NATIVE_MODEL_MEMORY_LIMIT:-8g}
+    volumes: [native_model_data:/var/lib/native]
+    healthcheck:
+      <<: *health
+      interval: 15s
+      start_period: 30m
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8090/health/ready',timeout=3).close()"]
+
+  prepare:
+    <<: *app
+    restart: "no"
+    command: [python, -m, deploy, prepare]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      qdrant: {condition: service_healthy}
+      s3: {condition: service_healthy}
+
+  core:
+    <<: *app
+    command: [python, -m, deploy, core]
+    depends_on:
+      prepare: {condition: service_completed_successfully}
+      models-init: {condition: service_completed_successfully}
+      rabbitmq: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      <<: *health
+      start_period: 35m
+      test: [CMD, python, -m, deploy, health, core]
+
+  worker:
+    <<: *app
+    command: [python, -m, deploy, worker]
+    depends_on:
+      prepare: {condition: service_completed_successfully}
+      models-init: {condition: service_completed_successfully}
+      rabbitmq: {condition: service_healthy}
+    healthcheck:
+      <<: *health
+      start_period: 35m
+      test: [CMD, python, -m, deploy, health, worker]
+
+  nginx:
+    <<: *service
+    build: {context: deploy/proxy}
+    init: true
+    depends_on: {validate: {condition: service_completed_successfully}}
+    ports: ["80:80", "443:443"]
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?Set the public server IPv4 or domain in .env}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+      ACME_DIRECTORY_URL: ${ACME_DIRECTORY_URL:-https://acme-v02.api.letsencrypt.org/directory}
+      RAG_INGESTION_MAX_UPLOAD_BYTES: ${RAG_INGESTION_MAX_UPLOAD_BYTES:-20971520}
+      RAG_INGESTION_UPLOAD_TIMEOUT_S: ${RAG_INGESTION_UPLOAD_TIMEOUT_S:-600}
+      INGESTION_PROXY_TIMEOUT_S: ${INGESTION_PROXY_TIMEOUT_S:-660}
+    volumes: [certificates:/etc/letsencrypt, acme_webroot:/var/www/acme]
+    stop_grace_period: 45s
+    healthcheck:
+      <<: *health
+      interval: 15s
+      start_period: 20m
+      test: [CMD, python, /opt/proxy/main.py, health]
+
+  telegram-poller:
+    <<: *app
+    command: [python, -m, deploy, polling]
+    depends_on:
+      core: {condition: service_healthy}
+      worker: {condition: service_healthy}
+    healthcheck:
+      <<: *health
+      interval: 15s
+      start_period: 120s
+      test: [CMD, python, -m, deploy, polling-health]
+
+  loki:
+    <<: *service
+    image: grafana/loki:3.5.8
+    command: [-config.file=/etc/loki/rag.yaml]
+    volumes:
+      - ./container-manager/monitoring/loki.yaml:/etc/loki/rag.yaml:ro
+      - loki_data:/loki
+
+  alloy:
+    <<: *service
+    image: grafana/alloy:v1.8.3
+    command: [run, --server.http.listen-addr=0.0.0.0:12345, --storage.path=/var/lib/alloy/data, /etc/alloy/config.alloy]
+    environment:
+      RAG_COMPOSE_PROJECT: ${RAG_COMPOSE_PROJECT:-rag-hackathon}
+    depends_on: [loki]
+    volumes:
+      - ./container-manager/monitoring/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy_data:/var/lib/alloy/data
+      - type: bind
+        source: /var/run/docker.sock
+        target: /run/container-engine.sock
+        read_only: true
+        bind: {create_host_path: false}
+
+  grafana:
+    <<: *service
+    image: grafana/grafana:12.1.1
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3300}:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      ANALYTICS_DATABASE: ${PGDATABASE:-rag}
+      ANALYTICS_PASSWORD: ${GRAFANA_ANALYTICS_PASSWORD:-${GRAFANA_PASSWORD}}
+    depends_on:
+      loki: {condition: service_started}
+      analytics-init: {condition: service_completed_successfully}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./container-manager/monitoring/datasources.yaml:/etc/grafana/provisioning/datasources/loki.yaml:ro
+      - ./container-manager/monitoring/dashboards.yaml:/etc/grafana/provisioning/dashboards/rag.yaml:ro
+      - ./container-manager/monitoring/dashboards:/var/lib/grafana/dashboards/rag:ro
+      - ./deploy/monitoring/datasource.yaml:/etc/grafana/provisioning/datasources/business.yaml:ro
+      - ./deploy/monitoring/dashboards.yaml:/etc/grafana/provisioning/dashboards/business.yaml:ro
+      - ./deploy/monitoring/dashboards:/var/lib/grafana/dashboards/business:ro
+    healthcheck:
+      <<: *health
+      start_period: 120s
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:3000/api/health]
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  qdrant_data:
+  qdrant_snapshots:
+  s3_data:
+  worker_spool:
+  ollama_data:
+  native_model_data:
+  detector_model_data:
+  certificates:
+  acme_webroot:
+  loki_data:
+  alloy_data:
+  grafana_data:

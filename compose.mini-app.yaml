@@ -1,0 +1,38 @@
+# Clone docs-bots_TG_mini_app next to this repository, then enable this override.
+services:
+  core:
+    networks:
+      default: {}
+      mini:
+        aliases: [rag-api]
+  nginx:
+    networks: [default, mini]
+    environment:
+      MINI_APP_PROXY_ENABLED: "true"
+  mini-backend:
+    build: ${MINI_APP_DIR:-../docs-bots_TG_mini_app}/backend
+    restart: unless-stopped
+    environment:
+      RAG_API_BASE_URL: http://rag-api:8000
+      MINI_APP_PUBLIC_ORIGIN: https://${PUBLIC_HOST:?Set PUBLIC_HOST}
+    networks: [mini]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  mini-frontend:
+    build: ${MINI_APP_DIR:-../docs-bots_TG_mini_app}/frontend
+    restart: unless-stopped
+    networks: [mini]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1/]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+networks:
+  mini:
+    internal: true

@@ -416,6 +416,32 @@ async def publish_revision(attempt: IngestionAttempt) -> int | None:
         return generation
 
 
+async def _release_pending_attempt(attempt: IngestionAttempt) -> bool:
+    """End a returned handler's lease without permitting another Qdrant write.
+
+    Only the owning, live attempt may yield its global Worker slot. Expiring
+    resume_at also revokes this attempt's right to publish; the pending flag,
+    prepared manifest and per-document ordering remain untouched for reconciliation.
+    """
+    attempt = IngestionAttempt.model_validate_json(attempt.model_dump_json())
+    async with _transaction() as session:
+        # Use claim's lock order so another document cannot race lease release.
+        await _lock(session, "ingestion-worker", 0)
+        row = await _one(
+            session,
+            select(_Revision).where(_Revision.revision_id == attempt.job_id).with_for_update(),
+        )
+        now = await _now(session)
+        if not _valid_attempt(row, attempt, "indexing", now) or not row["qdrant_write_pending"]:
+            return False
+        # This is NOT a retry or successful write: leave state=indexing and pending=true.
+        await _execute(
+            session,
+            update(_Revision).where(_Revision.revision_id == attempt.job_id).values(resume_at=now),
+        )
+        return True
+
+
 async def schedule_ingestion_retry(attempt: IngestionAttempt, retry_at: datetime) -> bool:
     """Вернуть задание в queued и создать отложенный outbox ingestion.jobs.
 

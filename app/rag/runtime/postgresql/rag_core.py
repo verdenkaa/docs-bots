@@ -32,7 +32,7 @@ from sqlalchemy import select
 from ._models import _SupportCase
 
 from sqlalchemy import or_, update
-from ._models import _Request, _Revision
+from ._models import _Request, _Revision, _WebRequest
 from ._db import _data
 
 
@@ -164,7 +164,7 @@ async def complete_question(attempt: ProcessingAttempt, outcome: QuestionOutcome
             elif case.state not in ("open", "closed"):
                 case.state, case.reason, case.check_at = "creating", outcome.reason, None
             state = "awaiting_support"
-        else:
+        elif row.get("channel", "telegram") == "telegram":
             content = (
                 outcome.result
                 if outcome.kind == "answered"
@@ -181,6 +181,12 @@ async def complete_question(attempt: ProcessingAttempt, outcome: QuestionOutcome
                 key="terminal:" + str(attempt.request_id),
             )
             state = "awaiting_delivery"
+        if row.get("channel", "telegram") == "web":
+            # A committed result is available over HTTP. No delivery/receipt or
+            # reader acknowledgement is necessary to release the active slot.
+            state = "finished"
+            await _execute(session, update(_WebRequest).where(
+                _WebRequest.request_id == attempt.request_id).values(completed_at=await _now(session)))
         await _execute(
             session,
             update(_Request)

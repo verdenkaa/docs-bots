@@ -113,3 +113,36 @@ def build_sample_docx(document_prefix: str = "") -> bytes:
             archive.writestr(name, (head + text).encode("utf-8"))
         archive.writestr("word/media/image1.png", _png())
     return target.getvalue()
+
+
+def build_metafile(kind: str) -> bytes:
+    """Минимальный настоящий EMF/WMF с красным прямоугольником, без внешних файлов."""
+    if kind == "emf":
+        records = [
+            struct.pack("<IIIIII", 39, 24, 1, 0, 0x000000FF, 0),  # EMR_CREATEBRUSHINDIRECT
+            struct.pack("<III", 37, 12, 1),  # EMR_SELECTOBJECT
+            struct.pack("<IIiiii", 43, 24, 10, 10, 90, 40),  # EMR_RECTANGLE
+            struct.pack("<IIIII", 14, 20, 0, 0, 20),  # EMR_EOF
+        ]
+        header = struct.pack("<II4i4iIIIIHHIII4i", 1, 88, 0, 0, 100, 50, 0, 0, 2646, 1323,
+                             0x464D4520, 0x10000, 88 + sum(map(len, records)), 5, 2, 0, 0, 0, 0,
+                             100, 50, 26, 13)
+        return header + b"".join(records)
+    if kind != "wmf":
+        raise ValueError(kind)
+
+    def record(function: int, parameters: bytes = b"") -> bytes:
+        return struct.pack("<IH", 3 + len(parameters) // 2, function) + parameters
+
+    records = [record(0x020B, struct.pack("<hh", 0, 0)),  # META_SETWINDOWORG
+               record(0x020C, struct.pack("<hh", 50, 100)),  # META_SETWINDOWEXT
+               record(0x02FC, struct.pack("<HIH", 0, 0x000000FF, 0)),  # META_CREATEBRUSHINDIRECT
+               record(0x012D, struct.pack("<H", 0)),  # META_SELECTOBJECT
+               record(0x041B, struct.pack("<hhhh", 40, 90, 10, 10)),  # META_RECTANGLE
+               record(0)]
+    header = struct.pack("<HHHIHIH", 1, 9, 0x300, 9 + sum(map(len, records)) // 2, 1, 7, 0)
+    placeable = struct.pack("<IHhhhhHI", 0x9AC6CDD7, 0, 0, 0, 100, 50, 96, 0)
+    checksum = 0
+    for word in struct.unpack("<10H", placeable):
+        checksum ^= word
+    return placeable + struct.pack("<H", checksum) + header + b"".join(records)

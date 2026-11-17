@@ -1,6 +1,6 @@
 """Contracts: docs/documents/guardrails/entrypoints.md.
 
-Guardrails: ввод и бессмыслица, инъекция через Model Gateway, нормализация, тема документации.
+Guardrails: ввод и бессмыслица, короткие атаки, инъекция через Model Gateway, нормализация, тема документации.
 Порядок и границы: docs/documents/guardrails/index.md. Параметры — rag/guardrails/_config.py.
 """
 
@@ -13,7 +13,7 @@ from uuid import UUID
 from rag.contracts import (
     AllowedQuestion, DetectorUnavailable, GuardrailsResult, OutOfScope, RejectedQuestion, StepError,
 )
-from rag.guardrails._checks import _is_injection, _is_nonsense, _normalize
+from rag.guardrails._checks import _is_injection, _is_nonsense, _is_short_attack, _normalize
 from rag.guardrails._config import guardrails_settings
 from rag.model_gateway import entrypoints as model_gateway
 from rag.runtime import qdrant
@@ -33,6 +33,9 @@ async def check_question(raw_question: str, revision_ids: frozenset[UUID]) -> Gu
     if (not raw_question.strip() or len(raw_question) > settings.max_question_chars
             or _is_nonsense(raw_question)):
         return RejectedQuestion(kind="invalid_input")
+    if _is_short_attack(raw_question):
+        # модель-детектор пропускает около половины коротких атак; это правило от неё не зависит
+        return RejectedQuestion(kind="blocked")
 
     try:
         normalized = _normalize(raw_question)

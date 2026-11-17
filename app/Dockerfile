@@ -1,6 +1,8 @@
 FROM python:3.12-alpine AS base
 WORKDIR /opt/rag
 ENV PYTHONDONTWRITEBYTECODE=1
+# Native DOCX EMF/WMF renderer; fonts also cover Cyrillic labels in diagrams.
+RUN apk add --no-cache inkscape font-dejavu
 COPY pyproject.toml README.md requirements.lock ./
 COPY rag ./rag
 RUN pip install --no-cache-dir -c requirements.lock .

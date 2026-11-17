@@ -92,6 +92,7 @@ async def _upload(request: Request):
         source = UploadSource(
             filename=request.query_params.get("filename"),
             access_level=request.query_params.get("access_level"),
+            source_url=request.query_params.get("source_url"),
         )
         value = request.query_params.get("document_id")
         document_id = UUID(value) if value is not None else None

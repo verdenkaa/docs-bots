@@ -1,17 +1,23 @@
 # Каркас RAG-приложения
 
+Добавлен отдельный текстовый канал [Telegram Mini App](../docs/documents/telegram/mini-app.md):
+новые HTTP-ручки RAG API, миграция 003_mini_app и поддержка web-жизненного цикла
+во внутреннем Runtime. Общие DTO и entrypoints остальных модулей сохранены.
+Frontend/backend находятся в соседнем репозитории docs-bots_TG_mini_app.
+
 > [!WARNING]
 
 > Бизнес-сценарии ещё содержат `NotImplementedError`. HTTP-адаптер и последовательность приёма Ingestion Gateway реализованы; конвертер, разбиение и расширения Runtime для DocumentBatch и версий реализованы по согласованным контрактам. Базовые адаптеры Runtime, Model Gateway и RAG Core реализованы; конкретные модельные backend и веса подключаются отдельно. Health checks каркаса подтверждают запуск процессов.
 
 
-Для локальной проверки есть [адаптер Ollama и небольшой текстовый профиль](../docs/documents/model-gateway/ollama.md); OCR/vision можно добавить явно. После скачивания моделей: `python -m rag.model_gateway.ollama_setup --smoke`. Основной .env и существующий поисковый индекс команда не меняет.
+Для локальной проверки есть [адаптер Ollama и небольшой текстовый профиль](../docs/documents/model-gateway/ollama.md); OCR/vision можно добавить явно. Детектор prompt injection — отдельный [сервис на ONNX Runtime](../docs/documents/model-gateway/injection-detector.md) в `injection_detector/` (в образ приложения не входит) с адаптером `rag/model_gateway/injection_detector.py`. После скачивания моделей: `python -m rag.model_gateway.ollama_setup --smoke`. Основной .env и существующий поисковый индекс команда не меняет.
 
 ## Где начать
 
 | Модуль | Код | Контракт |
 | --- | --- | --- |
 | RAG API | [`handle_telegram_update`, `handle_rag_result`, `build_delivery_parts`, `send_answer`, `run_api_maintenance`](rag/rag_api/entrypoints.py) | [Точки входа](../docs/documents/telegram/module/entrypoints.md) |
+| Shortcut Interceptor внутри RAG API | [`intercept_message`](rag/rag_api/shortcuts/interceptor.py), [реестр фраз](rag/rag_api/shortcuts/registry.py) | [Точное сопоставление и маршрут reply/operator/miss](../docs/documents/telegram/module/shortcuts.md) |
 | Access / Support внутри RAG API | [Допуск](rag/rag_api/access.py), [тикеты и ожидания](rag/rag_api/support.py), [DTO](rag/rag_api/contracts.py) | [Контракты компонентов](../docs/documents/telegram/module/service-entrypoints.md) |
 | RAG Core | [`handle_rag_question`](rag/rag_core/entrypoints.py), [Exact Cache](rag/rag_core/exact_cache.py), [Answer Generator](rag/rag_core/answer_generator.py) | [Порядок вызовов](../docs/documents/rag-core/flow.md) |
 | Guardrails | [`check_question`](rag/guardrails/entrypoints.py) | [Точка входа](../docs/documents/guardrails/entrypoints.md) |
@@ -28,6 +34,8 @@ Model Gateway проверяет все шесть ролей, ограничи�
 
 DTO наследуют Pydantic-базу `rag.dto.DTO`; поля читаются через атрибуты (`result.answer_text`). Правила валидации, JSON и технических потоков — в [справке](../docs/documents/faq/dto.md).
 
+При HTTP-загрузке можно передать query-параметр `source_url` — HTTP(S) ссылку документа для пользователя. Gateway сохраняет её в UploadSource/DocumentBatch, Worker переносит в payload Qdrant, а RAG API использует в источниках ответа. Значение кодируется как query-параметр, например через curl `--url-query 'source_url=https://docs.example/manual?revision=abc&view=1#section'`. Документ по URL не скачивается: тело запроса по-прежнему содержит байты файла. Без source_url сохраняется ссылка на `/sources/{document_id}`.
+
 Общие DTO лежат в [`rag/contracts.py`](rag/contracts.py), специфичные для RAG API и Ingestion — в `contracts.py` внутри своих модулей. Начинайте с тела нужной функции. При изменении сигнатуры согласуйте её с вызывающей стороной и обновите соответствующую страницу документации.
 
 [`tests/test_documented_contracts.py`](tests/test_documented_contracts.py) сверяет точный состав и структуру контрактов с Python-блоками действующей документации. Документ-владелец указан в `Contracts: docs/documents/...md.` в docstring модуля; базовый `rag.dto` описан в справке DTO. При добавлении точки входа или DTO добавьте определение в документ владельца. Тесты сравнивают AST, проверяют DTO на положительных/ошибочных данных и трассируют передачу параметров между точками входа без исполнения бизнес-операций. В tests/test_contracts.py — вопрос и доставка, test_ingestion_contracts.py — загрузка/индексация, test_dto_validation.py — правила полей. К сервисам тесты не подключаются.
@@ -37,6 +45,8 @@ DTO наследуют Pydantic-базу `rag.dto.DTO`; поля читаютс�
 ## Python и зависимости
 
 Базовый стек: Pydantic/Settings, FastAPI/Uvicorn, SQLAlchemy/asyncpg/Alembic, aio-pika, Redis, Qdrant Client и HTTPX. Базовые парсеры PDF/DOCX входят в окружение; модельные SDK подключаются для выбранных backend отдельно. Gunicorn и uvicorn-worker доступны опцией `production` для Linux. [Установка и обновление зависимостей](../docs/documents/faq/python-environment.md).
+
+Для встроенных EMF/WMF в DOCX нужен Inkscape на Linux и установленные шрифты. Образ приложения включает `inkscape` и `font-dejavu`; при локальном запуске установите Inkscape и DejaVu системным пакетным менеджером. Изображение отрисовывается из памяти в PNG, затем передаётся в OCR/VLM.
 
 ## Запустить локально
 
@@ -55,7 +65,7 @@ python -m rag worker --port 8001
 
 Для запуска настоящих процессов поверх существующей инфраструктуры есть `scripts/live_services.py`: из `app/` выполните `.venv\Scripts\python.exe scripts/live_services.py api relay results maintenance recovery questions`. Скрипт пересоздаёт только перечисленные контейнеры `rag-live-*`, читает общий `.env` с правильным разбором кавычек и подключает текущий код. Перед первым запуском API остановите старый контейнер каркаса, занимающий порт 8000. По умолчанию используется локальный образ зависимостей `localhost/rag-runtime-tests:local`, сеть `rag-hackathon_default` и spool `rag-hackathon_worker_spool`; параметры можно заменить флагами. Для вопросов предварительно настройте и проверьте модельный профиль. Это локальный стенд разработки, а не production-развёртывание.
 
-Из `app/`: `.venv\Scripts\python.exe scripts/load_demo_documents.py`. Скрипт включает допуск `@verdenkaa` через административный API и отправляет три PDF из `~/Downloads` в Ingestion. Секреты `ADMIN_LOGIN`, `ADMIN_PASSWORD`, `RAG_INGESTION_TOKEN` и публичный URL `TELEGRAM_WEBHOOK_URL` берутся из общего `.env`; окружение процесса имеет приоритет.
+Из `app/`: `.venv\Scripts\python.exe scripts/load_demo_documents.py`. Скрипт включает допуск `@verdenkaa` через административный API и отправляет три PDF из `~/Downloads` в Ingestion. Секреты `ADMIN_LOGIN`, `ADMIN_PASSWORD`, `RAG_INGESTION_TOKEN` и публичный URL `RAG_PUBLIC_URL` (совместимый алиас TELEGRAM_WEBHOOK_URL) берутся из общего `.env`; окружение процесса имеет приоритет.
 
 По умолчанию API доступен на `http://127.0.0.1:8000`, Ingestion — на `http://127.0.0.1:8001`; другие адреса задаются через `--api-url` и `--ingestion-url`. Папка файлов задаётся через `--downloads`. Оба HTTP-приложения должны быть запущены отдельно: health-сервер каркаса не предоставляет ручку загрузки.
 
@@ -155,9 +165,15 @@ PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, `RAG_PG_SCHEMA` и корневой 
 
 
 Панель Support: `/admin` с HTTP Basic по ADMIN_LOGIN/ADMIN_PASSWORD, через HTTPS
-прокси и с публичным origin из TELEGRAM_WEBHOOK_URL. Посетитель по ссылке тикета
+прокси и с публичным origin из RAG_PUBLIC_URL. Посетитель по ссылке тикета
 остаётся анонимным даже после входа администратора; оператор пишет отдельной ручкой.
 Публичные реплики ограничены 4096 символами, телом 32 КиБ и 20 новыми сообщениями
 за минуту на тикет. История выдаётся страницами по 50 реплик.
 Миграция `002_ticket_resources` добавляет ограничения/индексы сообщений;
 примените `python -m rag.runtime migrate` до запуска новой версии.
+
+## Telegram: служебный polling-вход
+
+telegram-poller запускается по умолчанию. Внешний webhook удалён, внутренний POST /internal/telegram/updates защищён TELEGRAM_INTAKE_SECRET и закрыт публичным nginx. /start, /help, обычный текст и изображения получают только приглашение открыть Mini App через notice/Outbox, остальные slash-команды пропускаются молча. Новых RAG-вопросов этот вход не создаёт; старые callback и ранее принятые вопросы сохраняются.
+
+Контракты /api/v1/* Mini App остаются прежними; его авторизация требует токен бота, но не intake-secret. Общий публичный адрес — RAG_PUBLIC_URL. Старые имена TELEGRAM_WEBHOOK_URL/TELEGRAM_WEBHOOK_SECRET читаются как совместимые env-алиасы, без webhook. Изменения отдельного репозитория Mini App выполняет его владелец.

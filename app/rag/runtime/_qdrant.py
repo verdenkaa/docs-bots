@@ -157,6 +157,28 @@ async def _prepare():
         await _check(settings.topics_collection, create=new)
 
 
+async def _switch_empty_embedding_profile():
+    """Explicit operator opt-in, with writers stopped; never migrate a used corpus."""
+    from rag.runtime.postgresql._db import _transaction, _corpus, _execute, _one
+    from rag.runtime.postgresql._models import _Request, _Document
+
+    settings = _get().settings
+    async with _transaction() as connection:
+        row = await _corpus(connection)
+        if (row["embedding_profile"] in (None, settings.embedding_profile)
+                and row["embedding_dimensions"] in (None, settings.embedding_dimensions)):
+            return
+        if (row["generation"] != 0
+                or await _one(connection, select(_Document.document_id).limit(1))
+                or await _one(connection, select(_Revision.revision_id).limit(1))
+                or await _one(connection, select(_Request.request_id).limit(1))):
+            raise StepError("embedding_profile_change_requires_reindex", False)
+        # New collection names retain the old empty collections for inspection.
+        # No source documents, revisions, requests or vector points are deleted.
+        await _execute(connection, update(_CorpusState).where(_CorpusState.singleton_id == 1).values(
+            embedding_profile=settings.embedding_profile, embedding_dimensions=settings.embedding_dimensions))
+
+
 async def _records(collection, revision):
     state = _get()
     offset = None

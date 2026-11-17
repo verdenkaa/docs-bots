@@ -1,10 +1,12 @@
 """Document coverage, context boundaries and hostile/malformed model output."""
 
+import asyncio
 import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from rag.ingestion._execution import _Budget
+from rag.contracts import StepError
+from rag.ingestion._execution import _AttemptExpired, _Budget
 from rag.ingestion._indexing import _Indexer
 from rag.ingestion._tests._support import _FakeDependencies, _Fixtures
 from rag.ingestion._topics import _Topics
@@ -23,8 +25,9 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
     def _portion_limit(self):
         topics = _Topics(self.settings, self.deps,
                          _Budget.for_seconds(30, self.deps))
-        return max(sum(len(message.content) for message in topics._messages(
-            self.deps.batch.source.filename, [chunk.text])) for chunk in self.deps.batch.chunks)
+        return max(sum(len(message.content) for message in topics._retry_messages(
+            topics._messages(self.deps.batch.source.filename, [chunk.text]), 3))
+                   for chunk in self.deps.batch.chunks)
 
     async def test_portions_cover_every_chunk_without_truncation(self):
         self.settings = _Fixtures.settings(topic_input_characters=self._portion_limit())
@@ -52,15 +55,91 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         for text in (
             'not JSON', '[]', '{"questions":"wrong"}', '{"questions":[""]}',
             '{"questions":[null]}', '{"questions":["Q"],"extra":1}',
+            '{"questions":["Q"],"question":"extra"}',
             '{"questions":["Q"],"questions":["Other"]}',
         ):
             with self.subTest(text=text):
                 self.deps = _FakeDependencies()
-                self.deps.generated_responses = [text]
+                self.deps.generated_responses = [text] * 3
                 self.assertEqual(await self._run(), "ack")
+                self.assertEqual(self.deps.calls.count("generate"), 3)
                 self.assertIn("fail", self.deps.calls)
+                self.assertNotIn("retry", self.deps.calls)
                 self.assertNotIn("begin", self.deps.calls)
                 self.assertEqual(self.deps.events[-1]["error_code"], "topic_invalid_response")
+
+    async def test_only_invalid_portion_is_retried_within_context_limit(self):
+        self.settings = _Fixtures.settings(topic_input_characters=self._portion_limit())
+        self.deps.generated_responses = [
+            '{"questions":["Первый вопрос?"]}',
+            '{"questions":["Не использовать?"],"question":"Лишнее поле"}',
+            '{"questions":["Не использовать?",null]}',
+            '{"questions":["Второй вопрос?","Первый вопрос?"]}',
+        ]
+        with patch.object(self.deps, "generate", wraps=self.deps.generate) as generate:
+            self.assertEqual(await self._run(), "ack")
+        self.assertEqual(self.deps.state, "published")
+        self.assertEqual([point.text for point in self.deps.topic_points],
+                         ["Первый вопрос?", "Второй вопрос?"])
+        calls = generate.call_args_list
+        self.assertEqual(len(calls), 4)
+        for call in calls:
+            self.assertLessEqual(sum(len(message.content) for message in call.args[0]),
+                                 self.settings.topic_input_characters)
+        self.assertEqual(json.loads(calls[0].args[0][1].content)["chunks"],
+                         [self.deps.batch.chunks[0].text])
+        for call in calls[1:]:
+            self.assertEqual(json.loads(call.args[0][1].content)["chunks"],
+                             [self.deps.batch.chunks[1].text])
+        self.assertEqual(len({call.args[0][0].content for call in calls[1:]}), 3)
+        self.assertNotIn("Лишнее поле", calls[2].args[0][0].content)
+        steps = [step for step in self.deps.events[-1]["steps"]
+                 if step["name"] == "generate_topic_questions"]
+        self.assertEqual([step["outcome"] for step in steps],
+                         ["completed", "failed", "failed", "completed"])
+
+    async def test_retries_use_remaining_attempt_budget(self):
+        clock = [0.0]
+        timeouts = []
+
+        async def generate(messages, options, *, timeout_s):
+            timeouts.append(timeout_s)
+            clock[0] += 2
+            return ModelGenerationResult(
+                profile_id="generation-test", finish_reason="completed", usage=None,
+                text='{"questions":["Вопрос?"]}' if len(timeouts) == 3 else 'invalid',
+            )
+
+        with patch.object(self.deps, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(self.deps, "generate", side_effect=generate):
+            topics = _Topics(self.settings, self.deps, _Budget.for_seconds(5, self.deps))
+            self.assertEqual(await topics.generate(self.deps.batch), ["Вопрос?"])
+        self.assertEqual(timeouts, [5, 3, 1])
+
+    async def test_expired_budget_prevents_next_generation(self):
+        clock = [0.0]
+
+        async def generate(*args, **kwargs):
+            clock[0] = 5.0
+            return ModelGenerationResult(profile_id="generation-test", text='invalid',
+                                         finish_reason="completed", usage=None)
+
+        with patch.object(self.deps, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(self.deps, "generate", side_effect=generate) as model:
+            topics = _Topics(self.settings, self.deps, _Budget.for_seconds(5, self.deps))
+            with self.assertRaises(_AttemptExpired):
+                await topics.generate(self.deps.batch)
+        self.assertEqual(model.await_count, 1)
+
+    async def test_provider_errors_and_cancellation_do_not_trigger_format_retry(self):
+        for error in (StepError("model_timeout", True), StepError("model_invalid_response", False),
+                      asyncio.CancelledError()):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(self.deps, "generate", side_effect=error) as model:
+                topics = _Topics(self.settings, self.deps, _Budget.for_seconds(5, self.deps))
+                with self.assertRaises(type(error)):
+                    await topics.generate(self.deps.batch)
+                self.assertEqual(model.await_count, 1)
 
     async def test_empty_topic_set_is_not_published(self):
         self.deps.generated_responses = ['{"questions":[]}']
@@ -81,8 +160,9 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
                 self.deps = _FakeDependencies()
                 response = ModelGenerationResult(profile_id=profile, text='{"questions":["Q"]}',
                                                  finish_reason=reason, usage=None)
-                with patch.object(self.deps, "generate", new=AsyncMock(return_value=response)):
+                with patch.object(self.deps, "generate", new=AsyncMock(return_value=response)) as model:
                     self.assertEqual(await self._run(), "ack")
+                self.assertEqual(model.await_count, 1)
                 self.assertIn("fail", self.deps.calls)
                 self.assertNotIn("begin", self.deps.calls)
 
@@ -94,8 +174,9 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(text=text):
                 self.settings = settings
                 self.deps = _FakeDependencies()
-                self.deps.generated_responses = [text]
+                self.deps.generated_responses = [text] * 3
                 self.assertEqual(await self._run(), "ack")
+                self.assertIn("fail", self.deps.calls)
                 self.assertNotIn("begin", self.deps.calls)
 
     async def test_total_question_limit_rejects_additional_portions(self):

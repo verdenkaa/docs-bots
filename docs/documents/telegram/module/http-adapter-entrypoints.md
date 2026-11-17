@@ -3,7 +3,7 @@ title: "Python-функции HTTP-адаптера"
 sidebar_position: 20
 ---
 
-Публичные сигнатуры HTTP-адаптера сохранены. Прикладные сценарии описаны в
+HTTP API Mini App сохраняет прежние пути и DTO. Telegram использует только внутренний polling intake. Прикладные сценарии описаны в
 [точках входа](./entrypoints.md), внешние маршруты — в [эндпоинтах](../endpoints/index.md).
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> Жизненный цикл
@@ -16,38 +16,24 @@ FastAPI передаёт приложение. Контекст проверяе
 передаёт управление серверу через yield и закрывает Runtime при остановке или ошибке.
 Временные обрывы подключения к PostgreSQL получают до трёх попыток в пределах
 RAG_STARTUP_TIMEOUT_S. Ошибки аутентификации, конфигурации и схемы не повторяются.
-HTTP workers не запускают consumers, модели и регистрацию webhook.
+HTTP workers не запускают consumers, модели или poller. Внешнего Telegram webhook и его регистрации нет.
 
 Импорт модулей не читает `.env` и не требует секретов. Настройки читаются при
 использовании из окружения и необязательного `.env` в корне репозитория (либо `RAG_ENV_FILE`);
 запускать приложение следует из `app/`. Окружение имеет приоритет над файлом.
-Используются TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET и TELEGRAM_WEBHOOK_URL
-(публичный HTTPS base URL). BOT_TOKEN не используется. Секрет webhook — 1–256
-ASCII-букв, цифр, подчёркиваний или дефисов. Секреты и локальный `.env` не коммитятся.
+Общие настройки: `TELEGRAM_BOT_TOKEN` и `RAG_PUBLIC_URL` (публичный HTTPS base URL). Только внутренний приём и poller требуют `TELEGRAM_INTAKE_SECRET`: 1–256 ASCII-букв, цифр, подчёркиваний или дефисов. Mini App проверяет initData по токену и не зависит от intake-secret. Старые env-имена `TELEGRAM_WEBHOOK_URL` и `TELEGRAM_WEBHOOK_SECRET` читаются как совместимые алиасы, без включения webhook. Новые имена при одновременном задании в одном источнике имеют приоритет. Секреты не коммитятся.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> Telegram
 
 ~~~python
-async def telegram_webhook(request: Request) -> Response: ...
-async def telegram_api_request(client: httpx.AsyncClient, method: str, payload: dict | None = None,) -> dict: ...
-async def register_webhook(client: httpx.AsyncClient,) -> None: ...
-async def unregister_webhook(client: httpx.AsyncClient, ) -> None: ...
+async def telegram_updates(request: Request) -> Response: ...
 ~~~
 
-telegram_webhook проверяет секрет, Content-Type, JSON и update_id, затем передаёт
-полный Update в handle_telegram_update. Поддерживаются личные сообщения с текстом,
-изображениями и callback; группы и неподдерживаемые updates сохраняются как пропуск.
-Несовпадение секрета даёт 403, некорректный ввод — 400, retry_later — 503,
-надёжно обработанный Update — 200. Тело ответа пустое. Итоговое JSON-событие
-содержит шаги и безопасные метаданные без вопросов, ответов и секретов.
-Подтверждение callback принадлежит intake, а не роутеру.
+Внутренняя ручка `POST /internal/telegram/updates` проверяет `X-Telegram-Intake-Secret`, Content-Type, JSON и update_id, затем передаёт Update в handle_telegram_update. Ручка вызывается poller по Docker-сети; публичный nginx возвращает 404 для `/internal/*` и удалённого `/telegram/webhook`.
 
-telegram_api_request выполняет один Bot API-запрос переданным HTTPX-клиентом.
-Неуспешный ответ или транспортная ошибка дают безопасный RuntimeError без
-тела ответа и URL с токеном. register_webhook явно задаёт URL, секрет и
-allowed_updates=[message, callback_query]; unregister_webhook явно удаляет
-регистрацию. pending updates не удаляются. Эти операции вызываются оператором,
-а не каждым HTTP worker; остановка HTTP не удаляет webhook работающих реплик.
+Личные сообщения создают только приглашение открыть Mini App через существующий notice/Outbox. `/start`, `/help`, их аргументы и `@BotName` поддерживаются; остальные slash-команды молча сохраняются как ignored. Telegram-вход не создаёт RAG-вопрос. Старые callback проходят прежний Support, подтверждение callback принадлежит intake. Группы и неподдерживаемые updates сохраняются как пропуск.
+
+Несовпадение секрета даёт 403, некорректный ввод — 400, retry_later — 503, надёжно обработанный Update — 200 с пустым телом. Ответы отправляет обычная доставка, Bot API-методы в HTTP-ответ не вкладываются. Итоговое JSON-событие содержит шаги и безопасные метаданные без вопросов, ответов и секретов.
 
 ## <span className="operation-badge operation-badge--async">ASYNC</span> Проверки процесса
 

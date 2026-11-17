@@ -20,8 +20,8 @@ toc_max_heading_level: 2
 
 ~~~python
 from typing import Self
-from pydantic import model_validator
-from rag.dto import _check_image_markers
+from pydantic import field_validator, model_validator
+from rag.dto import _check_image_markers, _check_source_url
 
 from typing import Annotated, Literal
 from uuid import UUID
@@ -81,6 +81,11 @@ class SourceRef(DTO):
     source_name: NonEmptyText
     locator: SourceLocator | None = None
     source_url: str | None = None
+
+    @field_validator('source_url')
+    @classmethod
+    def check_source_url(cls, value: str | None) -> str | None:
+        return _check_source_url(value)
 
 class SearchFragment(SourceRef):
     text: NonEmptyText
@@ -143,7 +148,7 @@ QuestionOutcome = Annotated[AnsweredOutcome | SupportOutcome | NoticeOutcome, Fi
 | SourceRef.revision_id | UUID | Редакция контекста вопроса. | UUID |
 | SourceRef.source_name | NonEmptyText | Название источника, копируется из чанка. | Реестр мебели |
 | SourceRef.locator | SourceLocator или None | Необязательный внутренний локатор; для ссылки раздел не требуется. | None |
-| SourceRef.source_url | str или None | В MVP None: API строит URL HTML-заглушки из document_id. | None |
+| SourceRef.source_url | str или None | HTTP(S) URL документа без credentials и пробелов, сохранённый Ingestion и переданный через поиск без нормализации. API использует его напрямую; при None строит URL HTML-заглушки из document_id. | `https://docs.example/manual` |
 | SourceLocator.page | PositiveId или None | Номер страницы с 1, если известен. | 4 |
 | SourceLocator.section | NonEmptyText или None | Заголовок раздела, если известен. | Установка |
 | `SearchFragment.text / images` | текст / список | Контекст и допустимые изображения именно этого чанка. | `"Нажмите…", [ImageRef(...)]` |

@@ -9,6 +9,7 @@ import unittest
 from urllib.parse import urlencode
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
+from types import SimpleNamespace
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -131,6 +132,19 @@ class MiniAppHttpTests(unittest.IsolatedAsyncioTestCase):
         ):
             response = await self.client.get("/api/v1/me", headers=header)
             self.assertEqual(response.status_code, 401)
+
+    async def test_dissatisfied_opens_ticket_before_response(self):
+        case_id = uuid4()
+        case = SimpleNamespace(case_id=case_id, state="creating")
+        opened = {"case_id": str(case_id), "state": "open"}
+        with patch.object(mini_app.storage, "_start_support", AsyncMock(return_value=case)), \
+             patch.object(mini_app.support.repository, "create_support_ticket", AsyncMock(return_value=opened)) as create:
+            response = await self.client.post(
+                "/api/v1/questions/17/support", headers=self.headers,
+                json={"reason": "dissatisfied"},
+            )
+        self.assertEqual(response.json(), opened)
+        create.assert_awaited_once_with(case_id, "https://rag.example.org/tickets/" + str(case_id))
 
     async def test_role_is_from_verified_identity(self):
         async def me(identity):
